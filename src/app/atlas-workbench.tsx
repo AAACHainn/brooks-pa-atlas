@@ -93,6 +93,11 @@ const copy = {
     groups: "个分组",
     startImport: "开始导入",
     undoBatch: "撤销本批次",
+    overview: "概览",
+    hideOverview: "收起概览",
+    showOverview: "展开概览",
+    collapseSidebar: "收起侧栏",
+    expandSidebar: "展开侧栏",
     unclassified: "未分类",
     ocrPending: "OCR 待处理",
     ocrDone: "OCR 已完成",
@@ -129,6 +134,11 @@ const copy = {
     groups: "groups",
     startImport: "Start import",
     undoBatch: "Undo batch",
+    overview: "Overview",
+    hideOverview: "Hide overview",
+    showOverview: "Show overview",
+    collapseSidebar: "Collapse sidebar",
+    expandSidebar: "Expand sidebar",
     unclassified: "Unclassified",
     ocrPending: "OCR pending",
     ocrDone: "OCR done",
@@ -282,6 +292,20 @@ export default function AtlasWorkbench() {
 
     return window.localStorage.getItem("brooks-pa-atlas.locale") === "en" ? "en" : "zh";
   });
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    return window.localStorage.getItem("brooks-pa-atlas.sidebar") === "collapsed";
+  });
+  const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+
+    return window.localStorage.getItem("brooks-pa-atlas.overview") === "collapsed";
+  });
   const [data, setData] = useState<AtlasData | null>(null);
   const [query, setQuery] = useState("");
   const [selectedIndexId, setSelectedIndexId] = useState<string | null>(null);
@@ -332,6 +356,9 @@ export default function AtlasWorkbench() {
 
   const flatIndexes = useMemo(() => flattenTree(data?.tree ?? []), [data?.tree]);
   const selectedImage = data?.images.find((image) => image.id === selectedImageId) ?? null;
+  const layoutClass = isSidebarCollapsed
+    ? "grid min-h-screen grid-cols-1 xl:grid-cols-[64px_minmax(520px,1fr)_360px]"
+    : "grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(520px,1fr)_360px]";
   const groups = useMemo(() => {
     const counts = new Map<string, number>();
     files.forEach((item) => counts.set(item.groupKey, (counts.get(item.groupKey) ?? 0) + 1));
@@ -477,6 +504,24 @@ export default function AtlasWorkbench() {
     window.localStorage.setItem("brooks-pa-atlas.locale", nextLocale);
   }
 
+  function toggleSidebar() {
+    const nextValue = !isSidebarCollapsed;
+    setIsSidebarCollapsed(nextValue);
+    window.localStorage.setItem(
+      "brooks-pa-atlas.sidebar",
+      nextValue ? "collapsed" : "expanded",
+    );
+  }
+
+  function toggleOverview() {
+    const nextValue = !isOverviewCollapsed;
+    setIsOverviewCollapsed(nextValue);
+    window.localStorage.setItem(
+      "brooks-pa-atlas.overview",
+      nextValue ? "collapsed" : "expanded",
+    );
+  }
+
   function clearSelectedFiles() {
     setFiles([]);
     setAssignments({});
@@ -485,74 +530,112 @@ export default function AtlasWorkbench() {
 
   return (
     <main className="min-h-screen bg-[#f7f7f4] text-zinc-950">
-      <div className="grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(520px,1fr)_360px]">
+      <div className={layoutClass}>
         <aside className="border-r border-zinc-200 bg-white">
-          <div className="flex h-16 items-center justify-between border-b border-zinc-200 px-4">
-            <div>
-              <h1 className="text-lg font-semibold leading-tight">Brooks PA Atlas</h1>
-              <p className="text-xs text-zinc-500">
-                {data?.stats.imageCount ?? 0} {t.imageUnit}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
+          {isSidebarCollapsed ? (
+            <div className="flex min-h-screen flex-col items-center gap-3 py-3">
               <button
                 type="button"
-                onClick={toggleLocale}
-                className="h-9 rounded-md border border-zinc-200 px-2.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
-                title={locale === "zh" ? "Switch to English" : "切换到中文"}
+                onClick={toggleSidebar}
+                className="grid h-10 w-10 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50"
+                title={t.expandSidebar}
               >
-                {t.language}
+                <ChevronRight className="h-4 w-4" />
               </button>
               <button
                 type="button"
-                onClick={() => void refresh()}
-                className="grid h-9 w-9 place-items-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
-                title={t.refresh}
+                onClick={() => setSelectedIndexId(null)}
+                className={`grid h-10 w-10 place-items-center rounded-md ${
+                  selectedIndexId === null
+                    ? "bg-zinc-950 text-white"
+                    : "border border-zinc-200 text-zinc-700 hover:bg-zinc-50"
+                }`}
+                title={t.allImages}
               >
-                <RefreshCw className="h-4 w-4" />
+                <ImageIcon className="h-4 w-4" />
               </button>
-            </div>
-          </div>
-
-          <div className="border-b border-zinc-200 p-4">
-            <div className="flex gap-2">
-              <input
-                value={newIndexName}
-                onChange={(event) => setNewIndexName(event.target.value)}
-                className="h-9 min-w-0 flex-1 rounded-md border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-500"
-                placeholder={t.newIndex}
-              />
-              <button
-                type="button"
-                onClick={() => void createNode()}
-                className="grid h-9 w-9 place-items-center rounded-md bg-zinc-950 text-white hover:bg-zinc-800"
-                title={t.addIndex}
-              >
-                <FolderPlus className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-
-          <nav className="max-h-96 overflow-auto p-3 xl:h-[calc(100vh-129px)] xl:max-h-none">
-            <button
-              type="button"
-              onClick={() => setSelectedIndexId(null)}
-              className={`mb-2 grid h-9 w-full grid-cols-[16px_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm ${
-                selectedIndexId === null ? "bg-zinc-950 text-white" : "text-zinc-700 hover:bg-zinc-100"
-              }`}
-            >
-              <ImageIcon className="h-3.5 w-3.5" />
-              <span>{t.allImages}</span>
-              <span className="rounded border border-current/15 px-1.5 py-0.5 text-[11px] opacity-75">
+              <span className="rounded border border-zinc-200 px-1.5 py-0.5 text-[11px] text-zinc-500">
                 {data?.stats.imageCount ?? 0}
               </span>
-            </button>
-            <IndexBranch
-              nodes={data?.tree ?? []}
-              selectedId={selectedIndexId}
-              onSelect={setSelectedIndexId}
-            />
-          </nav>
+            </div>
+          ) : (
+            <>
+              <div className="flex h-16 items-center justify-between border-b border-zinc-200 px-4">
+                <div>
+                  <h1 className="text-lg font-semibold leading-tight">Brooks PA Atlas</h1>
+                  <p className="text-xs text-zinc-500">
+                    {data?.stats.imageCount ?? 0} {t.imageUnit}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={toggleLocale}
+                    className="h-9 rounded-md border border-zinc-200 px-2.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                    title={locale === "zh" ? "Switch to English" : "切换到中文"}
+                  >
+                    {t.language}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void refresh()}
+                    className="grid h-9 w-9 place-items-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                    title={t.refresh}
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={toggleSidebar}
+                    className="grid h-9 w-9 place-items-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                    title={t.collapseSidebar}
+                  >
+                    <ChevronRight className="h-4 w-4 rotate-180" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="border-b border-zinc-200 p-4">
+                <div className="flex gap-2">
+                  <input
+                    value={newIndexName}
+                    onChange={(event) => setNewIndexName(event.target.value)}
+                    className="h-9 min-w-0 flex-1 rounded-md border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-500"
+                    placeholder={t.newIndex}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void createNode()}
+                    className="grid h-9 w-9 place-items-center rounded-md bg-zinc-950 text-white hover:bg-zinc-800"
+                    title={t.addIndex}
+                  >
+                    <FolderPlus className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+
+              <nav className="max-h-96 overflow-auto p-3 xl:h-[calc(100vh-129px)] xl:max-h-none">
+                <button
+                  type="button"
+                  onClick={() => setSelectedIndexId(null)}
+                  className={`mb-2 grid h-9 w-full grid-cols-[16px_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm ${
+                    selectedIndexId === null ? "bg-zinc-950 text-white" : "text-zinc-700 hover:bg-zinc-100"
+                  }`}
+                >
+                  <ImageIcon className="h-3.5 w-3.5" />
+                  <span>{t.allImages}</span>
+                  <span className="rounded border border-current/15 px-1.5 py-0.5 text-[11px] opacity-75">
+                    {data?.stats.imageCount ?? 0}
+                  </span>
+                </button>
+                <IndexBranch
+                  nodes={data?.tree ?? []}
+                  selectedId={selectedIndexId}
+                  onSelect={setSelectedIndexId}
+                />
+              </nav>
+            </>
+          )}
         </aside>
 
         <section className="min-w-0">
@@ -649,51 +732,79 @@ export default function AtlasWorkbench() {
           ) : null}
 
           <div className="overflow-auto p-5 xl:h-[calc(100vh-65px)]">
-            <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-              <div className="rounded-md border border-zinc-200 bg-white p-3">
-                <p className="text-xs text-zinc-500">{t.unclassified}</p>
-                <p className="mt-1 text-xl font-semibold">{data?.stats.unclassifiedCount ?? 0}</p>
+            <div className="mb-4 rounded-md border border-zinc-200 bg-white">
+              <div className="flex min-h-12 items-center justify-between gap-3 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">{t.overview}</p>
+                  <p className="truncate text-xs text-zinc-500">
+                    {t.unclassified} {data?.stats.unclassifiedCount ?? 0} / {t.ocrPending}{" "}
+                    {data?.stats.ocr.PENDING ?? 0} / {t.ocrDone}{" "}
+                    {data?.stats.ocr.COMPLETED ?? 0} / {t.ocrFailed}{" "}
+                    {data?.stats.ocr.FAILED ?? 0}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleOverview}
+                  className="inline-flex h-8 shrink-0 items-center gap-2 rounded-md border border-zinc-200 px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                >
+                  <ChevronRight
+                    className={`h-3.5 w-3.5 transition ${isOverviewCollapsed ? "rotate-90" : "-rotate-90"}`}
+                  />
+                  <span>{isOverviewCollapsed ? t.showOverview : t.hideOverview}</span>
+                </button>
               </div>
-              <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
-                <p className="text-xs text-amber-700">{t.ocrPending}</p>
-                <p className="mt-1 text-xl font-semibold">{data?.stats.ocr.PENDING ?? 0}</p>
-              </div>
-              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
-                <p className="text-xs text-emerald-700">{t.ocrDone}</p>
-                <p className="mt-1 text-xl font-semibold">{data?.stats.ocr.COMPLETED ?? 0}</p>
-              </div>
-              <div className="rounded-md border border-rose-200 bg-rose-50 p-3">
-                <p className="text-xs text-rose-700">{t.ocrFailed}</p>
-                <p className="mt-1 text-xl font-semibold">{data?.stats.ocr.FAILED ?? 0}</p>
-              </div>
-            </div>
 
-            {data?.batches.length ? (
-              <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
-                {data.batches.slice(0, 2).map((batch) => (
-                  <div key={batch.id} className="rounded-md border border-zinc-200 bg-white p-3 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="font-semibold">
-                          {batchStatusLabels[locale][batch.status] ?? batch.status}
-                        </p>
-                        <p className="mt-1 text-zinc-500">
-                          {batch.successCount}/{batch.totalCount} / {t.duplicates} {batch.duplicateCount}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void undoBatch(batch.id)}
-                        className="inline-flex h-8 items-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 font-medium text-rose-700 hover:bg-rose-100"
-                      >
-                        <Undo2 className="h-3.5 w-3.5" />
-                        <span>{t.undoBatch}</span>
-                      </button>
+              {!isOverviewCollapsed ? (
+                <div className="border-t border-zinc-200 p-3">
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                    <div className="rounded-md border border-zinc-200 bg-white p-3">
+                      <p className="text-xs text-zinc-500">{t.unclassified}</p>
+                      <p className="mt-1 text-xl font-semibold">{data?.stats.unclassifiedCount ?? 0}</p>
+                    </div>
+                    <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+                      <p className="text-xs text-amber-700">{t.ocrPending}</p>
+                      <p className="mt-1 text-xl font-semibold">{data?.stats.ocr.PENDING ?? 0}</p>
+                    </div>
+                    <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                      <p className="text-xs text-emerald-700">{t.ocrDone}</p>
+                      <p className="mt-1 text-xl font-semibold">{data?.stats.ocr.COMPLETED ?? 0}</p>
+                    </div>
+                    <div className="rounded-md border border-rose-200 bg-rose-50 p-3">
+                      <p className="text-xs text-rose-700">{t.ocrFailed}</p>
+                      <p className="mt-1 text-xl font-semibold">{data?.stats.ocr.FAILED ?? 0}</p>
                     </div>
                   </div>
-                ))}
-              </div>
-            ) : null}
+
+                  {data?.batches.length ? (
+                    <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                      {data.batches.slice(0, 2).map((batch) => (
+                        <div key={batch.id} className="rounded-md border border-zinc-200 bg-white p-3 text-xs">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="font-semibold">
+                                {batchStatusLabels[locale][batch.status] ?? batch.status}
+                              </p>
+                              <p className="mt-1 text-zinc-500">
+                                {batch.successCount}/{batch.totalCount} / {t.duplicates} {batch.duplicateCount}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void undoBatch(batch.id)}
+                              className="inline-flex h-8 items-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 font-medium text-rose-700 hover:bg-rose-100"
+                            >
+                              <Undo2 className="h-3.5 w-3.5" />
+                              <span>{t.undoBatch}</span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
 
             <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-4">
               {data?.images.map((image) => (

@@ -1,0 +1,142 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum ImportBatchStatus {
+  DRAFT
+  IMPORTING
+  PROCESSING_OCR
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+}
+
+enum ImportItemStatus {
+  PENDING
+  IMPORTED
+  DUPLICATE
+  FAILED
+}
+
+enum OcrStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+model IndexNode {
+  id        String      @id @default(cuid())
+  name      String
+  parentId  String?
+  parent    IndexNode?  @relation("IndexTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  IndexNode[] @relation("IndexTree")
+  depth     Int         @default(0)
+  path      String
+  sortOrder Int         @default(0)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  images      ChartImage[]
+  importItems ImportItem[]
+
+  @@index([parentId])
+  @@index([path])
+  @@unique([parentId, name])
+}
+
+model ChartImage {
+  id            String    @id @default(cuid())
+  libraryPath   String    @unique
+  originalName  String
+  mimeType      String
+  sizeBytes     Int
+  width         Int?
+  height        Int?
+  hash          String    @unique
+  title         String?
+  notes         String?
+  ocrText       String?
+  ocrStatus     OcrStatus @default(PENDING)
+  ocrError      String?
+  ocrUpdatedAt  DateTime?
+  indexNodeId   String?
+  importBatchId String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  indexNode   IndexNode?   @relation(fields: [indexNodeId], references: [id], onDelete: SetNull)
+  importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  importItem  ImportItem?
+
+  @@index([indexNodeId])
+  @@index([importBatchId])
+  @@index([ocrStatus])
+  @@index([originalName])
+}
+
+model ImportBatch {
+  id           String            @id @default(cuid())
+  status       ImportBatchStatus @default(DRAFT)
+  totalCount   Int               @default(0)
+  successCount Int               @default(0)
+  failedCount  Int               @default(0)
+  duplicateCount Int             @default(0)
+  ocrPendingCount Int            @default(0)
+  ocrCompletedCount Int          @default(0)
+  ocrFailedCount Int             @default(0)
+  error        String?
+  startedAt    DateTime          @default(now())
+  finishedAt   DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  images ChartImage[]
+  items  ImportItem[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ImportItem {
+  id            String           @id @default(cuid())
+  batchId       String
+  chartImageId  String?          @unique
+  indexNodeId   String?
+  originalName  String
+  relativePath  String?
+  savedPath     String?
+  groupKey      String
+  status        ImportItemStatus @default(PENDING)
+  error         String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  batch      ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  chartImage ChartImage? @relation(fields: [chartImageId], references: [id], onDelete: SetNull)
+  indexNode  IndexNode?  @relation(fields: [indexNodeId], references: [id], onDelete: SetNull)
+
+  @@index([batchId])
+  @@index([indexNodeId])
+  @@index([status])
+  @@index([groupKey])
+}
+
+model AppSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

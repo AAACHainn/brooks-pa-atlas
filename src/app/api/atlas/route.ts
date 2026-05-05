@@ -1,0 +1,106 @@
+import { NextResponse } from "next/server";
+
+import { prisma } from "@/lib/db";
+import { getIndexTree } from "@/lib/index-tree";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function snippet(value: string | null | undefined, length = 180) {
+  if (!value) {
+    return null;
+  }
+
+  return value.length > length ? `${value.slice(0, length)}...` : value;
+}
+
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const query = url.searchParams.get("q")?.trim();
+  const indexId = url.searchParams.get("indexId")?.trim();
+
+  const selectedNode = indexId
+    ? await prisma.indexNode.findUnique({ where: { id: indexId } })
+    : null;
+
+  const images = await prisma.chartImage.findMany({
+    where: {
+      AND: [
+        selectedNode
+          ? {
+              OR: [
+                { indexNodeId: selectedNode.id },
+                { indexNode: { path: { startsWith: `${selectedNode.path} /` } } },
+              ],
+            }
+          : {},
+        query
+          ? {
+              OR: [
+                { originalName: { contains: query } },
+                { title: { contains: query } },
+                { notes: { contains: query } },
+                { ocrText: { contains: query } },
+                { indexNode: { path: { contains: query } } },
+              ],
+            }
+          : {},
+      ],
+    },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    include: { indexNode: true },
+  });
+
+  const [tree, batches, stats] = await Promise.all([
+    getIndexTree(),
+    prisma.importBatch.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 8,
+      include: {
+        items: {
+          where: { status: "FAILED" },
+          take: 3,
+          orderBy: { createdAt: "desc" },
+        },
+      },
+    }),
+    prisma.chartImage.groupBy({
+      by: ["ocrStatus"],
+      _count: { _all: true },
+    }),
+  ]);
+
+  return NextResponse.json({
+    tree,
+    batches,
+    images: images.map((image) => ({
+      id: image.id,
+      originalName: image.originalName,
+      title: image.title,
+      notes: image.notes,
+      libraryPath: image.libraryPath,
+      mimeType: image.mimeType,
+      sizeBytes: image.sizeBytes,
+      width: image.width,
+      height: image.height,
+      hash: image.hash,
+      ocrStatus: image.ocrStatus,
+      ocrText: snippet(image.ocrText),
+      ocrError: snippet(image.ocrError, 120),
+      createdAt: image.createdAt,
+      indexNode: image.indexNode
+        ? {
+            id: image.indexNode.id,
+            name: image.indexNode.name,
+            path: image.indexNode.path,
+          }
+        : null,
+    })),
+    stats: {
+      imageCount: await prisma.chartImage.count(),
+      unclassifiedCount: await prisma.chartImage.count({ where: { indexNodeId: null } }),
+      ocr: Object.fromEntries(stats.map((item) => [item.ocrStatus, item._count._all])),
+    },
+  });
+}

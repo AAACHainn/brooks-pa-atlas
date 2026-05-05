@@ -1,0 +1,51 @@
+import { unlink } from "node:fs/promises";
+
+import { NextResponse } from "next/server";
+
+import { prisma } from "@/lib/db";
+import { absoluteImagePath } from "@/lib/storage";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function POST(
+  _request: Request,
+  context: RouteContext<"/api/import/[id]/undo">,
+) {
+  const { id } = await context.params;
+  const batch = await prisma.importBatch.findUnique({
+    where: { id },
+    include: {
+      images: {
+        select: {
+          id: true,
+          libraryPath: true,
+        },
+      },
+    },
+  });
+
+  if (!batch) {
+    return NextResponse.json({ error: "Import batch not found." }, { status: 404 });
+  }
+
+  for (const image of batch.images) {
+    try {
+      await unlink(absoluteImagePath(image.libraryPath));
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? error.code : null;
+      if (code !== "ENOENT") {
+        return NextResponse.json(
+          { error: `Failed to remove ${image.libraryPath}.` },
+          { status: 500 },
+        );
+      }
+    }
+  }
+
+  await prisma.importItem.deleteMany({ where: { batchId: batch.id } });
+  await prisma.chartImage.deleteMany({ where: { importBatchId: batch.id } });
+  await prisma.importBatch.delete({ where: { id: batch.id } });
+
+  return NextResponse.json({ ok: true, removedCount: batch.images.length });
+}

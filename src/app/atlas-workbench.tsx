@@ -5,17 +5,23 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
+  Eye,
   FolderPlus,
   ImageIcon,
   Loader2,
+  PencilLine,
   RefreshCw,
+  RotateCcw,
   Search,
   Undo2,
   UploadCloud,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type IndexTreeNode = {
   id: string;
@@ -75,6 +81,7 @@ type SelectedFile = {
 };
 
 type Locale = "zh" | "en";
+type ViewMode = "browse" | "manage";
 
 const chunkSize = 80;
 
@@ -118,6 +125,20 @@ const copy = {
     noImageSelected: "请选择一张图片",
     duplicates: "重复",
     ocrFailedShort: "OCR 失败",
+    browse: "浏览",
+    manage: "管理",
+    browseMode: "浏览模式",
+    manageMode: "管理模式",
+    previousImage: "上一张图片",
+    nextImage: "下一张图片",
+    previousImageShortcut: "上一张图片（快捷键 ←）",
+    nextImageShortcut: "下一张图片（快捷键 →）",
+    zoomIn: "放大",
+    zoomOut: "缩小",
+    resetZoom: "重置缩放",
+    hideThumbnails: "隐藏缩略图",
+    showThumbnails: "显示缩略图",
+    resizeViewer: "拖动调整查看区高度",
     language: "EN",
   },
   en: {
@@ -159,6 +180,20 @@ const copy = {
     noImageSelected: "No image selected",
     duplicates: "duplicates",
     ocrFailedShort: "OCR failed",
+    browse: "Browse",
+    manage: "Manage",
+    browseMode: "Browse mode",
+    manageMode: "Manage mode",
+    previousImage: "Previous image",
+    nextImage: "Next image",
+    previousImageShortcut: "Previous image (shortcut ←)",
+    nextImageShortcut: "Next image (shortcut →)",
+    zoomIn: "Zoom in",
+    zoomOut: "Zoom out",
+    resetZoom: "Reset zoom",
+    hideThumbnails: "Hide thumbnails",
+    showThumbnails: "Show thumbnails",
+    resizeViewer: "Drag to resize viewer",
     language: "中",
   },
 } as const;
@@ -245,6 +280,14 @@ function ocrTone(status: ChartImage["ocrStatus"]) {
   }
 }
 
+function clampZoom(value: number) {
+  return Math.min(220, Math.max(50, value));
+}
+
+function clampViewerHeight(value: number) {
+  return Math.min(1200, Math.max(420, value));
+}
+
 function IndexBranch({
   nodes,
   selectedId,
@@ -284,6 +327,43 @@ function IndexBranch({
   );
 }
 
+function ModeSwitch({
+  mode,
+  labels,
+  onChange,
+}: {
+  mode: ViewMode;
+  labels: { browse: string; manage: string; browseMode: string; manageMode: string };
+  onChange: (mode: ViewMode) => void;
+}) {
+  return (
+    <div className="grid h-9 grid-cols-2 rounded-md border border-zinc-200 bg-zinc-50 p-0.5">
+      <button
+        type="button"
+        onClick={() => onChange("browse")}
+        className={`inline-flex items-center justify-center gap-1.5 rounded px-2 text-xs font-medium transition ${
+          mode === "browse" ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-white"
+        }`}
+        title={labels.browseMode}
+      >
+        <Eye className="h-3.5 w-3.5" />
+        <span>{labels.browse}</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("manage")}
+        className={`inline-flex items-center justify-center gap-1.5 rounded px-2 text-xs font-medium transition ${
+          mode === "manage" ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-white"
+        }`}
+        title={labels.manageMode}
+      >
+        <PencilLine className="h-3.5 w-3.5" />
+        <span>{labels.manage}</span>
+      </button>
+    </div>
+  );
+}
+
 export default function AtlasWorkbench() {
   const [locale, setLocale] = useState<Locale>(() => {
     if (typeof window === "undefined") {
@@ -306,6 +386,15 @@ export default function AtlasWorkbench() {
 
     return window.localStorage.getItem("brooks-pa-atlas.overview") === "collapsed";
   });
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    if (typeof window === "undefined") {
+      return "manage";
+    }
+
+    return window.localStorage.getItem("brooks-pa-atlas.viewMode") === "browse"
+      ? "browse"
+      : "manage";
+  });
   const [data, setData] = useState<AtlasData | null>(null);
   const [query, setQuery] = useState("");
   const [selectedIndexId, setSelectedIndexId] = useState<string | null>(null);
@@ -316,7 +405,27 @@ export default function AtlasWorkbench() {
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [newIndexName, setNewIndexName] = useState("");
   const [detailDraft, setDetailDraft] = useState({ title: "", notes: "", indexNodeId: "" });
+  const [imageZoom, setImageZoom] = useState(100);
+  const [imageViewerHeight, setImageViewerHeight] = useState(() => {
+    if (typeof window === "undefined") {
+      return 720;
+    }
+
+    const savedHeight = Number(window.localStorage.getItem("brooks-pa-atlas.viewerHeight"));
+    return Number.isFinite(savedHeight) && savedHeight > 0 ? clampViewerHeight(savedHeight) : 720;
+  });
+  const [isResizingViewer, setIsResizingViewer] = useState(false);
+  const [showBrowseThumbnails, setShowBrowseThumbnails] = useState(() => {
+    if (typeof window === "undefined") {
+      return true;
+    }
+
+    return window.localStorage.getItem("brooks-pa-atlas.browseThumbnails") !== "hidden";
+  });
+  const viewerResizeStartRef = useRef({ height: imageViewerHeight, y: 0 });
+  const viewerHeightRef = useRef(imageViewerHeight);
   const t = copy[locale];
+  const isBrowseMode = viewMode === "browse";
 
   const refresh = useCallback(async () => {
     const params = new URLSearchParams();
@@ -354,16 +463,111 @@ export default function AtlasWorkbench() {
     return () => window.clearInterval(interval);
   }, [data?.batches, refresh]);
 
+  useEffect(() => {
+    if (!isResizingViewer) {
+      return;
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const nextHeight = clampViewerHeight(
+        viewerResizeStartRef.current.height + event.clientY - viewerResizeStartRef.current.y,
+      );
+      viewerHeightRef.current = nextHeight;
+      setImageViewerHeight(nextHeight);
+    }
+
+    function handlePointerUp() {
+      setIsResizingViewer(false);
+      window.localStorage.setItem(
+        "brooks-pa-atlas.viewerHeight",
+        String(viewerHeightRef.current),
+      );
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isResizingViewer]);
+
   const flatIndexes = useMemo(() => flattenTree(data?.tree ?? []), [data?.tree]);
   const selectedImage = data?.images.find((image) => image.id === selectedImageId) ?? null;
-  const layoutClass = isSidebarCollapsed
-    ? "grid min-h-screen grid-cols-1 xl:grid-cols-[64px_minmax(520px,1fr)_360px]"
-    : "grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(520px,1fr)_360px]";
+  const selectedImageIndex =
+    data?.images.findIndex((image) => image.id === selectedImageId) ?? -1;
+  const canNavigateSelectedImage = (data?.images.length ?? 0) > 1;
+  const shouldShowImageGrid = !isBrowseMode || showBrowseThumbnails || !selectedImage;
+  const selectedImageTip = selectedImage
+    ? [
+        `${t.title}: ${selectedImage.title ?? selectedImage.originalName}`,
+        `${t.index}: ${selectedImage.indexNode?.path ?? t.unclassified}`,
+        `OCR: ${ocrStatusLabels[locale][selectedImage.ocrStatus]}`,
+        `${t.size}: ${formatBytes(selectedImage.sizeBytes)}`,
+        `${t.pixels}: ${
+          selectedImage.width && selectedImage.height
+            ? `${selectedImage.width}x${selectedImage.height}`
+            : t.unknown
+        }`,
+        `${t.hash}: ${selectedImage.hash}`,
+        selectedImage.notes ? `${t.notes}: ${selectedImage.notes}` : null,
+        selectedImage.ocrError ? `${t.ocrFailedShort}: ${selectedImage.ocrError}` : null,
+        selectedImage.ocrText ? `OCR: ${selectedImage.ocrText}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
+  const layoutClass = isBrowseMode
+    ? isSidebarCollapsed
+      ? "grid min-h-screen grid-cols-1 xl:grid-cols-[64px_minmax(0,1fr)]"
+      : "grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)]"
+    : isSidebarCollapsed
+      ? "grid min-h-screen grid-cols-1 xl:grid-cols-[64px_minmax(520px,1fr)_360px]"
+      : "grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(520px,1fr)_360px]";
   const groups = useMemo(() => {
     const counts = new Map<string, number>();
     files.forEach((item) => counts.set(item.groupKey, (counts.get(item.groupKey) ?? 0) + 1));
     return Array.from(counts.entries()).map(([groupKey, count]) => ({ groupKey, count }));
   }, [files]);
+
+  useEffect(() => {
+    const images = data?.images ?? [];
+    if (!isBrowseMode || images.length < 2) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+
+      const target = event.target;
+      const isEditing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+      if (isEditing || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) {
+        return;
+      }
+
+      event.preventDefault();
+      const direction = event.key === "ArrowLeft" ? -1 : 1;
+      const currentIndex = selectedImageIndex >= 0 ? selectedImageIndex : 0;
+      const nextImage = images[(currentIndex + direction + images.length) % images.length];
+      setSelectedImageId(nextImage.id);
+      setImageZoom(100);
+      setDetailDraft({
+        title: nextImage.title ?? "",
+        notes: nextImage.notes ?? "",
+        indexNodeId: nextImage.indexNode?.id ?? "",
+      });
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [data?.images, isBrowseMode, selectedImageIndex]);
 
   function handleFiles(fileList: FileList | null) {
     const nextFiles = Array.from(fileList ?? [])
@@ -491,6 +695,7 @@ export default function AtlasWorkbench() {
 
   function selectImage(image: ChartImage) {
     setSelectedImageId(image.id);
+    setImageZoom(100);
     setDetailDraft({
       title: image.title ?? "",
       notes: image.notes ?? "",
@@ -498,10 +703,46 @@ export default function AtlasWorkbench() {
     });
   }
 
+  function selectAdjacentImage(direction: -1 | 1) {
+    const images = data?.images ?? [];
+    if (images.length < 2) {
+      return;
+    }
+
+    const currentIndex = selectedImageIndex >= 0 ? selectedImageIndex : 0;
+    const nextIndex = (currentIndex + direction + images.length) % images.length;
+    selectImage(images[nextIndex]);
+  }
+
+  function adjustImageZoom(delta: number) {
+    setImageZoom((current) => clampZoom(current + delta));
+  }
+
+  function startViewerResize(event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    viewerResizeStartRef.current = { height: imageViewerHeight, y: event.clientY };
+    viewerHeightRef.current = imageViewerHeight;
+    setIsResizingViewer(true);
+  }
+
+  function toggleBrowseThumbnails() {
+    const nextValue = !showBrowseThumbnails;
+    setShowBrowseThumbnails(nextValue);
+    window.localStorage.setItem(
+      "brooks-pa-atlas.browseThumbnails",
+      nextValue ? "visible" : "hidden",
+    );
+  }
+
   function toggleLocale() {
     const nextLocale = locale === "zh" ? "en" : "zh";
     setLocale(nextLocale);
     window.localStorage.setItem("brooks-pa-atlas.locale", nextLocale);
+  }
+
+  function setPersistedViewMode(nextMode: ViewMode) {
+    setViewMode(nextMode);
+    window.localStorage.setItem("brooks-pa-atlas.viewMode", nextMode);
   }
 
   function toggleSidebar() {
@@ -557,6 +798,14 @@ export default function AtlasWorkbench() {
               <span className="rounded border border-zinc-200 px-1.5 py-0.5 text-[11px] text-zinc-500">
                 {data?.stats.imageCount ?? 0}
               </span>
+              <button
+                type="button"
+                onClick={() => setPersistedViewMode(isBrowseMode ? "manage" : "browse")}
+                className="grid h-10 w-10 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50"
+                title={isBrowseMode ? t.manageMode : t.browseMode}
+              >
+                {isBrowseMode ? <PencilLine className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
             </div>
           ) : (
             <>
@@ -595,26 +844,40 @@ export default function AtlasWorkbench() {
                 </div>
               </div>
 
-              <div className="border-b border-zinc-200 p-4">
-                <div className="flex gap-2">
-                  <input
-                    value={newIndexName}
-                    onChange={(event) => setNewIndexName(event.target.value)}
-                    className="h-9 min-w-0 flex-1 rounded-md border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-500"
-                    placeholder={t.newIndex}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void createNode()}
-                    className="grid h-9 w-9 place-items-center rounded-md bg-zinc-950 text-white hover:bg-zinc-800"
-                    title={t.addIndex}
-                  >
-                    <FolderPlus className="h-4 w-4" />
-                  </button>
-                </div>
+              <div className="border-b border-zinc-200 p-3">
+                <ModeSwitch
+                  mode={viewMode}
+                  labels={t}
+                  onChange={setPersistedViewMode}
+                />
               </div>
 
-              <nav className="max-h-96 overflow-auto p-3 xl:h-[calc(100vh-129px)] xl:max-h-none">
+              {!isBrowseMode ? (
+                <div className="border-b border-zinc-200 p-4">
+                  <div className="flex gap-2">
+                    <input
+                      value={newIndexName}
+                      onChange={(event) => setNewIndexName(event.target.value)}
+                      className="h-9 min-w-0 flex-1 rounded-md border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-500"
+                      placeholder={t.newIndex}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void createNode()}
+                      className="grid h-9 w-9 place-items-center rounded-md bg-zinc-950 text-white hover:bg-zinc-800"
+                      title={t.addIndex}
+                    >
+                      <FolderPlus className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <nav
+                className={`max-h-96 overflow-auto p-3 xl:max-h-none ${
+                  isBrowseMode ? "xl:h-[calc(100vh-119px)]" : "xl:h-[calc(100vh-183px)]"
+                }`}
+              >
                 <button
                   type="button"
                   onClick={() => setSelectedIndexId(null)}
@@ -649,32 +912,36 @@ export default function AtlasWorkbench() {
                 placeholder={t.searchPlaceholder}
               />
             </div>
-            <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800">
-              <ImageIcon className="h-4 w-4" />
-              <span>{t.chooseImages}</span>
-              <input
-                type="file"
-                multiple
-                accept="image/*"
-                className="hidden"
-                onChange={(event) => handleFiles(event.target.files)}
-              />
-            </label>
-            <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50">
-              <FolderPlus className="h-4 w-4" />
-              <span>{t.chooseFolder}</span>
-              <input
-                type="file"
-                multiple
-                accept="image/*"
-                className="hidden"
-                onChange={(event) => handleFiles(event.target.files)}
-                {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-              />
-            </label>
+            {!isBrowseMode ? (
+              <>
+                <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800">
+                  <ImageIcon className="h-4 w-4" />
+                  <span>{t.chooseImages}</span>
+                  <input
+                    type="file"
+                    multiple
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(event) => handleFiles(event.target.files)}
+                  />
+                </label>
+                <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50">
+                  <FolderPlus className="h-4 w-4" />
+                  <span>{t.chooseFolder}</span>
+                  <input
+                    type="file"
+                    multiple
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(event) => handleFiles(event.target.files)}
+                    {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                  />
+                </label>
+              </>
+            ) : null}
           </div>
 
-          {files.length > 0 ? (
+          {!isBrowseMode && files.length > 0 ? (
             <div className="border-b border-zinc-200 bg-white px-5 py-4">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
@@ -732,7 +999,8 @@ export default function AtlasWorkbench() {
           ) : null}
 
           <div className="overflow-auto p-5 xl:h-[calc(100vh-65px)]">
-            <div className="mb-4 rounded-md border border-zinc-200 bg-white">
+            {!isBrowseMode ? (
+              <div className="mb-4 rounded-md border border-zinc-200 bg-white">
               <div className="flex min-h-12 items-center justify-between gap-3 px-3 py-2">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold">{t.overview}</p>
@@ -804,42 +1072,152 @@ export default function AtlasWorkbench() {
                   ) : null}
                 </div>
               ) : null}
-            </div>
+              </div>
+            ) : null}
 
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-4">
-              {data?.images.map((image) => (
-                <button
-                  type="button"
-                  key={image.id}
-                  onClick={() => selectImage(image)}
-                  className={`overflow-hidden rounded-md border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
-                    selectedImage?.id === image.id ? "border-zinc-950" : "border-zinc-200"
+            {isBrowseMode && selectedImage ? (
+              <div className="mb-4 rounded-md border border-zinc-200 bg-white p-4">
+                <div className="mb-3 flex min-h-8 min-w-0 flex-wrap items-center gap-3">
+                  <h2 className="min-w-0 flex-1 truncate text-base font-semibold" title={selectedImageTip}>
+                    {selectedImage.title ?? selectedImage.originalName}
+                  </h2>
+                  <span className="min-w-0 max-w-[45%] truncate text-sm text-zinc-500" title={selectedImageTip}>
+                    {selectedImage.indexNode?.path ?? t.unclassified}
+                  </span>
+                  <div className="ml-auto flex h-8 shrink-0 items-center gap-1 rounded-md border border-zinc-200 bg-zinc-50 px-1">
+                    <button
+                      type="button"
+                      onClick={toggleBrowseThumbnails}
+                      className="inline-flex h-6 items-center gap-1 rounded px-2 text-xs font-medium text-zinc-600 hover:bg-white"
+                      title={showBrowseThumbnails ? t.hideThumbnails : t.showThumbnails}
+                    >
+                      <ImageIcon className="h-3.5 w-3.5" />
+                      <span>{showBrowseThumbnails ? t.hideThumbnails : t.showThumbnails}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adjustImageZoom(-25)}
+                      className="grid h-6 w-6 place-items-center rounded text-zinc-600 hover:bg-white"
+                      title={t.zoomOut}
+                    >
+                      <ZoomOut className="h-3.5 w-3.5" />
+                    </button>
+                    <input
+                      type="range"
+                      min="50"
+                      max="220"
+                      step="10"
+                      value={imageZoom}
+                      onChange={(event) => setImageZoom(clampZoom(Number(event.target.value)))}
+                      className="w-24 accent-zinc-950"
+                      aria-label={t.zoomIn}
+                    />
+                    <span className="w-10 text-center text-xs font-medium text-zinc-600">
+                      {imageZoom}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => adjustImageZoom(25)}
+                      className="grid h-6 w-6 place-items-center rounded text-zinc-600 hover:bg-white"
+                      title={t.zoomIn}
+                    >
+                      <ZoomIn className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setImageZoom(100)}
+                      className="grid h-6 w-6 place-items-center rounded text-zinc-600 hover:bg-white"
+                      title={t.resetZoom}
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <div
+                  className={`group relative min-h-[420px] overflow-auto rounded-md border border-zinc-200 bg-zinc-100 ${
+                    isResizingViewer ? "select-none" : ""
                   }`}
+                  style={{ height: imageViewerHeight }}
                 >
-                  <div className="aspect-[4/3] bg-zinc-100">
+                  <div className="flex h-full min-h-full min-w-full items-center justify-center">
                     <img
-                      src={`/api/images/${image.id}/file`}
-                      alt={image.title ?? image.originalName}
-                      className="h-full w-full object-contain"
-                      loading="lazy"
+                      src={`/api/images/${selectedImage.id}/file`}
+                      alt={selectedImage.title ?? selectedImage.originalName}
+                      className={imageZoom === 100 ? "h-full w-full object-contain" : "block max-w-none"}
+                      style={imageZoom === 100 ? undefined : { width: `${imageZoom}%` }}
                     />
                   </div>
-                  <div className="space-y-2 p-3">
-                    <div>
-                      <p className="truncate text-sm font-semibold" title={image.title ?? image.originalName}>
-                        {image.title ?? image.originalName}
-                      </p>
-                      <p className="truncate text-xs text-zinc-500" title={image.indexNode?.path ?? t.unclassified}>
-                        {image.indexNode?.path ?? t.unclassified}
-                      </p>
+                  {canNavigateSelectedImage ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => selectAdjacentImage(-1)}
+                        className="absolute left-3 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full border border-white/70 bg-zinc-950/55 text-white opacity-0 shadow-lg backdrop-blur transition hover:bg-zinc-950/75 focus-visible:opacity-100 group-hover:opacity-100"
+                        aria-label={t.previousImage}
+                        title={t.previousImageShortcut}
+                      >
+                        <ChevronLeft className="h-6 w-6" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => selectAdjacentImage(1)}
+                        className="absolute right-3 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full border border-white/70 bg-zinc-950/55 text-white opacity-0 shadow-lg backdrop-blur transition hover:bg-zinc-950/75 focus-visible:opacity-100 group-hover:opacity-100"
+                        aria-label={t.nextImage}
+                        title={t.nextImageShortcut}
+                      >
+                        <ChevronRight className="h-6 w-6" />
+                      </button>
+                    </>
+                  ) : null}
+                  <button
+                    type="button"
+                    onPointerDown={startViewerResize}
+                    className="absolute bottom-0 left-1/2 z-10 flex h-5 w-28 -translate-x-1/2 cursor-row-resize items-center justify-center rounded-t-md border border-zinc-300 bg-white/85 opacity-0 shadow-sm backdrop-blur transition hover:bg-white focus-visible:opacity-100 group-hover:opacity-100"
+                    title={t.resizeViewer}
+                    aria-label={t.resizeViewer}
+                  >
+                    <span className="h-1 w-12 rounded-full bg-zinc-400" />
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {shouldShowImageGrid ? (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-4">
+                {data?.images.map((image) => (
+                  <button
+                    type="button"
+                    key={image.id}
+                    onClick={() => selectImage(image)}
+                    className={`overflow-hidden rounded-md border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+                      selectedImage?.id === image.id ? "border-zinc-950" : "border-zinc-200"
+                    }`}
+                  >
+                    <div className="aspect-[4/3] bg-zinc-100">
+                      <img
+                        src={`/api/images/${image.id}/file`}
+                        alt={image.title ?? image.originalName}
+                        className="h-full w-full object-contain"
+                        loading="lazy"
+                      />
                     </div>
-                    <span className={`inline-flex h-6 items-center rounded border px-2 text-xs ${ocrTone(image.ocrStatus)}`}>
-                      {ocrStatusLabels[locale][image.ocrStatus]}
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
+                    <div className="space-y-2 p-3">
+                      <div>
+                        <p className="truncate text-sm font-semibold" title={image.title ?? image.originalName}>
+                          {image.title ?? image.originalName}
+                        </p>
+                        <p className="truncate text-xs text-zinc-500" title={image.indexNode?.path ?? t.unclassified}>
+                          {image.indexNode?.path ?? t.unclassified}
+                        </p>
+                      </div>
+                      <span className={`inline-flex h-6 items-center rounded border px-2 text-xs ${ocrTone(image.ocrStatus)}`}>
+                        {ocrStatusLabels[locale][image.ocrStatus]}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : null}
 
             {data?.images.length === 0 ? (
               <div className="grid h-72 place-items-center rounded-md border border-dashed border-zinc-300 bg-white text-sm text-zinc-500">
@@ -849,7 +1227,8 @@ export default function AtlasWorkbench() {
           </div>
         </section>
 
-        <aside className="border-l border-zinc-200 bg-white">
+        {!isBrowseMode ? (
+          <aside className="border-l border-zinc-200 bg-white">
           <div className="h-16 border-b border-zinc-200 px-4 py-3">
             <p className="text-sm font-semibold">{t.imageDetail}</p>
             <p className="truncate text-xs text-zinc-500">{selectedImage?.originalName ?? t.noSelection}</p>
@@ -994,7 +1373,8 @@ export default function AtlasWorkbench() {
               {t.noImageSelected}
             </div>
           )}
-        </aside>
+          </aside>
+        ) : null}
       </div>
     </main>
   );

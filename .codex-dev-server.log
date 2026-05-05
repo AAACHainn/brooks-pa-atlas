@@ -1,0 +1,18 @@
+
+> brooks-pa-atlas@0.1.0 dev
+> next dev --hostname 127.0.0.1
+
+▲ Next.js 16.2.4 (Turbopack)
+- Local:         http://127.0.0.1:3000
+- Network:       http://127.0.0.1:3000
+- Environments: .env
+✓ Ready in 806ms
+⨯ Another next dev server is already running.
+
+- Local:        http://localhost:3000
+- PID:          27212
+- Dir:          D:\code\codex\brooks-pa-atlas
+- Log:          .next\dev\logs\next-development.log
+
+Run taskkill /PID 27212 /F to stop it.
+[?25h

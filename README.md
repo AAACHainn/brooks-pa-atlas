@@ -1,36 +1,233 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Brooks PA Atlas
 
-## Getting Started
+Brooks PA Atlas 是一个本地 Web App，用来管理 Brooks 价格行为图表图片库。它支持批量导入本地图片、按无限层级索引整理图片、查看和编辑图片信息，并在后台异步执行 OCR。
 
-First, run the development server:
+## 环境要求
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Node.js：建议使用当前项目依赖兼容的 LTS 版本。
+- npm：随 Node.js 安装。
+- SQLite：项目通过 Prisma + better-sqlite3 使用本地 SQLite 数据库。
+- 可选 OCR：如果需要自动识别图片文字，请在本机安装 `tesseract`。
+
+## 安装依赖
+
+```powershell
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 初始化数据库
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+第一次运行，或本地没有 `dev.db` 时，执行：
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```powershell
+npm run db:init
+```
 
-## Learn More
+如果修改过 Prisma schema，需要重新生成 Prisma Client：
 
-To learn more about Next.js, take a look at the following resources:
+```powershell
+npm run prisma:generate
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 启动开发服务
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```powershell
+npm run dev
+```
 
-## Deploy on Vercel
+启动成功后，在浏览器打开：
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```text
+http://localhost:3000
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+如果 `3000` 端口已被占用，Next.js 可能会提示使用其他端口，请按终端输出的地址访问。
+
+## 构建和检查
+
+```powershell
+npm run lint
+npm run build
+```
+
+说明：
+
+- `npm run lint` 运行 ESLint。
+- `npm run build` 运行生产构建和类型检查。
+
+## 基本使用
+
+### 1. 选择模式
+
+页面左侧可以在“浏览”和“管理”之间切换。
+
+- 浏览模式：只查看图片和索引，适合学习和检索。
+- 管理模式：可以导入图片、创建索引、编辑图片信息、删除图片和管理索引。
+
+### 2. 创建索引
+
+在管理模式下，左侧输入索引名称后点击创建按钮。
+
+- 未选中索引时，会创建根索引。
+- 选中某个索引时，会在该索引下创建子索引。
+- 索引支持多层级。
+
+### 3. 导入图片
+
+在管理模式下，可以使用顶部按钮导入：
+
+- `选择图片`：一次选择多张图片。
+- `选择文件夹`：选择整个文件夹，系统会识别其中的图片文件。
+
+导入前可以在表格里为每张图片指定所属索引。表格支持分页，但点击导入时会提交全部已选择图片，不只提交当前页。
+
+支持的常见图片格式包括：
+
+- `.jpg`
+- `.jpeg`
+- `.png`
+- `.webp`
+- `.gif`
+- `.bmp`
+- `.tif`
+- `.tiff`
+
+### 4. 浏览图片
+
+导入完成后，图片会出现在中间的图片网格中。
+
+- 点击左侧索引可以筛选图片。
+- 顶部搜索框可以搜索标题、OCR 文本、备注和索引路径。
+- 图片网格支持分页，避免图片过多时页面卡顿。
+- 浏览模式下可以打开大图查看器，并使用左右箭头或键盘方向键切换图片。
+
+### 5. 编辑图片信息
+
+在管理模式下，点击图片后可在右侧详情面板编辑：
+
+- 标题
+- 所属索引
+- 备注
+
+编辑后点击“保存”生效。
+
+### 6. OCR 和重试
+
+图片导入后会进入后台 OCR 队列。OCR 不会阻塞图片入库和浏览。
+
+如果某张图片 OCR 失败，可以在右侧详情面板点击重试按钮。默认 OCR 命令是：
+
+```text
+tesseract
+```
+
+Windows PowerShell 可以这样指定其他 OCR 命令：
+
+```powershell
+$env:BROOKS_OCR_COMMAND="tesseract"
+```
+
+Linux/macOS shell 可以这样指定：
+
+```bash
+export BROOKS_OCR_COMMAND=tesseract
+```
+
+如果希望只对本次启动生效，也可以在 Linux/macOS 下这样运行：
+
+```bash
+BROOKS_OCR_COMMAND=tesseract npm run dev
+```
+
+默认 OCR 调用参数相当于：
+
+```text
+tesseract <imagePath> stdout -l eng
+```
+
+因此默认识别语言是英文 `eng`。如果需要识别其他语言，需要先安装对应的 Tesseract language data，并在代码或配置中调整 OCR 参数。
+
+### 7. 删除和撤销
+
+管理模式支持以下高风险操作：
+
+- 删除单张图片：需要弹窗确认。
+- 撤销某个导入批次：需要弹窗确认。
+- 删除索引：只有该索引及其子索引下没有图片时才能删除。
+- 清空某个索引下的图片：需要在确认弹窗中输入 `确认删除`。
+
+这些操作会影响本地数据库和图库文件，请谨慎执行。
+
+## 本地数据位置
+
+默认情况下：
+
+- 数据库文件：`dev.db`
+- 图片图库目录：`data/library/images`
+
+Windows PowerShell 可以通过环境变量覆盖图库根目录：
+
+```powershell
+$env:BROOKS_LIBRARY_ROOT="D:\your-library-root"
+```
+
+Linux/macOS shell 可以这样设置：
+
+```bash
+export BROOKS_LIBRARY_ROOT=/home/you/brooks-library
+```
+
+数据库只保存图片路径和元数据，不保存图片 blob。
+
+## 常见问题
+
+### 文件夹导入后没有图片
+
+请确认文件夹中包含支持的图片格式。部分系统会让浏览器提供空 MIME 类型，本项目会同时按扩展名识别图片。
+
+### OCR 一直失败
+
+请先确认本机可以直接运行 Tesseract。
+
+Windows PowerShell：
+
+```powershell
+tesseract --version
+```
+
+Linux/macOS shell：
+
+```bash
+tesseract --version
+```
+
+如果命令不存在，需要先安装 Tesseract OCR，或者设置 `BROOKS_OCR_COMMAND` 指向可用命令。
+
+常见 Linux 安装方式：
+
+```bash
+sudo apt update
+sudo apt install tesseract-ocr
+```
+
+如果需要英文以外的语言包，也要安装对应语言数据。例如 Ubuntu/Debian 的简体中文语言包通常是：
+
+```bash
+sudo apt install tesseract-ocr-chi-sim
+```
+
+### 页面没有更新
+
+可以点击左侧刷新按钮，或重新打开 `http://localhost:3000`。
+
+### 本地数据可以直接删除吗
+
+不建议直接删除运行数据。特别是 `data/library/` 和 `dev.db` 之间有关联，手动删除可能导致数据库记录和图片文件不一致。
+
+## 更多维护说明
+
+面向开发者和后续维护线程的详细说明见：
+
+```text
+AGENTS.md
+```

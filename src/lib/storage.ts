@@ -89,7 +89,7 @@ export async function saveImageBuffer(file: File, buffer: Buffer, hash: string) 
   await mkdir(folder, { recursive: true });
 
   const safeName = sanitizeFileName(path.basename(file.name, path.extname(file.name))) || "chart";
-  const fileName = `${hash.slice(0, 16)}-${safeName}${ext}`;
+  const fileName = `${safeName}-${hash.slice(0, 16)}${ext}`;
   const fullPath = path.join(folder, fileName);
   await writeFile(fullPath, buffer);
 

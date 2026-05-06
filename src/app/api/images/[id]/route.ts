@@ -1,6 +1,9 @@
+import { unlink } from "node:fs/promises";
+
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
+import { absoluteImagePath } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,4 +30,35 @@ export async function PATCH(
   });
 
   return NextResponse.json({ image });
+}
+
+export async function DELETE(
+  _request: Request,
+  context: RouteContext<"/api/images/[id]">,
+) {
+  const { id } = await context.params;
+  const image = await prisma.chartImage.findUnique({
+    where: { id },
+    select: { id: true, libraryPath: true },
+  });
+
+  if (!image) {
+    return NextResponse.json({ error: "Image not found." }, { status: 404 });
+  }
+
+  try {
+    await unlink(absoluteImagePath(image.libraryPath));
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? error.code : null;
+    if (code !== "ENOENT") {
+      return NextResponse.json(
+        { error: `Failed to remove ${image.libraryPath}.` },
+        { status: 500 },
+      );
+    }
+  }
+
+  await prisma.chartImage.delete({ where: { id: image.id } });
+
+  return NextResponse.json({ ok: true });
 }

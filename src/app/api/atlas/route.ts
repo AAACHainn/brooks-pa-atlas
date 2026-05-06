@@ -6,6 +6,11 @@ import { getIndexTree } from "@/lib/index-tree";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const imageNameCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
+
 function snippet(value: string | null | undefined, length = 180) {
   if (!value) {
     return null;
@@ -47,9 +52,17 @@ export async function GET(request: Request) {
           : {},
       ],
     },
-    orderBy: { createdAt: "desc" },
+    orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],
     take: 200,
     include: { indexNode: true },
+  });
+  const sortedImages = [...images].sort((left, right) => {
+    const nameComparison = imageNameCollator.compare(left.originalName, right.originalName);
+    if (nameComparison !== 0) {
+      return nameComparison;
+    }
+
+    return left.createdAt.getTime() - right.createdAt.getTime();
   });
 
   const [tree, batches, stats] = await Promise.all([
@@ -74,7 +87,7 @@ export async function GET(request: Request) {
   return NextResponse.json({
     tree,
     batches,
-    images: images.map((image) => ({
+    images: sortedImages.map((image) => ({
       id: image.id,
       originalName: image.originalName,
       title: image.title,

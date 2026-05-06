@@ -15,6 +15,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Trash2,
   Undo2,
   UploadCloud,
   X,
@@ -84,8 +85,14 @@ type SelectedFile = {
 
 type Locale = "zh" | "en";
 type ViewMode = "browse" | "manage";
+type IndexContextMenu = { node: IndexTreeNode; x: number; y: number };
+type IndexAction =
+  | { mode: "rename"; node: IndexTreeNode }
+  | { mode: "delete"; node: IndexTreeNode }
+  | { mode: "clear"; node: IndexTreeNode };
 
 const chunkSize = 80;
+const destructiveConfirmPhrase = "确认删除";
 
 const copy = {
   zh: {
@@ -93,10 +100,22 @@ const copy = {
     refresh: "刷新",
     newIndex: "新建索引",
     addIndex: "添加索引",
+    renameIndex: "重命名索引",
+    deleteIndex: "删除索引",
+    clearIndexImages: "清空索引图片",
+    deleteIndexConfirmTitle: "删除索引？",
+    deleteIndexConfirmMessage: "该索引及其空子索引会被删除。只有当前索引和子索引下没有图片时才能执行。",
+    deleteIndexDisabled: "当前索引或子索引下仍有图片，不能删除。",
+    clearIndexImagesTitle: "清空当前索引下面的所有图片？",
+    clearIndexImagesMessage: "此操作会删除当前索引及其所有子索引下的图片文件和记录，无法撤销。",
+    clearIndexImagesTyping: "请输入“确认删除”以继续。",
+    clearIndexImagesDisabled: "当前索引和子索引下没有图片可清空。",
+    indexActionFailed: "索引操作失败，请稍后重试。",
     allImages: "全部图片",
     searchPlaceholder: "搜索标题、OCR、备注、索引",
     chooseImages: "选择图片",
     chooseFolder: "选择文件夹",
+    noSupportedImages: "未找到支持的图片文件。",
     clearSelection: "取消选择",
     selected: "已选择",
     groups: "个分组",
@@ -108,6 +127,7 @@ const copy = {
     previewImage: "预览图片",
     closePreview: "关闭预览",
     totalImages: "总数",
+    imageGrid: "图片列表",
     page: "页",
     itemsPerPage: "每页",
     previousPage: "上一页",
@@ -115,6 +135,15 @@ const copy = {
     resizeImportTable: "拖动调整导入表格高度",
     startImport: "开始导入",
     undoBatch: "撤销本批次",
+    undoConfirmTitle: "确认撤销本批次？",
+    undoConfirmMessage: "此操作会删除本批次导入的图片和记录，且无法撤销。请确认是否继续。",
+    cancel: "取消",
+    confirm: "确认",
+    confirmUndo: "确认撤销",
+    deleting: "删除中",
+    saving: "保存中",
+    undoing: "撤销中",
+    undoFailed: "撤销失败，请稍后重试。",
     overview: "概览",
     hideOverview: "收起概览",
     showOverview: "展开概览",
@@ -127,6 +156,10 @@ const copy = {
     noImages: "暂无图片",
     imageDetail: "图片详情",
     noSelection: "未选择图片",
+    deleteImage: "删除图片",
+    deleteImageConfirmTitle: "删除这张图片？",
+    deleteImageConfirmMessage: "此操作会删除该图片文件和记录，且无法撤销。请确认是否继续。",
+    deleteImageFailed: "删除图片失败，请稍后重试。",
     title: "标题",
     index: "索引",
     notes: "备注",
@@ -161,10 +194,24 @@ const copy = {
     refresh: "Refresh",
     newIndex: "New index",
     addIndex: "Add index",
+    renameIndex: "Rename index",
+    deleteIndex: "Delete index",
+    clearIndexImages: "Clear index images",
+    deleteIndexConfirmTitle: "Delete index?",
+    deleteIndexConfirmMessage:
+      "This index and its empty child indexes will be deleted. It is only available when the index and child indexes contain no images.",
+    deleteIndexDisabled: "This index or a child index still contains images.",
+    clearIndexImagesTitle: "Clear all images under this index?",
+    clearIndexImagesMessage:
+      "This will delete image files and records in this index and all child indexes. This cannot be undone.",
+    clearIndexImagesTyping: "Type “确认删除” to continue.",
+    clearIndexImagesDisabled: "This index and its child indexes have no images to clear.",
+    indexActionFailed: "Index action failed. Please try again.",
     allImages: "All images",
     searchPlaceholder: "Search title, OCR, notes, index",
     chooseImages: "Choose images",
     chooseFolder: "Choose folder",
+    noSupportedImages: "No supported image files found.",
     clearSelection: "Clear",
     selected: "selected",
     groups: "groups",
@@ -176,6 +223,7 @@ const copy = {
     previewImage: "Preview image",
     closePreview: "Close preview",
     totalImages: "Total",
+    imageGrid: "Images",
     page: "Page",
     itemsPerPage: "Per page",
     previousPage: "Previous page",
@@ -183,6 +231,16 @@ const copy = {
     resizeImportTable: "Drag to resize import table",
     startImport: "Start import",
     undoBatch: "Undo batch",
+    undoConfirmTitle: "Undo this batch?",
+    undoConfirmMessage:
+      "This will delete images and records imported by this batch, and cannot be undone. Please confirm before continuing.",
+    cancel: "Cancel",
+    confirm: "Confirm",
+    confirmUndo: "Undo batch",
+    deleting: "Deleting",
+    saving: "Saving",
+    undoing: "Undoing",
+    undoFailed: "Undo failed. Please try again.",
     overview: "Overview",
     hideOverview: "Hide overview",
     showOverview: "Show overview",
@@ -195,6 +253,11 @@ const copy = {
     noImages: "No images",
     imageDetail: "Image detail",
     noSelection: "No selection",
+    deleteImage: "Delete image",
+    deleteImageConfirmTitle: "Delete this image?",
+    deleteImageConfirmMessage:
+      "This will delete the image file and record, and cannot be undone. Please confirm before continuing.",
+    deleteImageFailed: "Image deletion failed. Please try again.",
     title: "Title",
     index: "Index",
     notes: "Notes",
@@ -284,6 +347,14 @@ function indexPathParts(value: string) {
     .filter(Boolean);
 }
 
+function isSupportedImageFile(file: File) {
+  if (file.type.startsWith("image/")) {
+    return true;
+  }
+
+  return /\.(jpe?g|png|webp|gif|bmp|tiff?)$/i.test(file.name);
+}
+
 function flattenTree(nodes: IndexTreeNode[]) {
   const result: IndexTreeNode[] = [];
   const visit = (node: IndexTreeNode) => {
@@ -292,6 +363,10 @@ function flattenTree(nodes: IndexTreeNode[]) {
   };
   nodes.forEach(visit);
   return result;
+}
+
+function indexBranchImageCount(node: IndexTreeNode): number {
+  return node.imageCount + node.children.reduce((total, child) => total + indexBranchImageCount(child), 0);
 }
 
 function formatBytes(value: number) {
@@ -331,10 +406,12 @@ function IndexBranch({
   nodes,
   selectedId,
   onSelect,
+  onContextMenu,
 }: {
   nodes: IndexTreeNode[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  onContextMenu?: (node: IndexTreeNode, event: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <div className="space-y-1">
@@ -343,6 +420,7 @@ function IndexBranch({
           <button
             type="button"
             onClick={() => onSelect(node.id)}
+            onContextMenu={(event) => onContextMenu?.(node, event)}
             className={`grid h-9 w-full grid-cols-[16px_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm transition ${
               selectedId === node.id
                 ? "bg-zinc-950 text-white"
@@ -358,7 +436,12 @@ function IndexBranch({
             </span>
           </button>
           {node.children.length > 0 ? (
-            <IndexBranch nodes={node.children} selectedId={selectedId} onSelect={onSelect} />
+            <IndexBranch
+              nodes={node.children}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              onContextMenu={onContextMenu}
+            />
           ) : null}
         </div>
       ))}
@@ -446,6 +529,15 @@ export default function AtlasWorkbench() {
   const [detailDraft, setDetailDraft] = useState({ title: "", notes: "", indexNodeId: "" });
   const [importPage, setImportPage] = useState(1);
   const [importPageSize, setImportPageSize] = useState(10);
+  const [imageGridPage, setImageGridPage] = useState(1);
+  const [imageGridPageSize, setImageGridPageSize] = useState(() => {
+    if (typeof window === "undefined") {
+      return 50;
+    }
+
+    const savedSize = Number(window.localStorage.getItem("brooks-pa-atlas.imageGridPageSize"));
+    return [25, 50, 100, 200].includes(savedSize) ? savedSize : 50;
+  });
   const [importTableHeight, setImportTableHeight] = useState(() => {
     if (typeof window === "undefined") {
       return 280;
@@ -457,6 +549,15 @@ export default function AtlasWorkbench() {
   const [isResizingImportTable, setIsResizingImportTable] = useState(false);
   const [imageZoom, setImageZoom] = useState(100);
   const [importPreviewFile, setImportPreviewFile] = useState<SelectedFile | null>(null);
+  const [pendingUndoBatchId, setPendingUndoBatchId] = useState<string | null>(null);
+  const [undoingBatchId, setUndoingBatchId] = useState<string | null>(null);
+  const [pendingDeleteImage, setPendingDeleteImage] = useState<ChartImage | null>(null);
+  const [deletingImageId, setDeletingImageId] = useState<string | null>(null);
+  const [indexContextMenu, setIndexContextMenu] = useState<IndexContextMenu | null>(null);
+  const [indexAction, setIndexAction] = useState<IndexAction | null>(null);
+  const [indexActionBusy, setIndexActionBusy] = useState(false);
+  const [renameIndexName, setRenameIndexName] = useState("");
+  const [clearIndexConfirmText, setClearIndexConfirmText] = useState("");
   const [imageViewerHeight, setImageViewerHeight] = useState(() => {
     if (typeof window === "undefined") {
       return 720;
@@ -576,12 +677,43 @@ export default function AtlasWorkbench() {
     };
   }, [isResizingImportTable]);
 
+  useEffect(() => {
+    if (!indexContextMenu) {
+      return;
+    }
+
+    function closeMenu() {
+      setIndexContextMenu(null);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeMenu();
+      }
+    }
+
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [indexContextMenu]);
+
   const flatIndexes = useMemo(() => flattenTree(data?.tree ?? []), [data?.tree]);
   const selectedIndexPath =
     flatIndexes.find((node) => node.id === selectedIndexId)?.path ?? "";
   const selectedImage = data?.images.find((image) => image.id === selectedImageId) ?? null;
   const selectedImageIndex =
     data?.images.findIndex((image) => image.id === selectedImageId) ?? -1;
+  const pendingUndoBatch = data?.batches.find((batch) => batch.id === pendingUndoBatchId) ?? null;
+  const indexContextImageCount = indexContextMenu
+    ? indexBranchImageCount(indexContextMenu.node)
+    : 0;
+  const indexActionImageCount = indexAction ? indexBranchImageCount(indexAction.node) : 0;
   const canNavigateSelectedImage = (data?.images.length ?? 0) > 1;
   const shouldShowImageGrid = !isBrowseMode || showBrowseThumbnails || !selectedImage;
   const selectedImageTip = selectedImage
@@ -620,6 +752,15 @@ export default function AtlasWorkbench() {
   const importStartIndex = (importCurrentPage - 1) * importPageSize;
   const importPageFiles = files.slice(importStartIndex, importStartIndex + importPageSize);
   const importEndIndex = importStartIndex + importPageFiles.length;
+  const imageGridTotal = data?.images.length ?? 0;
+  const imageGridTotalPages = Math.max(1, Math.ceil(imageGridTotal / imageGridPageSize));
+  const imageGridCurrentPage = Math.min(imageGridPage, imageGridTotalPages);
+  const imageGridStartIndex = (imageGridCurrentPage - 1) * imageGridPageSize;
+  const imageGridPageImages = (data?.images ?? []).slice(
+    imageGridStartIndex,
+    imageGridStartIndex + imageGridPageSize,
+  );
+  const imageGridEndIndex = imageGridStartIndex + imageGridPageImages.length;
 
   useEffect(() => {
     const images = data?.images ?? [];
@@ -663,7 +804,7 @@ export default function AtlasWorkbench() {
     files.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     setImportPreviewFile(null);
     const nextFiles = Array.from(fileList ?? [])
-      .filter((file) => file.type.startsWith("image/"))
+      .filter(isSupportedImageFile)
       .map((file, index) => {
         const relativePath = fileRelativePath(file);
         const groupKey = defaultGroupFor(relativePath);
@@ -675,6 +816,10 @@ export default function AtlasWorkbench() {
           previewUrl: URL.createObjectURL(file),
         };
       });
+
+    if ((fileList?.length ?? 0) > 0 && nextFiles.length === 0) {
+      window.alert(t.noSupportedImages);
+    }
 
     setFiles(nextFiles);
     setAssignments(
@@ -759,6 +904,117 @@ export default function AtlasWorkbench() {
     await refresh();
   }
 
+  function openIndexContextMenu(node: IndexTreeNode, event: React.MouseEvent<HTMLButtonElement>) {
+    if (isBrowseMode) {
+      return;
+    }
+
+    event.preventDefault();
+    setSelectedIndexId(node.id);
+    setIndexContextMenu({ node, x: event.clientX, y: event.clientY });
+  }
+
+  function openIndexAction(action: IndexAction) {
+    setIndexContextMenu(null);
+    setIndexAction(action);
+    if (action.mode === "rename") {
+      setRenameIndexName(action.node.name);
+    }
+    if (action.mode === "clear") {
+      setClearIndexConfirmText("");
+    }
+  }
+
+  function closeIndexAction(force = false) {
+    if (indexActionBusy && !force) {
+      return;
+    }
+
+    setIndexAction(null);
+    setRenameIndexName("");
+    setClearIndexConfirmText("");
+  }
+
+  async function renameIndexNode() {
+    if (!indexAction || indexAction.mode !== "rename" || !renameIndexName.trim()) {
+      return;
+    }
+
+    setIndexActionBusy(true);
+    try {
+      const response = await fetch("/api/index-nodes", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: indexAction.node.id, name: renameIndexName }),
+      });
+      if (!response.ok) {
+        window.alert(t.indexActionFailed);
+        return;
+      }
+
+      closeIndexAction(true);
+      await refresh();
+    } finally {
+      setIndexActionBusy(false);
+    }
+  }
+
+  async function deleteIndexNode() {
+    if (!indexAction || indexAction.mode !== "delete" || indexActionImageCount > 0) {
+      return;
+    }
+
+    setIndexActionBusy(true);
+    try {
+      const response = await fetch("/api/index-nodes", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: indexAction.node.id }),
+      });
+      if (!response.ok) {
+        window.alert(t.indexActionFailed);
+        return;
+      }
+
+      if (selectedIndexId === indexAction.node.id) {
+        setSelectedIndexId(null);
+      }
+      closeIndexAction(true);
+      await refresh();
+    } finally {
+      setIndexActionBusy(false);
+    }
+  }
+
+  async function clearIndexImages() {
+    if (
+      !indexAction ||
+      indexAction.mode !== "clear" ||
+      clearIndexConfirmText !== destructiveConfirmPhrase
+    ) {
+      return;
+    }
+
+    setIndexActionBusy(true);
+    try {
+      const response = await fetch(`/api/index-nodes/${indexAction.node.id}/clear-images`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: clearIndexConfirmText }),
+      });
+      if (!response.ok) {
+        window.alert(t.indexActionFailed);
+        return;
+      }
+
+      setSelectedImageId(null);
+      closeIndexAction(true);
+      await refresh();
+    } finally {
+      setIndexActionBusy(false);
+    }
+  }
+
   async function saveDetails() {
     if (!selectedImage) {
       return;
@@ -782,11 +1038,41 @@ export default function AtlasWorkbench() {
   }
 
   async function undoBatch(batchId: string) {
-    await fetch(`/api/import/${batchId}/undo`, {
-      method: "POST",
-    });
-    setSelectedImageId(null);
-    await refresh();
+    setUndoingBatchId(batchId);
+    try {
+      const response = await fetch(`/api/import/${batchId}/undo`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        window.alert(t.undoFailed);
+        return;
+      }
+
+      setPendingUndoBatchId(null);
+      setSelectedImageId(null);
+      await refresh();
+    } finally {
+      setUndoingBatchId(null);
+    }
+  }
+
+  async function deleteSelectedImage(imageId: string) {
+    setDeletingImageId(imageId);
+    try {
+      const response = await fetch(`/api/images/${imageId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        window.alert(t.deleteImageFailed);
+        return;
+      }
+
+      setPendingDeleteImage(null);
+      setSelectedImageId(null);
+      await refresh();
+    } finally {
+      setDeletingImageId(null);
+    }
   }
 
   function selectImage(image: ChartImage) {
@@ -808,6 +1094,11 @@ export default function AtlasWorkbench() {
     const currentIndex = selectedImageIndex >= 0 ? selectedImageIndex : 0;
     const nextIndex = (currentIndex + direction + images.length) % images.length;
     selectImage(images[nextIndex]);
+  }
+
+  function selectIndex(id: string | null) {
+    setSelectedIndexId(id);
+    setImageGridPage(1);
   }
 
   function adjustImageZoom(delta: number) {
@@ -843,6 +1134,11 @@ export default function AtlasWorkbench() {
     window.localStorage.setItem("brooks-pa-atlas.locale", nextLocale);
   }
 
+  function setPersistedViewModeWithPagination(mode: ViewMode) {
+    setPersistedViewMode(mode);
+    setImageGridPage(1);
+  }
+
   function setPersistedViewMode(nextMode: ViewMode) {
     setViewMode(nextMode);
     window.localStorage.setItem("brooks-pa-atlas.viewMode", nextMode);
@@ -864,6 +1160,12 @@ export default function AtlasWorkbench() {
       "brooks-pa-atlas.overview",
       nextValue ? "collapsed" : "expanded",
     );
+  }
+
+  function changeImageGridPageSize(value: number) {
+    setImageGridPageSize(value);
+    setImageGridPage(1);
+    window.localStorage.setItem("brooks-pa-atlas.imageGridPageSize", String(value));
   }
 
   function clearSelectedFiles() {
@@ -890,7 +1192,7 @@ export default function AtlasWorkbench() {
               </button>
               <button
                 type="button"
-                onClick={() => setSelectedIndexId(null)}
+                onClick={() => selectIndex(null)}
                 className={`grid h-10 w-10 place-items-center rounded-md ${
                   selectedIndexId === null
                     ? "bg-zinc-950 text-white"
@@ -905,7 +1207,7 @@ export default function AtlasWorkbench() {
               </span>
               <button
                 type="button"
-                onClick={() => setPersistedViewMode(isBrowseMode ? "manage" : "browse")}
+                onClick={() => setPersistedViewModeWithPagination(isBrowseMode ? "manage" : "browse")}
                 className="grid h-10 w-10 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50"
                 title={isBrowseMode ? t.manageMode : t.browseMode}
               >
@@ -953,7 +1255,7 @@ export default function AtlasWorkbench() {
                 <ModeSwitch
                   mode={viewMode}
                   labels={t}
-                  onChange={setPersistedViewMode}
+                  onChange={setPersistedViewModeWithPagination}
                 />
               </div>
 
@@ -985,7 +1287,7 @@ export default function AtlasWorkbench() {
               >
                 <button
                   type="button"
-                  onClick={() => setSelectedIndexId(null)}
+                  onClick={() => selectIndex(null)}
                   className={`mb-2 grid h-9 w-full grid-cols-[16px_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm ${
                     selectedIndexId === null ? "bg-zinc-950 text-white" : "text-zinc-700 hover:bg-zinc-100"
                   }`}
@@ -999,7 +1301,8 @@ export default function AtlasWorkbench() {
                 <IndexBranch
                   nodes={data?.tree ?? []}
                   selectedId={selectedIndexId}
-                  onSelect={setSelectedIndexId}
+                  onSelect={selectIndex}
+                  onContextMenu={openIndexContextMenu}
                 />
               </nav>
             </>
@@ -1012,7 +1315,10 @@ export default function AtlasWorkbench() {
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
               <input
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setImageGridPage(1);
+                }}
                 className="h-10 w-full rounded-md border border-zinc-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-zinc-500"
                 placeholder={t.searchPlaceholder}
               />
@@ -1027,7 +1333,10 @@ export default function AtlasWorkbench() {
                     multiple
                     accept="image/*"
                     className="hidden"
-                    onChange={(event) => handleFiles(event.target.files)}
+                    onChange={(event) => {
+                      handleFiles(event.target.files);
+                      event.target.value = "";
+                    }}
                   />
                 </label>
                 <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50">
@@ -1036,10 +1345,12 @@ export default function AtlasWorkbench() {
                   <input
                     type="file"
                     multiple
-                    accept="image/*"
                     className="hidden"
-                    onChange={(event) => handleFiles(event.target.files)}
-                    {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                    onChange={(event) => {
+                      handleFiles(event.target.files);
+                      event.target.value = "";
+                    }}
+                    {...({ webkitdirectory: "true", directory: "true" } as Record<string, string>)}
                   />
                 </label>
               </>
@@ -1256,11 +1567,16 @@ export default function AtlasWorkbench() {
                             </div>
                             <button
                               type="button"
-                              onClick={() => void undoBatch(batch.id)}
-                              className="inline-flex h-8 items-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 font-medium text-rose-700 hover:bg-rose-100"
+                              onClick={() => setPendingUndoBatchId(batch.id)}
+                              disabled={undoingBatchId === batch.id}
+                              className="inline-flex h-8 items-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 font-medium text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
                             >
-                              <Undo2 className="h-3.5 w-3.5" />
-                              <span>{t.undoBatch}</span>
+                              {undoingBatchId === batch.id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Undo2 className="h-3.5 w-3.5" />
+                              )}
+                              <span>{undoingBatchId === batch.id ? t.undoing : t.undoBatch}</span>
                             </button>
                           </div>
                         </div>
@@ -1380,40 +1696,100 @@ export default function AtlasWorkbench() {
             ) : null}
 
             {shouldShowImageGrid ? (
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-4">
-                {data?.images.map((image) => (
-                  <button
-                    type="button"
-                    key={image.id}
-                    onClick={() => selectImage(image)}
-                    className={`overflow-hidden rounded-md border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
-                      selectedImage?.id === image.id ? "border-zinc-950" : "border-zinc-200"
-                    }`}
-                  >
-                    <div className="aspect-[4/3] bg-zinc-100">
-                      <img
-                        src={`/api/images/${image.id}/file`}
-                        alt={image.title ?? image.originalName}
-                        className="h-full w-full object-contain"
-                        loading="lazy"
-                      />
+              <>
+                {imageGridTotal > 0 ? (
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">
+                    <span>
+                      {t.imageGrid} {imageGridTotal} / {imageGridStartIndex + 1}-{imageGridEndIndex} /{" "}
+                      {t.page} {imageGridCurrentPage}/{imageGridTotalPages}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span>{t.itemsPerPage}</span>
+                      <select
+                        value={imageGridPageSize}
+                        onChange={(event) => changeImageGridPageSize(Number(event.target.value))}
+                        className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs outline-none focus:border-zinc-500"
+                      >
+                        {[25, 50, 100, 200].map((size) => (
+                          <option key={size} value={size}>
+                            {size}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setImageGridPage((page) => Math.max(1, page - 1))}
+                        disabled={imageGridCurrentPage <= 1}
+                        className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+                      >
+                        {t.previousPage}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setImageGridPage((page) => Math.min(imageGridTotalPages, page + 1))}
+                        disabled={imageGridCurrentPage >= imageGridTotalPages}
+                        className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+                      >
+                        {t.nextPage}
+                      </button>
                     </div>
-                    <div className="space-y-2 p-3">
-                      <div>
-                        <p className="truncate text-sm font-semibold" title={image.title ?? image.originalName}>
-                          {image.title ?? image.originalName}
-                        </p>
-                        <p className="truncate text-xs text-zinc-500" title={image.indexNode?.path ?? t.unclassified}>
-                          {image.indexNode?.path ?? t.unclassified}
-                        </p>
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-4">
+                  {imageGridPageImages.map((image) => (
+                    <button
+                      type="button"
+                      key={image.id}
+                      onClick={() => selectImage(image)}
+                      className={`overflow-hidden rounded-md border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+                        selectedImage?.id === image.id ? "border-zinc-950" : "border-zinc-200"
+                      }`}
+                    >
+                      <div className="aspect-[4/3] bg-zinc-100">
+                        <img
+                          src={`/api/images/${image.id}/file`}
+                          alt={image.title ?? image.originalName}
+                          className="h-full w-full object-contain"
+                          loading="lazy"
+                        />
                       </div>
-                      <span className={`inline-flex h-6 items-center rounded border px-2 text-xs ${ocrTone(image.ocrStatus)}`}>
-                        {ocrStatusLabels[locale][image.ocrStatus]}
-                      </span>
-                    </div>
-                  </button>
-                ))}
-              </div>
+                      <div className="space-y-2 p-3">
+                        <div>
+                          <p className="truncate text-sm font-semibold" title={image.title ?? image.originalName}>
+                            {image.title ?? image.originalName}
+                          </p>
+                          <p className="truncate text-xs text-zinc-500" title={image.indexNode?.path ?? t.unclassified}>
+                            {image.indexNode?.path ?? t.unclassified}
+                          </p>
+                        </div>
+                        <span className={`inline-flex h-6 items-center rounded border px-2 text-xs ${ocrTone(image.ocrStatus)}`}>
+                          {ocrStatusLabels[locale][image.ocrStatus]}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                {imageGridTotalPages > 1 ? (
+                  <div className="mt-4 flex justify-end gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setImageGridPage((page) => Math.max(1, page - 1))}
+                      disabled={imageGridCurrentPage <= 1}
+                      className="h-8 rounded-md border border-zinc-200 bg-white px-3 font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+                    >
+                      {t.previousPage}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setImageGridPage((page) => Math.min(imageGridTotalPages, page + 1))}
+                      disabled={imageGridCurrentPage >= imageGridTotalPages}
+                      className="h-8 rounded-md border border-zinc-200 bg-white px-3 font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+                    >
+                      {t.nextPage}
+                    </button>
+                  </div>
+                ) : null}
+              </>
             ) : null}
 
             {data?.images.length === 0 ? (
@@ -1485,6 +1861,19 @@ export default function AtlasWorkbench() {
                   <CheckCircle2 className="h-4 w-4" />
                   <span>{t.save}</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingDeleteImage(selectedImage)}
+                  disabled={deletingImageId === selectedImage.id}
+                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-4 text-sm font-medium text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {deletingImageId === selectedImage.id ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" />
+                  )}
+                  <span>{deletingImageId === selectedImage.id ? t.deleting : t.deleteImage}</span>
+                </button>
               </div>
 
               <div className="mt-5 space-y-3 rounded-md border border-zinc-200 p-3">
@@ -1555,11 +1944,16 @@ export default function AtlasWorkbench() {
                     </p>
                     <button
                       type="button"
-                      onClick={() => void undoBatch(batch.id)}
-                      className="mt-3 inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 text-xs font-medium text-rose-700 hover:bg-rose-100"
+                      onClick={() => setPendingUndoBatchId(batch.id)}
+                      disabled={undoingBatchId === batch.id}
+                      className="mt-3 inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      <Undo2 className="h-3.5 w-3.5" />
-                      <span>{t.undoBatch}</span>
+                      {undoingBatchId === batch.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Undo2 className="h-3.5 w-3.5" />
+                      )}
+                      <span>{undoingBatchId === batch.id ? t.undoing : t.undoBatch}</span>
                     </button>
                   </div>
                 ))}
@@ -1573,6 +1967,314 @@ export default function AtlasWorkbench() {
           </aside>
         ) : null}
       </div>
+      {indexContextMenu && !isBrowseMode ? (
+        <div
+          className="fixed z-40 w-56 rounded-md border border-zinc-200 bg-white p-1 text-sm shadow-xl"
+          style={{ left: indexContextMenu.x, top: indexContextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => openIndexAction({ mode: "rename", node: indexContextMenu.node })}
+            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-zinc-700 hover:bg-zinc-100"
+          >
+            <PencilLine className="h-4 w-4" />
+            <span>{t.renameIndex}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => openIndexAction({ mode: "delete", node: indexContextMenu.node })}
+            disabled={indexContextImageCount > 0}
+            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent"
+            title={indexContextImageCount > 0 ? t.deleteIndexDisabled : t.deleteIndex}
+          >
+            <Trash2 className="h-4 w-4" />
+            <span>{t.deleteIndex}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => openIndexAction({ mode: "clear", node: indexContextMenu.node })}
+            disabled={indexContextImageCount === 0}
+            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent"
+            title={indexContextImageCount === 0 ? t.clearIndexImagesDisabled : t.clearIndexImages}
+          >
+            <AlertTriangle className="h-4 w-4" />
+            <span>{t.clearIndexImages}</span>
+          </button>
+        </div>
+      ) : null}
+      {indexAction ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => closeIndexAction()}
+        >
+          <div
+            className="w-full max-w-md rounded-md bg-white p-5 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {indexAction.mode === "rename" ? (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void renameIndexNode();
+                }}
+              >
+                <h2 className="text-base font-semibold text-zinc-950">{t.renameIndex}</h2>
+                <p className="mt-1 truncate text-sm text-zinc-500" title={indexAction.node.path}>
+                  {indexAction.node.path}
+                </p>
+                <input
+                  autoFocus
+                  value={renameIndexName}
+                  onChange={(event) => setRenameIndexName(event.target.value)}
+                  className="mt-4 h-10 w-full rounded-md border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-500"
+                />
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => closeIndexAction()}
+                    disabled={indexActionBusy}
+                    className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {t.cancel}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={indexActionBusy || !renameIndexName.trim()}
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {indexActionBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    <span>{indexActionBusy ? t.saving : t.save}</span>
+                  </button>
+                </div>
+              </form>
+            ) : null}
+
+            {indexAction.mode === "delete" ? (
+              <div>
+                <div className="flex items-start gap-3">
+                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-rose-200 bg-rose-50 text-rose-700">
+                    <Trash2 className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h2 className="text-base font-semibold text-zinc-950">
+                      {t.deleteIndexConfirmTitle}
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 text-zinc-600">
+                      {t.deleteIndexConfirmMessage}
+                    </p>
+                    <p className="mt-3 truncate rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+                      {indexAction.node.path}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => closeIndexAction()}
+                    disabled={indexActionBusy}
+                    className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {t.cancel}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void deleteIndexNode()}
+                    disabled={indexActionBusy || indexActionImageCount > 0}
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-rose-700 bg-rose-700 px-4 text-sm font-medium text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {indexActionBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                    <span>{indexActionBusy ? t.deleting : t.deleteIndex}</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {indexAction.mode === "clear" ? (
+              <div>
+                <div className="flex items-start gap-3">
+                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-rose-200 bg-rose-50 text-rose-700">
+                    <AlertTriangle className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h2 className="text-base font-semibold text-zinc-950">
+                      {t.clearIndexImagesTitle}
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 text-zinc-600">
+                      {t.clearIndexImagesMessage}
+                    </p>
+                    <p className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+                      {indexAction.node.path} / {indexActionImageCount} {t.imageUnit}
+                    </p>
+                  </div>
+                </div>
+                <label className="mt-4 block">
+                  <span className="text-xs font-medium text-zinc-500">
+                    {t.clearIndexImagesTyping}
+                  </span>
+                  <input
+                    autoFocus
+                    value={clearIndexConfirmText}
+                    onChange={(event) => setClearIndexConfirmText(event.target.value)}
+                    className="mt-2 h-10 w-full rounded-md border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-500"
+                    placeholder={destructiveConfirmPhrase}
+                  />
+                </label>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => closeIndexAction()}
+                    disabled={indexActionBusy}
+                    className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {t.cancel}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void clearIndexImages()}
+                    disabled={
+                      indexActionBusy ||
+                      indexActionImageCount === 0 ||
+                      clearIndexConfirmText !== destructiveConfirmPhrase
+                    }
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-rose-700 bg-rose-700 px-4 text-sm font-medium text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {indexActionBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4" />
+                    )}
+                    <span>{indexActionBusy ? t.deleting : t.clearIndexImages}</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      {pendingDeleteImage ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-image-title"
+          onClick={() => {
+            if (deletingImageId !== pendingDeleteImage.id) {
+              setPendingDeleteImage(null);
+            }
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-md bg-white p-5 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-rose-200 bg-rose-50 text-rose-700">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 id="delete-image-title" className="text-base font-semibold text-zinc-950">
+                  {t.deleteImageConfirmTitle}
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-zinc-600">{t.deleteImageConfirmMessage}</p>
+                <p
+                  className="mt-3 truncate rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600"
+                  title={pendingDeleteImage.originalName}
+                >
+                  {pendingDeleteImage.title ?? pendingDeleteImage.originalName}
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteImage(null)}
+                disabled={deletingImageId === pendingDeleteImage.id}
+                className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={() => void deleteSelectedImage(pendingDeleteImage.id)}
+                disabled={deletingImageId === pendingDeleteImage.id}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-rose-700 bg-rose-700 px-4 text-sm font-medium text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {deletingImageId === pendingDeleteImage.id ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
+                <span>{deletingImageId === pendingDeleteImage.id ? t.deleting : t.deleteImage}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {pendingUndoBatch ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="undo-batch-title"
+          onClick={() => {
+            if (undoingBatchId !== pendingUndoBatch.id) {
+              setPendingUndoBatchId(null);
+            }
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-md bg-white p-5 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-rose-200 bg-rose-50 text-rose-700">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 id="undo-batch-title" className="text-base font-semibold text-zinc-950">
+                  {t.undoConfirmTitle}
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-zinc-600">{t.undoConfirmMessage}</p>
+                <p className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+                  {batchStatusLabels[locale][pendingUndoBatch.status] ?? pendingUndoBatch.status} /{" "}
+                  {pendingUndoBatch.successCount}/{pendingUndoBatch.totalCount} / {t.duplicates}{" "}
+                  {pendingUndoBatch.duplicateCount}
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingUndoBatchId(null)}
+                disabled={undoingBatchId === pendingUndoBatch.id}
+                className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={() => void undoBatch(pendingUndoBatch.id)}
+                disabled={undoingBatchId === pendingUndoBatch.id}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-rose-700 bg-rose-700 px-4 text-sm font-medium text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {undoingBatchId === pendingUndoBatch.id ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Undo2 className="h-4 w-4" />
+                )}
+                <span>{undoingBatchId === pendingUndoBatch.id ? t.undoing : t.confirmUndo}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {importPreviewFile ? (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/70 p-6"

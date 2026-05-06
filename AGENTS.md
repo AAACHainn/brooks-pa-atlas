@@ -1,6 +1,6 @@
-# Brooks PA Atlas 项目说明
+# Brooks PA Atlas 项目维护说明
 
-本文档是给后续 Codex 线程和人类维护者看的项目手册。请优先阅读并遵守本文件，再开始修改代码。
+本文档是给后续 Codex 线程和人类维护者看的项目手册。开始修改代码前请先读本文件；当实现发生明显变化时，也请同步更新本文件。
 
 ## 最高优先级安全规则
 
@@ -34,12 +34,12 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 ## 项目定位
 
-Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart Patterns 的本地图表图片库做成价格行为学习系统。
+Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart Patterns 的本地图表图片库整理成价格行为学习系统。
 
-第一版的核心定位是“大批量本地图表图库”：
+当前版本的核心目标是“大批量本地图表图库”：
 
 - 浏览器批量选择图片或选择文件夹导入，目标规模为单次 1000 张以上。
-- 图片文件复制到应用本地图库目录，数据库只保存路径和元数据，不保存 blob。
+- 图片复制到应用本地图库目录，数据库只保存相对路径和元数据，不保存 blob。
 - 用户用无限层级的百科式索引树组织图片。
 - 导入不被 OCR 阻塞：图片先入库并可浏览，后台 OCR 队列异步补充文本。
 - 首页就是 Atlas 工作台，不做营销页。
@@ -56,6 +56,7 @@ Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart
 - `@prisma/adapter-better-sqlite3` + `better-sqlite3`
 - `sharp` 读取图片尺寸
 - `lucide-react` 提供图标
+- `zod`、`xlsx`、`fuse.js` 已作为依赖存在，其中部分能力尚未成为核心路径
 
 Prisma 7 运行时代码需要显式 driver adapter。本项目在 `src/lib/db.ts` 中用 `PrismaBetterSqlite3` 初始化 `PrismaClient`，Prisma Client 输出目录是 `src/generated/prisma`。
 
@@ -90,12 +91,13 @@ npm run db:init
 - `src/app/page.tsx`：首页入口，渲染 `AtlasWorkbench`。
 - `src/app/layout.tsx`：根布局、字体和 metadata。
 - `src/app/globals.css`：Tailwind v4 入口和全局 CSS。
-- `src/app/atlas-workbench.tsx`：主工作台 UI，当前绝大多数交互都在这里。
+- `src/app/atlas-workbench.tsx`：主工作台 UI，绝大多数前端交互都在这里。
 - `src/app/api/atlas/route.ts`：工作台聚合查询接口。
 - `src/app/api/import/route.ts`：分块批量导入接口。
 - `src/app/api/import/[id]/undo/route.ts`：撤销导入批次。
-- `src/app/api/index-nodes/route.ts`：索引节点查询、创建、重命名和排序字段更新。
-- `src/app/api/images/[id]/route.ts`：更新图片标题、备注、所属索引。
+- `src/app/api/index-nodes/route.ts`：索引节点查询、创建、重命名、排序字段更新和删除。
+- `src/app/api/index-nodes/[id]/clear-images/route.ts`：清空某个索引及其后代下的图片。
+- `src/app/api/images/[id]/route.ts`：更新或删除单张图片。
 - `src/app/api/images/[id]/file/route.ts`：读取图库内图片文件并返回给浏览器。
 - `src/app/api/ocr/retry/route.ts`：重试失败 OCR。
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
@@ -119,7 +121,7 @@ npm run db:init
 - `next-env.d.ts`
 - 运行日志，例如 `.codex-dev-server.log`、`dev-server.log`、`dev-server.err.log`
 
-注意：当前仓库里可能已有运行日志处于 tracked 或 modified 状态。除非用户明确要求，不要把日志变更当成业务修改处理。
+注意：运行开发服务可能导致运行日志变成 modified。除非用户明确要求，不要把日志变更当成业务修改处理。
 
 ## 数据模型
 
@@ -140,24 +142,24 @@ npm run db:init
 重要约束：
 
 - `ChartImage.hash` 唯一，用 SHA-256 检测重复图片。
-- `ChartImage.libraryPath` 唯一，数据库只保存路径。
+- `ChartImage.libraryPath` 唯一，数据库只保存应用图库内的相对路径。
 - `IndexNode` 在同一父节点下 `name` 唯一。
 - `ImportItem.chartImageId` 唯一，一张已入库图片最多对应一个导入 item 记录。
 
-## 工作台当前功能
+## 工作台 UI
 
 `src/app/atlas-workbench.tsx` 是客户端组件，默认中文，支持中英文切换。偏好通过 `localStorage` 保存。
 
 当前工作台有两种模式：
 
-- 管理模式：导入、创建索引、编辑图片详情、OCR 重试、撤销批次。
-- 浏览模式：完全只读，隐藏导入、新建索引、保存、OCR 重试、撤销批次等写操作。
+- 管理模式：导入、创建索引、编辑图片详情、OCR 重试、撤销批次、删除图片、索引右键管理。
+- 浏览模式：只读，隐藏导入、新建索引、保存、OCR 重试、撤销、删除等写操作。
 
 主要布局：
 
 - 左侧：索引树、全部图片入口、语言切换、刷新、侧栏折叠、浏览/管理模式切换。
 - 中间：搜索栏、导入表格或图库浏览区域、概览、图片网格。
-- 右侧：管理模式下的图片详情编辑面板。
+- 右侧：管理模式下的图片详情编辑面板；浏览模式下是大图查看体验。
 
 浏览模式特性：
 
@@ -175,16 +177,45 @@ npm run db:init
 - 可以选择图片或文件夹导入。
 - 可以创建当前选中索引下的新子索引。
 - 图片详情支持编辑标题、备注、所属索引。
+- 支持删除单张图片，删除前必须二次确认。
 - OCR 失败可重试。
-- 最近导入批次可撤销。
+- 最近导入批次可撤销，撤销前必须二次确认。
 - 概览区可折叠。
+- 图片网格有客户端分页，避免一次渲染过多图片导致打开缓慢。
+
+## 索引树管理
+
+索引树支持无限层级。`IndexNode.path` 使用 ` / ` 拼接祖先名称，重命名节点时会同步更新后代路径。
+
+管理模式下，索引树节点支持右键菜单：
+
+- 重命名索引。
+- 删除索引：只有当前索引及其后代下面没有图片时才能操作；后端也会重新校验。
+- 清空当前索引及其后代下面的所有图片：这是高风险操作，确认弹窗要求用户输入 `确认删除` 后才会执行。
+
+注意：
+
+- 左侧树上显示的数量是当前节点直接图片数，不是整棵子树汇总数。
+- 删除索引只删除数据库索引节点，不删除文件；清空图片会逐张删除图库文件和数据库记录。
+- 任何文件删除都必须保持逐个明确路径删除，不能批量删除目录。
 
 ## 导入流程
 
 前端入口：
 
-- `选择图片`：普通多选文件。
-- `选择文件夹`：使用 `webkitdirectory`/`directory`。
+- `选择图片`：普通多选文件，`accept="image/*"`。
+- `选择文件夹`：使用 `webkitdirectory`/`directory`。文件夹导入不能依赖 MIME 类型，因为部分浏览器或系统会给空 MIME；前端会同时按扩展名识别图片。
+
+支持的图片扩展名包括：
+
+- `.jpg`
+- `.jpeg`
+- `.png`
+- `.webp`
+- `.gif`
+- `.bmp`
+- `.tif`
+- `.tiff`
 
 前端导入表格：
 
@@ -194,7 +225,7 @@ npm run db:init
 - 缩略图在最后一列，点击可打开大图预览弹窗。
 - 表格支持分页，显示总数、当前范围、页码，支持每页 `10 / 25 / 50 / 100`。
 - 表格高度可拖动调整，保存到 `localStorage`。
-- 导入时仍提交全部已选图片，不只提交当前页。
+- 导入时提交全部已选图片，不只提交当前页。
 
 上传规则：
 
@@ -206,18 +237,30 @@ npm run db:init
 后端导入：
 
 - `src/app/api/import/route.ts` 接收 `multipart/form-data`。
-- 使用 `isSupportedImage()` 过滤类型。
+- 使用 `isSupportedImage()` 过滤类型，支持 MIME 类型和扩展名双重判断。
 - 用 `ensureIndexPath()` 自动创建不存在的索引路径。
 - 用 SHA-256 hash 检测重复图片；重复项记录为 `DUPLICATE`，默认不新增 `ChartImage`。
 - 新图片保存到图库目录并创建 `ChartImage` 与 `ImportItem`。
 - 每个 chunk 完成后更新 `ImportBatch` 并触发 `scheduleOcrPump()`。
+
+## 图片列表和排序
+
+`GET /api/atlas` 当前仍限制返回最近或匹配的 `200` 张图片，但服务端查询和前端展示已按原始文件名做自然排序，避免 `1.jpg`、`2.jpg`、`10.jpg` 这类名称出现字典序错乱。
+
+前端图片网格有客户端分页：
+
+- 默认每页 `50` 张。
+- 可选每页 `25 / 50 / 100 / 200`。
+- 切换搜索、索引、模式或每页数量时会回到第一页。
+
+注意：这还不是完整的后端分页。大图库下如果需要浏览超过 `/api/atlas` 返回上限的完整结果，后续应改造 API 参数和数据库分页。
 
 ## 图片存储规则
 
 - 默认图库根目录是 `data/library/images`。
 - 环境变量 `BROOKS_LIBRARY_ROOT` 可以覆盖图库根目录。
 - 新图片保存到 `data/library/images/YYYY-MM/`。
-- 保存文件名格式是 `hash前16位-清洗后的原名.ext`。
+- 保存文件名格式是 `清洗后的原名-hash前16位.ext`，例如 `1-a1b2c3d4e5f6a7b8.jpg`。hash 放在原名后面，避免破坏按原始名称排序。
 - 浏览器原始硬盘路径不能直接入库，只能保存上传后的应用内相对路径。
 - `absoluteImagePath()` 会校验图片路径必须在图库根目录内，避免任意文件读取。
 
@@ -236,10 +279,11 @@ npm run db:init
 `GET /api/atlas`
 
 - 参数：`q`、`indexId`。
-- 返回：索引树、最近图片、最近导入批次、统计信息。
+- 返回：索引树、图片列表、最近导入批次、统计信息。
 - 索引筛选会包含所选节点及其后代路径。
 - 搜索覆盖 `originalName`、`title`、`notes`、`ocrText`、`indexNode.path`。
-- 图片列表按 `createdAt desc`，当前 `take: 200`。
+- 图片列表当前 `take: 200`。
+- 图片按 `originalName` 自然排序，名称相同时按 `createdAt` 排序。
 - OCR 文本和错误会截断返回，避免接口太大。
 
 `POST /api/import`
@@ -255,6 +299,7 @@ npm run db:init
 - 逐个 `unlink` 删除该批次新增图片文件。
 - 然后删除对应 `ImportItem`、`ChartImage`、`ImportBatch`。
 - 只允许逐个明确路径删除文件，符合最高优先级安全规则。
+- 前端调用前必须弹窗确认。
 
 `GET /api/index-nodes`
 
@@ -269,9 +314,27 @@ npm run db:init
 - 更新节点名称和 `sortOrder`。
 - 重命名会同步更新后代 `path`。
 
+`DELETE /api/index-nodes?id=...`
+
+- 删除某个索引节点及其后代节点。
+- 只有该节点及其后代下没有图片时才能删除。
+- 后端会校验图片数量，前端禁用按钮只是体验层保护。
+
+`POST /api/index-nodes/[id]/clear-images`
+
+- 清空某个索引节点及其后代下的所有图片。
+- 请求体必须包含 `confirmation: "确认删除"`。
+- 后端会逐张删除图库文件，再删除对应数据库记录。
+
 `PATCH /api/images/[id]`
 
 - 更新标题、备注、所属索引。
+
+`DELETE /api/images/[id]`
+
+- 删除单张图片。
+- 后端会逐个明确路径删除对应图库文件，然后删除数据库记录。
+- 前端调用前必须弹窗确认。
 
 `GET /api/images/[id]/file`
 
@@ -290,6 +353,7 @@ npm run db:init
 - `brooks-pa-atlas.sidebar`：侧栏折叠状态。
 - `brooks-pa-atlas.overview`：概览折叠状态。
 - `brooks-pa-atlas.viewMode`：`browse` 或 `manage`。
+- `brooks-pa-atlas.imageGridPageSize`：管理模式图片网格每页数量。
 - `brooks-pa-atlas.viewerHeight`：浏览模式大图查看器高度。
 - `brooks-pa-atlas.browseThumbnails`：浏览模式缩略图显隐。
 - `brooks-pa-atlas.importTableHeight`：导入表格高度。
@@ -301,16 +365,18 @@ npm run db:init
 - 文件读取路由必须保持 `runtime = "nodejs"`。
 - 涉及本地文件路径时优先使用 `absoluteImagePath()`。
 - 任何删除文件的代码都必须逐个明确路径删除，不能批量删除目录。
+- 高风险写操作需要二次确认；清空索引图片必须要求用户输入 `确认删除`。
 - `src/generated/prisma` 是生成目录，不要手改。
 - `dev.db`、`data/library`、`.next`、`node_modules` 和运行日志不应作为功能代码修改。
 - 修改 Next.js App Router、Route Handler、缓存、图片处理等能力前，先读 `node_modules/next/dist/docs/` 中相关文档。
-- UI 里已有浏览/管理模式边界：浏览模式必须保持只读，不要把导入、保存、OCR 重试、撤销等写操作暴露进去。
+- UI 里已有浏览/管理模式边界：浏览模式必须保持只读，不要把导入、保存、OCR 重试、撤销、删除等写操作暴露进去。
 
 ## 当前已知限制和后续方向
 
-- 搜索由数据库 `contains` 完成，图片列表限制最近 `200` 张；大图库下后续需要分页、全文索引或更强搜索。
+- `/api/atlas` 图片列表仍限制 `take: 200`；当前分页是前端分页，后续大图库应做真正的后端分页。
+- 搜索由数据库 `contains` 完成，后续可考虑全文索引或更强搜索。
 - OCR 默认英文 `eng`；如需中文或多语言，需要调整 `ocr-queue.ts` 或做成设置项。
-- 索引节点支持创建、重命名和 `sortOrder` 字段更新，但尚未实现拖拽移动、删除和完整排序 UI。
-- 图片详情支持单张编辑，尚未支持已导入图片的批量编辑。
+- 索引节点支持创建、重命名、删除空索引、清空图片和 `sortOrder` 字段更新，但尚未实现拖拽移动和完整排序 UI。
+- 图片详情支持单张编辑和删除，尚未支持已导入图片的批量编辑。
 - 导入表格支持逐文件索引选择，但尚未支持批量套用某一索引到当前页或全部选中项。
 - README 仍是默认模板，真实项目说明以本文件和 `docs/PRODUCT_SPEC.md` 为准。

@@ -72,3 +72,41 @@ export async function PATCH(request: Request) {
 
   return NextResponse.json({ node });
 }
+
+export async function DELETE(request: Request) {
+  const body = (await request.json()) as {
+    id?: string;
+  };
+
+  if (!body.id) {
+    return NextResponse.json({ error: "Node id is required." }, { status: 400 });
+  }
+
+  const node = await prisma.indexNode.findUnique({ where: { id: body.id } });
+  if (!node) {
+    return NextResponse.json({ error: "Index node not found." }, { status: 404 });
+  }
+
+  const descendants = await prisma.indexNode.findMany({
+    where: { path: { startsWith: `${node.path} /` } },
+    orderBy: { depth: "desc" },
+  });
+  const nodeIds = [node.id, ...descendants.map((descendant) => descendant.id)];
+  const imageCount = await prisma.chartImage.count({
+    where: { indexNodeId: { in: nodeIds } },
+  });
+
+  if (imageCount > 0) {
+    return NextResponse.json(
+      { error: "Index node still contains images." },
+      { status: 409 },
+    );
+  }
+
+  for (const descendant of descendants) {
+    await prisma.indexNode.delete({ where: { id: descendant.id } });
+  }
+  await prisma.indexNode.delete({ where: { id: node.id } });
+
+  return NextResponse.json({ ok: true, removedCount: nodeIds.length });
+}

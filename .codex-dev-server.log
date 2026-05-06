@@ -6,13 +6,204 @@
 - Local:         http://127.0.0.1:3000
 - Network:       http://127.0.0.1:3000
 - Environments: .env
-✓ Ready in 806ms
-⨯ Another next dev server is already running.
+✓ Ready in 11.1s
 
-- Local:        http://localhost:3000
-- PID:          27212
-- Dir:          D:\code\codex\brooks-pa-atlas
-- Log:          .next\dev\logs\next-development.log
+ GET / 200 in 81ms (next.js: 9ms, application-code: 72ms)
+ GET / 200 in 78ms (next.js: 6ms, application-code: 72ms)
+[browser] Uncaught Error: Hydration failed because the server rendered HTML didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:
 
-Run taskkill /PID 27212 /F to stop it.
-[?25h
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <RenderFromTemplateContext>
+      <ScrollAndMaybeFocusHandler cacheNode={{rsc:{...}, ...}}>
+        <InnerScrollAndFocusHandlerOld focusAndScrollRef={{scrollRef:null, ...}} cacheNode={{rsc:{...}, ...}}>
+          <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
+            <LoadingBoundary name="/" loading={null}>
+              <HTTPAccessFallbackBoundary notFound={{...}} forbidden={undefined} unauthorized={undefined}>
+                <HTTPAccessFallbackErrorBoundary pathname="/" notFound={{...}} forbidden={undefined} ...>
+                  <RedirectBoundary>
+                    <RedirectErrorBoundary router={{...}}>
+                      <InnerLayoutRouter url="/" tree={[...]} params={{}} cacheNode={{rsc:{...}, ...}} ...>
+                        <SegmentViewNode type="page" pagePath="page.tsx">
+                          <SegmentTrieNode>
+                          <Home>
+                            <AtlasWorkbench>
+                              <main className="min-h-scre...">
+                                <div
++                                 className="grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)]"
+-                                 className="grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(520px,1fr)_360px]"
+                                >
+                                  <aside className="border-r b...">
+                                    <div>
+                                    <div className="border-b b...">
+                                      <ModeSwitch mode="browse" labels={{...}} onChange={function setPersistedViewMode}>
+                                        <div className="grid h-9 g...">
+                                          <button
+                                            type="button"
+                                            onClick={function onClick}
++                                           className="inline-flex items-center justify-center gap-1.5 rounded px-2 te..."
+-                                           className="inline-flex items-center justify-center gap-1.5 rounded px-2 te..."
+                                            title="浏览模式"
+                                          >
+                                          <button
+                                            type="button"
+                                            onClick={function onClick}
++                                           className="inline-flex items-center justify-center gap-1.5 rounded px-2 te..."
+-                                           className="inline-flex items-center justify-center gap-1.5 rounded px-2 te..."
+                                            title="管理模式"
+                                          >
++                                   <nav className="max-h-96 overflow-auto p-3 xl:max-h-none xl:h-[calc(100vh-119px)]">
+-                                   <div className="border-b border-zinc-200 p-4">
+                                  ...
+                        ...
+                      ...
+          ...
+
+    at <unknown> (https://react.dev/link/hydration-mismatch)
+    at nav (<anonymous>)
+    at AtlasWorkbench (src/app/atlas-workbench.tsx:876:15)
+    at Home (src\app\page.tsx:4:10)
+  874 |               ) : null}
+  875 |
+> 876 |               <nav
+      |               ^
+  877 |                 className={`max-h-96 overflow-auto p-3 xl:max-h-none ${
+  878 |                   isBrowseMode ? "xl:h-[calc(100vh-119px)]" : "xl:h-[calc(100vh-183px)]"
+  879 |                 }`}
+ GET /api/atlas? 200 in 2.3s (next.js: 1674ms, application-code: 636ms)
+ GET /api/images/cmosjntol0002zwnp1lcuy7x4/file 200 in 3.5s (next.js: 3.4s, application-code: 53ms)
+ GET /api/images/cmosjsmub0006zwnpgnet25e0/file 200 in 3.5s (next.js: 3.4s, application-code: 57ms)
+ GET /api/images/cmosjev3p0002bcnpsn4qz1zi/file 200 in 3.5s (next.js: 3.4s, application-code: 62ms)
+✓ Compiled in 4.5s
+ GET /api/atlas? 200 in 62ms (next.js: 43ms, application-code: 19ms)
+ GET / 200 in 293ms (next.js: 161ms, application-code: 132ms)
+✓ Compiled in 88ms
+ GET /api/atlas? 200 in 96ms (next.js: 65ms, application-code: 32ms)
+ GET / 200 in 389ms (next.js: 189ms, application-code: 200ms)
+✓ Compiled in 99ms
+ GET /api/atlas? 200 in 76ms (next.js: 54ms, application-code: 22ms)
+ GET / 200 in 310ms (next.js: 156ms, application-code: 154ms)
+✓ Compiled in 86ms
+ GET /api/atlas? 200 in 58ms (next.js: 40ms, application-code: 18ms)
+ GET / 200 in 306ms (next.js: 164ms, application-code: 142ms)
+✓ Compiled in 119ms
+ GET / 200 in 314ms (next.js: 212ms, application-code: 102ms)
+ GET /api/atlas? 200 in 89ms (next.js: 65ms, application-code: 24ms)
+[browser] Each child in a list should have a unique "key" prop.
+
+Check the render method of `AtlasWorkbench`. See https://react.dev/link/warning-keys for more information. 
+    at Set.forEach (<anonymous>) (<anonymous>)
+ GET / 200 in 245ms (next.js: 151ms, application-code: 94ms)
+ GET / 200 in 177ms (next.js: 5ms, application-code: 172ms)
+ GET /api/atlas? 200 in 44ms (next.js: 32ms, application-code: 12ms)
+ GET /api/atlas?indexId=cmosjsmtu0005zwnp01ds4iks 200 in 29ms (next.js: 3ms, application-code: 26ms)
+ GET /api/atlas?indexId=cmosjntnw0001zwnpc1g6zt01 200 in 14ms (next.js: 3ms, application-code: 11ms)
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 16ms (next.js: 3ms, application-code: 13ms)
+ GET /api/atlas?indexId=cmosjntnw0001zwnpc1g6zt01 200 in 15ms (next.js: 3ms, application-code: 12ms)
+ GET /api/atlas?indexId=cmosjsmtu0005zwnp01ds4iks 200 in 17ms (next.js: 3ms, application-code: 14ms)
+ POST /api/import 200 in 155ms (next.js: 67ms, application-code: 88ms)
+ GET /api/atlas?indexId=cmosjsmtu0005zwnp01ds4iks 200 in 14ms (next.js: 3ms, application-code: 11ms)
+ GET /api/atlas?indexId=cmosjsmtu0005zwnp01ds4iks 200 in 23ms (next.js: 4ms, application-code: 19ms)
+ GET /api/atlas?indexId=cmosjntnw0001zwnpc1g6zt01 200 in 16ms (next.js: 3ms, application-code: 13ms)
+ GET /api/atlas?indexId=cmosjsmtu0005zwnp01ds4iks 200 in 15ms (next.js: 3ms, application-code: 13ms)
+ GET /api/atlas?indexId=cmosjntnw0001zwnpc1g6zt01 200 in 15ms (next.js: 4ms, application-code: 11ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 14ms (next.js: 3ms, application-code: 11ms)
+ GET /api/atlas? 200 in 15ms (next.js: 3ms, application-code: 12ms)
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 17ms (next.js: 4ms, application-code: 12ms)
+ GET /api/atlas?indexId=cmosje7oz0000bcnp9xr5l70d 200 in 14ms (next.js: 3ms, application-code: 12ms)
+✓ Compiled in 79ms
+ GET /api/atlas?indexId=cmosje7oz0000bcnp9xr5l70d 200 in 75ms (next.js: 49ms, application-code: 26ms)
+ GET / 200 in 308ms (next.js: 162ms, application-code: 146ms)
+✓ Compiled in 121ms
+ GET / 200 in 243ms (next.js: 154ms, application-code: 89ms)
+ GET /api/atlas? 200 in 58ms (next.js: 41ms, application-code: 16ms)
+✓ Compiled in 121ms
+ GET / 200 in 226ms (next.js: 152ms, application-code: 75ms)
+ GET /api/atlas? 200 in 59ms (next.js: 40ms, application-code: 19ms)
+✓ Compiled in 94ms
+ GET / 200 in 266ms (next.js: 170ms, application-code: 95ms)
+ GET /api/atlas? 200 in 81ms (next.js: 66ms, application-code: 15ms)
+✓ Compiled in 103ms
+ GET / 200 in 237ms (next.js: 154ms, application-code: 83ms)
+ GET /api/atlas? 200 in 52ms (next.js: 34ms, application-code: 18ms)
+✓ Compiled in 89ms
+ GET / 200 in 289ms (next.js: 202ms, application-code: 87ms)
+ GET /api/atlas? 200 in 101ms (next.js: 77ms, application-code: 24ms)
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 19ms (next.js: 4ms, application-code: 15ms)
+✓ Compiled in 81ms
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 55ms (next.js: 37ms, application-code: 18ms)
+ GET / 200 in 300ms (next.js: 173ms, application-code: 127ms)
+✓ Compiled in 94ms
+ GET / 200 in 221ms (next.js: 152ms, application-code: 68ms)
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 60ms (next.js: 46ms, application-code: 14ms)
+✓ Compiled in 96ms
+ GET / 200 in 247ms (next.js: 159ms, application-code: 88ms)
+ GET /api/atlas? 200 in 61ms (next.js: 40ms, application-code: 21ms)
+✓ Compiled in 90ms
+ GET / 200 in 234ms (next.js: 160ms, application-code: 74ms)
+ GET /api/atlas? 200 in 78ms (next.js: 53ms, application-code: 25ms)
+✓ Compiled in 95ms
+ GET / 200 in 216ms (next.js: 141ms, application-code: 74ms)
+ GET /api/atlas? 200 in 79ms (next.js: 61ms, application-code: 18ms)
+✓ Compiled in 67ms
+ GET / 200 in 239ms (next.js: 156ms, application-code: 84ms)
+ GET /api/atlas? 200 in 62ms (next.js: 47ms, application-code: 15ms)
+✓ Compiled in 105ms
+ GET / 200 in 263ms (next.js: 162ms, application-code: 101ms)
+ GET /api/atlas? 200 in 49ms (next.js: 34ms, application-code: 15ms)
+✓ Compiled in 107ms
+ GET / 200 in 238ms (next.js: 159ms, application-code: 79ms)
+ GET /api/atlas? 200 in 48ms (next.js: 35ms, application-code: 13ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 18ms (next.js: 3ms, application-code: 15ms)
+ POST /api/import 200 in 477ms (next.js: 49ms, application-code: 428ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 15ms (next.js: 3ms, application-code: 12ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 14ms (next.js: 2ms, application-code: 11ms)
+ GET /api/images/cmotp2kor000wlcnpf7ho4nk9/file 200 in 81ms (next.js: 63ms, application-code: 18ms)
+ GET /api/images/cmotp2ko5000ulcnpfj0sjfvq/file 200 in 28ms (next.js: 4ms, application-code: 23ms)
+ GET /api/images/cmotp2kjc000elcnp0658xn90/file 200 in 62ms (next.js: 8ms, application-code: 54ms)
+ GET /api/images/cmotp2kis000clcnphmjb55cj/file 200 in 65ms (next.js: 15ms, application-code: 50ms)
+ GET /api/images/cmotp2kjx000glcnpz8arm7u4/file 200 in 70ms (next.js: 25ms, application-code: 45ms)
+ GET /api/images/cmotp2kkj000ilcnp4qnddrga/file 200 in 72ms (next.js: 34ms, application-code: 38ms)
+ GET /api/images/cmotp2kgw0006lcnpilsf7tm0/file 200 in 74ms (next.js: 43ms, application-code: 31ms)
+ GET /api/images/cmotp2knh000slcnpi2s4lt03/file 200 in 32ms (next.js: 12ms, application-code: 19ms)
+ GET /api/images/cmotp2kmx000qlcnpsahukr2m/file 200 in 51ms (next.js: 5ms, application-code: 46ms)
+ GET /api/images/cmotp2kmb000olcnpnpa4t4po/file 200 in 55ms (next.js: 11ms, application-code: 43ms)
+ GET /api/images/cmotp2klp000mlcnp1ef21bxl/file 200 in 41ms (next.js: 5ms, application-code: 36ms)
+ GET /api/images/cmotp2kl3000klcnp8yhvvkm2/file 200 in 43ms (next.js: 11ms, application-code: 32ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 19ms (next.js: 3ms, application-code: 16ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 19ms (next.js: 3ms, application-code: 15ms)
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 18ms (next.js: 4ms, application-code: 14ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 18ms (next.js: 3ms, application-code: 15ms)
+ POST /api/import/cmotp2kfs0003lcnpm1flkyei/undo 200 in 1584ms (next.js: 1543ms, application-code: 41ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 20ms (next.js: 8ms, application-code: 12ms)
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 19ms (next.js: 3ms, application-code: 16ms)
+ POST /api/import/cmosjsmtn0004zwnpbdrhbzey/undo 200 in 36ms (next.js: 14ms, application-code: 22ms)
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 15ms (next.js: 2ms, application-code: 13ms)
+ POST /api/import/cmotonaq40000lcnpzh9wiyvl/undo 200 in 28ms (next.js: 12ms, application-code: 16ms)
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 16ms (next.js: 3ms, application-code: 13ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 17ms (next.js: 3ms, application-code: 14ms)
+ GET /api/atlas? 200 in 15ms (next.js: 3ms, application-code: 13ms)
+ GET /api/atlas?indexId=cmosjsmtu0005zwnp01ds4iks 200 in 14ms (next.js: 3ms, application-code: 11ms)
+ GET /api/atlas?indexId=cmosjntnw0001zwnpc1g6zt01 200 in 13ms (next.js: 3ms, application-code: 11ms)
+ GET /api/atlas? 200 in 15ms (next.js: 3ms, application-code: 12ms)
+ POST /api/import/cmosjntnl0000zwnp6bfhh60j/undo 200 in 35ms (next.js: 13ms, application-code: 21ms)
+ GET /api/atlas? 200 in 12ms (next.js: 3ms, application-code: 10ms)
+ POST /api/import/cmosjev2s0001bcnp6qpd5tep/undo 200 in 47ms (next.js: 13ms, application-code: 34ms)
+ GET /api/atlas? 200 in 11ms (next.js: 2ms, application-code: 9ms)
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 15ms (next.js: 3ms, application-code: 12ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 16ms (next.js: 3ms, application-code: 13ms)
+ GET /api/atlas?indexId=cmosje7oz0000bcnp9xr5l70d 200 in 15ms (next.js: 3ms, application-code: 12ms)
+ GET /api/atlas? 200 in 12ms (next.js: 2ms, application-code: 9ms)
+ GET /api/atlas?indexId=cmosjntnw0001zwnpc1g6zt01 200 in 13ms (next.js: 3ms, application-code: 10ms)
+ GET /api/atlas?indexId=cmosk4g5c0009zwnp0yy7k77o 200 in 14ms (next.js: 3ms, application-code: 11ms)
+ GET /api/atlas?indexId=cmosk2dnd0008zwnp7bkaqfr8 200 in 12ms (next.js: 2ms, application-code: 10ms)
+ GET /api/atlas?indexId=cmosje7oz0000bcnp9xr5l70d 200 in 14ms (next.js: 3ms, application-code: 11ms)

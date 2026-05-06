@@ -82,3 +82,64 @@ https://react.dev/link/hydration-mismatch
   840 |                   isBrowseMode ? "xl:h-[calc(100vh-119px)]" : "xl:h-[calc(100vh-183px)]"
   841 |                 }`}
 [browser] Backpack couldn't override `window.ethereum`. (chrome-extension://aflkmfhebedbjioipglgcbcmnbpgliof/injected.js:1:7388032)
+[browser] Uncaught Error: Hydration failed because the server rendered HTML didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <RenderFromTemplateContext>
+      <ScrollAndMaybeFocusHandler cacheNode={{rsc:{...}, ...}}>
+        <InnerScrollAndFocusHandlerOld focusAndScrollRef={{scrollRef:null, ...}} cacheNode={{rsc:{...}, ...}}>
+          <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
+            <LoadingBoundary name="/" loading={null}>
+              <HTTPAccessFallbackBoundary notFound={{...}} forbidden={undefined} unauthorized={undefined}>
+                <HTTPAccessFallbackErrorBoundary pathname="/" notFound={{...}} forbidden={undefined} ...>
+                  <RedirectBoundary>
+                    <RedirectErrorBoundary router={{...}}>
+                      <InnerLayoutRouter url="/" tree={[...]} params={{}} cacheNode={{rsc:{...}, ...}} ...>
+                        <SegmentViewNode type="page" pagePath="page.tsx">
+                          <SegmentTrieNode>
+                          <Home>
+                            <AtlasWorkbench>
+                              <main className="min-h-scre...">
+                                <div
++                                 className="grid min-h-screen grid-cols-1 xl:grid-cols-[64px_minmax(0,1fr)]"
+-                                 className="grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(520px,1fr)_360px]"
+                                >
+                                  <aside className="border-r b...">
+                                    <div
++                                     className="flex min-h-screen flex-col items-center gap-3 py-3"
+-                                     className="flex h-16 items-center justify-between border-b border-zinc-200 px-4"
+                                    >
++                                     <button
++                                       type="button"
++                                       onClick={function toggleSidebar}
++                                       className="grid h-10 w-10 place-items-center rounded-md border border-zinc-200..."
++                                       title="展开侧栏"
++                                     >
+-                                     <div>
+                                      ...
+                                  ...
+                        ...
+                      ...
+          ...
+
+    at <unknown> (https://react.dev/link/hydration-mismatch)
+    at button (<anonymous>)
+    at AtlasWorkbench (src/app/atlas-workbench.tsx:737:12)
+    at Home (src\app\page.tsx:4:10)
+  735 |   }
+  736 |
+> 737 |   function toggleLocale() {
+      |            ^
+  738 |     const nextLocale = locale === "zh" ? "en" : "zh";
+  739 |     setLocale(nextLocale);
+  740 |     window.localStorage.setItem("brooks-pa-atlas.locale", nextLocale);

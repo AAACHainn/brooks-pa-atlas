@@ -34,6 +34,27 @@ function valueAt(values: FormDataEntryValue[], index: number) {
   return typeof value === "string" ? value : "";
 }
 
+function pathPartsAt(values: FormDataEntryValue[], index: number) {
+  const value = valueAt(values, index);
+  if (!value.trim()) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+
+    return parsed
+      .filter((part): part is string => typeof part === "string")
+      .map((part) => part.trim())
+      .filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
 async function getOrCreateBatch(batchId: string | null, totalCount: number) {
   if (batchId) {
     const existing = await prisma.importBatch.findUnique({ where: { id: batchId } });
@@ -56,6 +77,7 @@ export async function POST(request: Request) {
   const files = formData.getAll("files").filter((item): item is File => item instanceof File);
   const relativePaths = formData.getAll("relativePaths");
   const groupKeys = formData.getAll("groupKeys");
+  const indexPaths = formData.getAll("indexPaths");
   const assignments = parseJsonField<GroupAssignments>(formData, "assignments", {});
   const totalCount = Number(formData.get("totalCount")) || files.length;
   const batchId = typeof formData.get("batchId") === "string" ? String(formData.get("batchId")) : null;
@@ -68,7 +90,7 @@ export async function POST(request: Request) {
   for (const [index, file] of files.entries()) {
     const relativePath = valueAt(relativePaths, index);
     const groupKey = valueAt(groupKeys, index) || "Ungrouped";
-    const assignment = assignments[groupKey] ?? [];
+    const assignment = pathPartsAt(indexPaths, index) ?? assignments[groupKey] ?? [];
 
     try {
       if (!isSupportedImage(file)) {

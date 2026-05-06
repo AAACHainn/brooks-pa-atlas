@@ -75,9 +75,11 @@ type AtlasData = {
 };
 
 type SelectedFile = {
+  id: string;
   file: File;
   relativePath: string;
   groupKey: string;
+  previewUrl: string;
 };
 
 type Locale = "zh" | "en";
@@ -98,6 +100,19 @@ const copy = {
     clearSelection: "取消选择",
     selected: "已选择",
     groups: "个分组",
+    selectedFiles: "待导入图片",
+    thumbnail: "缩略图",
+    displayName: "显示名称",
+    assignedIndex: "所属索引",
+    originalPath: "原始路径",
+    previewImage: "预览图片",
+    closePreview: "关闭预览",
+    totalImages: "总数",
+    page: "页",
+    itemsPerPage: "每页",
+    previousPage: "上一页",
+    nextPage: "下一页",
+    resizeImportTable: "拖动调整导入表格高度",
     startImport: "开始导入",
     undoBatch: "撤销本批次",
     overview: "概览",
@@ -153,6 +168,19 @@ const copy = {
     clearSelection: "Clear",
     selected: "selected",
     groups: "groups",
+    selectedFiles: "Images to import",
+    thumbnail: "Thumbnail",
+    displayName: "Display name",
+    assignedIndex: "Index",
+    originalPath: "Original path",
+    previewImage: "Preview image",
+    closePreview: "Close preview",
+    totalImages: "Total",
+    page: "Page",
+    itemsPerPage: "Per page",
+    previousPage: "Previous page",
+    nextPage: "Next page",
+    resizeImportTable: "Drag to resize import table",
     startImport: "Start import",
     undoBatch: "Undo batch",
     overview: "Overview",
@@ -249,6 +277,13 @@ function defaultGroupFor(relativePath: string) {
   return prefix || "未分组";
 }
 
+function indexPathParts(value: string) {
+  return value
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
 function flattenTree(nodes: IndexTreeNode[]) {
   const result: IndexTreeNode[] = [];
   const visit = (node: IndexTreeNode) => {
@@ -286,6 +321,10 @@ function clampZoom(value: number) {
 
 function clampViewerHeight(value: number) {
   return Math.min(1200, Math.max(420, value));
+}
+
+function clampImportTableHeight(value: number) {
+  return Math.min(760, Math.max(180, value));
 }
 
 function IndexBranch({
@@ -405,7 +444,19 @@ export default function AtlasWorkbench() {
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [newIndexName, setNewIndexName] = useState("");
   const [detailDraft, setDetailDraft] = useState({ title: "", notes: "", indexNodeId: "" });
+  const [importPage, setImportPage] = useState(1);
+  const [importPageSize, setImportPageSize] = useState(10);
+  const [importTableHeight, setImportTableHeight] = useState(() => {
+    if (typeof window === "undefined") {
+      return 280;
+    }
+
+    const savedHeight = Number(window.localStorage.getItem("brooks-pa-atlas.importTableHeight"));
+    return Number.isFinite(savedHeight) && savedHeight > 0 ? clampImportTableHeight(savedHeight) : 280;
+  });
+  const [isResizingImportTable, setIsResizingImportTable] = useState(false);
   const [imageZoom, setImageZoom] = useState(100);
+  const [importPreviewFile, setImportPreviewFile] = useState<SelectedFile | null>(null);
   const [imageViewerHeight, setImageViewerHeight] = useState(() => {
     if (typeof window === "undefined") {
       return 720;
@@ -422,6 +473,8 @@ export default function AtlasWorkbench() {
 
     return window.localStorage.getItem("brooks-pa-atlas.browseThumbnails") !== "hidden";
   });
+  const importTableResizeStartRef = useRef({ height: importTableHeight, y: 0 });
+  const importTableHeightRef = useRef(importTableHeight);
   const viewerResizeStartRef = useRef({ height: imageViewerHeight, y: 0 });
   const viewerHeightRef = useRef(imageViewerHeight);
   const t = copy[locale];
@@ -493,7 +546,39 @@ export default function AtlasWorkbench() {
     };
   }, [isResizingViewer]);
 
+  useEffect(() => {
+    if (!isResizingImportTable) {
+      return;
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const nextHeight = clampImportTableHeight(
+        importTableResizeStartRef.current.height + event.clientY - importTableResizeStartRef.current.y,
+      );
+      importTableHeightRef.current = nextHeight;
+      setImportTableHeight(nextHeight);
+    }
+
+    function handlePointerUp() {
+      setIsResizingImportTable(false);
+      window.localStorage.setItem(
+        "brooks-pa-atlas.importTableHeight",
+        String(importTableHeightRef.current),
+      );
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isResizingImportTable]);
+
   const flatIndexes = useMemo(() => flattenTree(data?.tree ?? []), [data?.tree]);
+  const selectedIndexPath =
+    flatIndexes.find((node) => node.id === selectedIndexId)?.path ?? "";
   const selectedImage = data?.images.find((image) => image.id === selectedImageId) ?? null;
   const selectedImageIndex =
     data?.images.findIndex((image) => image.id === selectedImageId) ?? -1;
@@ -530,6 +615,11 @@ export default function AtlasWorkbench() {
     files.forEach((item) => counts.set(item.groupKey, (counts.get(item.groupKey) ?? 0) + 1));
     return Array.from(counts.entries()).map(([groupKey, count]) => ({ groupKey, count }));
   }, [files]);
+  const importTotalPages = Math.max(1, Math.ceil(files.length / importPageSize));
+  const importCurrentPage = Math.min(importPage, importTotalPages);
+  const importStartIndex = (importCurrentPage - 1) * importPageSize;
+  const importPageFiles = files.slice(importStartIndex, importStartIndex + importPageSize);
+  const importEndIndex = importStartIndex + importPageFiles.length;
 
   useEffect(() => {
     const images = data?.images ?? [];
@@ -570,26 +660,32 @@ export default function AtlasWorkbench() {
   }, [data?.images, isBrowseMode, selectedImageIndex]);
 
   function handleFiles(fileList: FileList | null) {
+    files.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    setImportPreviewFile(null);
     const nextFiles = Array.from(fileList ?? [])
       .filter((file) => file.type.startsWith("image/"))
-      .map((file) => {
+      .map((file, index) => {
         const relativePath = fileRelativePath(file);
+        const groupKey = defaultGroupFor(relativePath);
         return {
+          id: `${index}-${relativePath}-${file.name}-${file.size}-${file.lastModified}`,
           file,
           relativePath,
-          groupKey: defaultGroupFor(relativePath),
+          groupKey,
+          previewUrl: URL.createObjectURL(file),
         };
       });
 
     setFiles(nextFiles);
     setAssignments(
       Object.fromEntries(
-        Array.from(new Set(nextFiles.map((item) => item.groupKey))).map((groupKey) => [
-          groupKey,
-          groupKey,
+        nextFiles.map((item) => [
+          item.id,
+          selectedIndexPath,
         ]),
       ),
     );
+    setImportPage(1);
     setUploadProgress({ done: 0, total: nextFiles.length });
   }
 
@@ -607,12 +703,9 @@ export default function AtlasWorkbench() {
         const chunk = files.slice(index, index + chunkSize);
         const formData = new FormData();
         const groupAssignments = Object.fromEntries(
-          Object.entries(assignments).map(([groupKey, path]) => [
-            groupKey,
-            path
-              .split("/")
-              .map((part) => part.trim())
-              .filter(Boolean),
+          groups.map((group) => [
+            group.groupKey,
+            indexPathParts(group.groupKey),
           ]),
         );
 
@@ -626,6 +719,7 @@ export default function AtlasWorkbench() {
           formData.append("files", item.file);
           formData.append("relativePaths", item.relativePath);
           formData.append("groupKeys", item.groupKey);
+          formData.append("indexPaths", JSON.stringify(indexPathParts(assignments[item.id] ?? "")));
         });
 
         const response = await fetch("/api/import", {
@@ -642,7 +736,9 @@ export default function AtlasWorkbench() {
         await refresh();
       }
 
+      files.forEach((item) => URL.revokeObjectURL(item.previewUrl));
       setFiles([]);
+      setImportPreviewFile(null);
       await refresh();
     } finally {
       setUploading(false);
@@ -725,6 +821,13 @@ export default function AtlasWorkbench() {
     setIsResizingViewer(true);
   }
 
+  function startImportTableResize(event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    importTableResizeStartRef.current = { height: importTableHeight, y: event.clientY };
+    importTableHeightRef.current = importTableHeight;
+    setIsResizingImportTable(true);
+  }
+
   function toggleBrowseThumbnails() {
     const nextValue = !showBrowseThumbnails;
     setShowBrowseThumbnails(nextValue);
@@ -764,7 +867,9 @@ export default function AtlasWorkbench() {
   }
 
   function clearSelectedFiles() {
+    files.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     setFiles([]);
+    setImportPreviewFile(null);
     setAssignments({});
     setUploadProgress({ done: 0, total: 0 });
   }
@@ -949,7 +1054,7 @@ export default function AtlasWorkbench() {
                     {files.length} {t.selected}
                   </p>
                   <p className="text-xs text-zinc-500">
-                    {groups.length} {t.groups}
+                    {t.selectedFiles} / {groups.length} {t.groups}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -975,26 +1080,118 @@ export default function AtlasWorkbench() {
                   </button>
                 </div>
               </div>
-              <div className="grid max-h-40 grid-cols-1 gap-2 overflow-auto pr-1 lg:grid-cols-2">
-                {groups.map((group) => (
-                  <div key={group.groupKey} className="grid grid-cols-[1fr_2fr_54px] items-center gap-2 rounded-md border border-zinc-200 p-2">
-                    <span className="truncate text-sm font-medium" title={group.groupKey}>
-                      {group.groupKey}
-                    </span>
-                    <input
-                      value={assignments[group.groupKey] ?? ""}
-                      onChange={(event) =>
-                        setAssignments((current) => ({
-                          ...current,
-                          [group.groupKey]: event.target.value,
-                        }))
-                      }
-                      className="h-8 rounded-md border border-zinc-200 px-2 text-sm outline-none focus:border-zinc-500"
-                    />
-                    <span className="text-right text-xs text-zinc-500">{group.count}</span>
-                  </div>
-                ))}
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">
+                <span>
+                  {t.totalImages} {files.length} / {importStartIndex + 1}-{importEndIndex} / {t.page}{" "}
+                  {importCurrentPage}/{importTotalPages}
+                </span>
+                <div className="flex items-center gap-2">
+                  <span>{t.itemsPerPage}</span>
+                  <select
+                    value={importPageSize}
+                    onChange={(event) => {
+                      setImportPageSize(Number(event.target.value));
+                      setImportPage(1);
+                    }}
+                    className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs outline-none focus:border-zinc-500"
+                  >
+                    {[10, 25, 50, 100].map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setImportPage((page) => Math.max(1, page - 1))}
+                    disabled={importCurrentPage <= 1}
+                    className="h-8 rounded-md border border-zinc-200 px-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+                  >
+                    {t.previousPage}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportPage((page) => Math.min(importTotalPages, page + 1))}
+                    disabled={importCurrentPage >= importTotalPages}
+                    className="h-8 rounded-md border border-zinc-200 px-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+                  >
+                    {t.nextPage}
+                  </button>
+                </div>
               </div>
+              <div
+                className={`overflow-auto rounded-md border border-zinc-200 ${
+                  isResizingImportTable ? "select-none" : ""
+                }`}
+                style={{ height: importTableHeight }}
+              >
+                <table className="min-w-full border-collapse bg-white text-sm">
+                  <thead className="sticky top-0 z-10 bg-zinc-50 text-left text-xs font-semibold text-zinc-500">
+                    <tr className="border-b border-zinc-200">
+                      <th className="min-w-52 px-3 py-2">{t.displayName}</th>
+                      <th className="min-w-72 px-3 py-2">{t.assignedIndex}</th>
+                      <th className="w-28 px-3 py-2">{t.thumbnail}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importPageFiles.map((item) => (
+                      <tr key={item.id} className="border-b border-zinc-100 last:border-0">
+                        <td className="min-w-0 px-3 py-2">
+                          <p className="truncate font-medium text-zinc-900" title={item.file.name}>
+                            {item.file.name}
+                          </p>
+                          <p className="mt-1 truncate text-xs text-zinc-500" title={item.relativePath}>
+                            {t.originalPath}: {item.relativePath}
+                          </p>
+                        </td>
+                        <td className="px-3 py-2">
+                          <select
+                            value={assignments[item.id] ?? ""}
+                            onChange={(event) =>
+                              setAssignments((current) => ({
+                                ...current,
+                                [item.id]: event.target.value,
+                              }))
+                            }
+                            className="h-9 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-zinc-500"
+                          >
+                            <option value="">{t.unclassified}</option>
+                            {flatIndexes.map((node) => (
+                              <option key={node.id} value={node.path}>
+                                {"- ".repeat(node.depth)}
+                                {node.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={() => setImportPreviewFile(item)}
+                            className="h-14 w-20 overflow-hidden rounded border border-zinc-200 bg-zinc-100 transition hover:border-zinc-950"
+                            title={t.previewImage}
+                          >
+                            <img
+                              src={item.previewUrl}
+                              alt={item.file.name}
+                              className="h-full w-full object-contain"
+                            />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button
+                type="button"
+                onPointerDown={startImportTableResize}
+                className="mx-auto mt-1 flex h-5 w-28 cursor-row-resize items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 hover:bg-white"
+                title={t.resizeImportTable}
+                aria-label={t.resizeImportTable}
+              >
+                <span className="h-1 w-12 rounded-full bg-zinc-400" />
+              </button>
             </div>
           ) : null}
 
@@ -1376,6 +1573,47 @@ export default function AtlasWorkbench() {
           </aside>
         ) : null}
       </div>
+      {importPreviewFile ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/70 p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t.previewImage}
+          onClick={() => setImportPreviewFile(null)}
+        >
+          <div
+            className="max-h-[92vh] w-full max-w-5xl rounded-md bg-white p-4 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold" title={importPreviewFile.file.name}>
+                  {importPreviewFile.file.name}
+                </p>
+                <p className="truncate text-xs text-zinc-500" title={importPreviewFile.relativePath}>
+                  {importPreviewFile.relativePath}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setImportPreviewFile(null)}
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                title={t.closePreview}
+                aria-label={t.closePreview}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-[78vh] overflow-auto rounded-md border border-zinc-200 bg-zinc-100">
+              <img
+                src={importPreviewFile.previewUrl}
+                alt={importPreviewFile.file.name}
+                className="mx-auto max-h-[78vh] max-w-full object-contain"
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

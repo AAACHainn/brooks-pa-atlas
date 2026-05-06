@@ -487,36 +487,10 @@ function ModeSwitch({
 }
 
 export default function AtlasWorkbench() {
-  const [locale, setLocale] = useState<Locale>(() => {
-    if (typeof window === "undefined") {
-      return "zh";
-    }
-
-    return window.localStorage.getItem("brooks-pa-atlas.locale") === "en" ? "en" : "zh";
-  });
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-
-    return window.localStorage.getItem("brooks-pa-atlas.sidebar") === "collapsed";
-  });
-  const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-
-    return window.localStorage.getItem("brooks-pa-atlas.overview") === "collapsed";
-  });
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    if (typeof window === "undefined") {
-      return "manage";
-    }
-
-    return window.localStorage.getItem("brooks-pa-atlas.viewMode") === "browse"
-      ? "browse"
-      : "manage";
-  });
+  const [locale, setLocale] = useState<Locale>("zh");
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("manage");
   const [data, setData] = useState<AtlasData | null>(null);
   const [query, setQuery] = useState("");
   const [selectedIndexId, setSelectedIndexId] = useState<string | null>(null);
@@ -530,22 +504,8 @@ export default function AtlasWorkbench() {
   const [importPage, setImportPage] = useState(1);
   const [importPageSize, setImportPageSize] = useState(10);
   const [imageGridPage, setImageGridPage] = useState(1);
-  const [imageGridPageSize, setImageGridPageSize] = useState(() => {
-    if (typeof window === "undefined") {
-      return 50;
-    }
-
-    const savedSize = Number(window.localStorage.getItem("brooks-pa-atlas.imageGridPageSize"));
-    return [25, 50, 100, 200].includes(savedSize) ? savedSize : 50;
-  });
-  const [importTableHeight, setImportTableHeight] = useState(() => {
-    if (typeof window === "undefined") {
-      return 280;
-    }
-
-    const savedHeight = Number(window.localStorage.getItem("brooks-pa-atlas.importTableHeight"));
-    return Number.isFinite(savedHeight) && savedHeight > 0 ? clampImportTableHeight(savedHeight) : 280;
-  });
+  const [imageGridPageSize, setImageGridPageSize] = useState(50);
+  const [importTableHeight, setImportTableHeight] = useState(280);
   const [isResizingImportTable, setIsResizingImportTable] = useState(false);
   const [imageZoom, setImageZoom] = useState(100);
   const [importPreviewFile, setImportPreviewFile] = useState<SelectedFile | null>(null);
@@ -558,22 +518,9 @@ export default function AtlasWorkbench() {
   const [indexActionBusy, setIndexActionBusy] = useState(false);
   const [renameIndexName, setRenameIndexName] = useState("");
   const [clearIndexConfirmText, setClearIndexConfirmText] = useState("");
-  const [imageViewerHeight, setImageViewerHeight] = useState(() => {
-    if (typeof window === "undefined") {
-      return 720;
-    }
-
-    const savedHeight = Number(window.localStorage.getItem("brooks-pa-atlas.viewerHeight"));
-    return Number.isFinite(savedHeight) && savedHeight > 0 ? clampViewerHeight(savedHeight) : 720;
-  });
+  const [imageViewerHeight, setImageViewerHeight] = useState(720);
   const [isResizingViewer, setIsResizingViewer] = useState(false);
-  const [showBrowseThumbnails, setShowBrowseThumbnails] = useState(() => {
-    if (typeof window === "undefined") {
-      return true;
-    }
-
-    return window.localStorage.getItem("brooks-pa-atlas.browseThumbnails") !== "hidden";
-  });
+  const [showBrowseThumbnails, setShowBrowseThumbnails] = useState(true);
   const importTableResizeStartRef = useRef({ height: importTableHeight, y: 0 });
   const importTableHeightRef = useRef(importTableHeight);
   const viewerResizeStartRef = useRef({ height: imageViewerHeight, y: 0 });
@@ -593,6 +540,37 @@ export default function AtlasWorkbench() {
     const response = await fetch(`/api/atlas?${params.toString()}`, { cache: "no-store" });
     setData(await response.json());
   }, [query, selectedIndexId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        setLocale(window.localStorage.getItem("brooks-pa-atlas.locale") === "en" ? "en" : "zh");
+        setIsSidebarCollapsed(window.localStorage.getItem("brooks-pa-atlas.sidebar") === "collapsed");
+        setIsOverviewCollapsed(window.localStorage.getItem("brooks-pa-atlas.overview") === "collapsed");
+        setViewMode(window.localStorage.getItem("brooks-pa-atlas.viewMode") === "browse" ? "browse" : "manage");
+        setShowBrowseThumbnails(window.localStorage.getItem("brooks-pa-atlas.browseThumbnails") !== "hidden");
+
+        const savedGridPageSize = Number(window.localStorage.getItem("brooks-pa-atlas.imageGridPageSize"));
+        setImageGridPageSize([25, 50, 100, 200].includes(savedGridPageSize) ? savedGridPageSize : 50);
+
+        const savedImportTableHeight = Number(window.localStorage.getItem("brooks-pa-atlas.importTableHeight"));
+        setImportTableHeight(
+          Number.isFinite(savedImportTableHeight) && savedImportTableHeight > 0
+            ? clampImportTableHeight(savedImportTableHeight)
+            : 280,
+        );
+
+        const savedViewerHeight = Number(window.localStorage.getItem("brooks-pa-atlas.viewerHeight"));
+        setImageViewerHeight(
+          Number.isFinite(savedViewerHeight) && savedViewerHeight > 0 ? clampViewerHeight(savedViewerHeight) : 720,
+        );
+      } catch {
+        // localStorage can be unavailable in restricted browser contexts.
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {

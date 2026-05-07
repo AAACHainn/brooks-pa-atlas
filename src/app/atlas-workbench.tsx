@@ -154,6 +154,8 @@ const copy = {
     ocrDone: "OCR 已完成",
     ocrFailed: "OCR 失败",
     noImages: "暂无图片",
+    dataLoadFailed: "数据加载失败",
+    retryLoad: "重新加载",
     imageDetail: "图片详情",
     noSelection: "未选择图片",
     deleteImage: "删除图片",
@@ -251,6 +253,8 @@ const copy = {
     ocrDone: "OCR done",
     ocrFailed: "OCR failed",
     noImages: "No images",
+    dataLoadFailed: "Data load failed",
+    retryLoad: "Retry",
     imageDetail: "Image detail",
     noSelection: "No selection",
     deleteImage: "Delete image",
@@ -522,6 +526,7 @@ export default function AtlasWorkbench() {
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("manage");
   const [data, setData] = useState<AtlasData | null>(null);
+  const [dataError, setDataError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [selectedIndexId, setSelectedIndexId] = useState<string | null>(null);
   const [collapsedIndexIds, setCollapsedIndexIds] = useState<Set<string>>(() => new Set());
@@ -568,8 +573,17 @@ export default function AtlasWorkbench() {
       params.set("indexId", selectedIndexId);
     }
 
-    const response = await fetch(`/api/atlas?${params.toString()}`, { cache: "no-store" });
-    setData(await response.json());
+    try {
+      const response = await fetch(`/api/atlas?${params.toString()}`, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`GET /api/atlas ${response.status}`);
+      }
+
+      setData(await response.json());
+      setDataError(null);
+    } catch (error) {
+      setDataError(error instanceof Error ? error.message : String(error));
+    }
   }, [query, selectedIndexId]);
 
   useEffect(() => {
@@ -1532,6 +1546,23 @@ export default function AtlasWorkbench() {
           ) : null}
 
           <div className="overflow-auto p-5 xl:h-[calc(100vh-65px)]">
+            {dataError ? (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                <div className="min-w-0">
+                  <p className="font-semibold">{t.dataLoadFailed}</p>
+                  <p className="mt-1 break-all text-xs">{dataError}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void refresh()}
+                  className="inline-flex h-8 shrink-0 items-center gap-2 rounded-md border border-rose-200 bg-white px-3 text-xs font-medium text-rose-700 hover:bg-rose-100"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>{t.retryLoad}</span>
+                </button>
+              </div>
+            ) : null}
+
             {!isBrowseMode ? (
               <div className="mb-4 rounded-md border border-zinc-200 bg-white">
               <div className="flex min-h-12 items-center justify-between gap-3 px-3 py-2">

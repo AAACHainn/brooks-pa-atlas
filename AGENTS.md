@@ -59,6 +59,7 @@ Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart
 - `@prisma/adapter-better-sqlite3` + `better-sqlite3`
 - `sharp` 读取图片尺寸
 - `lucide-react` 提供图标
+- `yazl`、`yauzl` 用于跨平台 zip 备份和恢复
 - `zod`、`xlsx`、`fuse.js` 已作为依赖存在，其中部分能力还不是核心路径
 
 Prisma 7 运行时代码需要显式 driver adapter。本项目在 `src/lib/db.ts` 中用 `PrismaBetterSqlite3` 初始化 `PrismaClient`，Prisma Client 输出目录是 `src/generated/prisma`。
@@ -97,6 +98,8 @@ npm run db:init
 - `src/app/globals.css`：Tailwind v4 入口和全局 CSS。
 - `src/app/atlas-workbench.tsx`：主工作台客户端组件，绝大多数前端交互在这里。
 - `src/app/api/atlas/route.ts`：工作台聚合查询接口。
+- `src/app/api/backups/export/route.ts`：导出跨平台备份 zip。
+- `src/app/api/backups/restore/route.ts`：导入备份 zip 并以合并覆盖模式恢复。
 - `src/app/api/import/route.ts`：分块批量导入接口。
 - `src/app/api/import/[id]/undo/route.ts`：撤销导入批次。
 - `src/app/api/index-nodes/route.ts`：索引节点查询、创建、重命名、排序字段更新和删除。
@@ -105,6 +108,7 @@ npm run db:init
 - `src/app/api/images/[id]/file/route.ts`：读取图库内图片文件并返回给浏览器。
 - `src/app/api/ocr/retry/route.ts`：重试失败 OCR。
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
+- `src/lib/backup.ts`：备份 manifest、zip 导出、zip 校验和合并恢复逻辑。
 - `src/lib/index-tree.ts`：索引树创建、路径补全、树形查询。
 - `src/lib/storage.ts`：图片存储、hash、文件名清洗、尺寸读取、安全路径校验。
 - `src/lib/ocr-queue.ts`：本地 OCR 并发队列。
@@ -183,6 +187,8 @@ npm run db:init
 管理模式特性：
 
 - 可以选择图片或文件夹导入。
+- 可以导出备份 zip，包含所有索引、图片文件、标题、备注、OCR 文本和 OCR 状态等元数据。
+- 可以导入备份 zip 进行恢复；恢复使用合并覆盖模式，相同 SHA-256 hash 的图片更新元数据和索引归属，不创建重复图片，也不删除当前系统里备份外的数据。
 - 可以创建当前选中索引下的新子索引。
 - 图片详情支持编辑标题、备注、所属索引。
 - 支持删除单张图片，删除前必须二次确认。
@@ -306,6 +312,24 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 图片列表当前 `take: 200`。
 - OCR 文本和错误会截断返回，避免接口太大。
 
+`GET /api/backups/export`
+
+- 导出 `brooks-pa-atlas-backup-YYYYMMDD-HHmmssZ.zip`。
+- zip 顶层包含 `manifest.json` 和 `images/<hash>.<ext>` 图片文件。
+- manifest 格式为 `brooks-pa-atlas.backup` v1，保存索引树、图片元数据和 zip 内相对图片路径。
+- 不保存 Windows 或 Linux 绝对路径，便于跨部署环境恢复。
+- 导出前会校验数据库中每张图片的图库文件存在；如果缺失则返回错误，不生成不完整备份。
+
+`POST /api/backups/restore?mode=merge`
+
+- 接收 `multipart/form-data`，字段名为 `backup`。
+- 目前只支持 `merge` 合并覆盖模式。
+- 恢复前校验 zip entry，拒绝绝对路径、反斜杠、`.`、`..` 和 manifest 未声明的文件。
+- 按 manifest 深度恢复索引；已存在同父节点同名索引时复用并更新路径、深度和排序。
+- 按 SHA-256 hash 恢复图片；相同 hash 更新元数据和索引归属，不创建重复图片。
+- 如果相同 hash 的数据库记录存在但图库文件丢失，会从备份重新写入当前环境图库目录并更新 `libraryPath`。
+- 不删除当前系统中备份外的索引、图片或文件；不恢复旧 `ImportBatch` / `ImportItem` 历史。
+
 `POST /api/import`
 
 - 创建或复用 `ImportBatch`。
@@ -385,6 +409,10 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 - 不要把图片 blob 写入数据库。
 - 不要直接引用浏览器用户硬盘原始路径。
+- 备份 manifest 只能保存 zip 内相对路径和业务元数据，不要写入 Windows/Linux 绝对路径。
+- 恢复备份时必须使用当前环境的图库根目录写入图片，不能复用备份来源系统的本地路径。
+- 恢复备份必须保持合并覆盖语义，不要为了“完全一致”而批量删除现有数据。
+- zip 恢复必须保持 zip-slip 防护，拒绝绝对路径、反斜杠路径、`.`、`..` 和 manifest 未声明文件。
 - 文件读取和本地文件操作路由必须保持 `runtime = "nodejs"`。
 - 涉及本地图片路径时优先使用 `absoluteImagePath()`。
 - 任何删除文件的代码都必须逐个明确路径删除，不能批量删除目录。

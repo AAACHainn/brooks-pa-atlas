@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Download,
   Eye,
   FolderPlus,
   ImageIcon,
@@ -83,6 +84,14 @@ type SelectedFile = {
   previewUrl: string;
 };
 
+type RestoreStats = {
+  indexesCreated: number;
+  indexesUpdated: number;
+  imagesCreated: number;
+  imagesUpdated: number;
+  filesRestored: number;
+};
+
 type Locale = "zh" | "en";
 type ViewMode = "browse" | "manage";
 type IndexContextMenu = { node: IndexTreeNode; x: number; y: number };
@@ -115,6 +124,14 @@ const copy = {
     searchPlaceholder: "搜索标题、OCR、备注、索引",
     chooseImages: "选择图片",
     chooseFolder: "选择文件夹",
+    backupData: "备份",
+    backingUp: "备份中",
+    restoreData: "恢复",
+    restoring: "恢复中",
+    backupFailed: "备份失败，请稍后重试。",
+    restoreFailed: "恢复失败，请确认 zip 文件有效后重试。",
+    restoreConfirmMessage:
+      "恢复会合并备份数据：相同图片会覆盖标题、备注、OCR 和索引归属，不会删除当前系统中备份外的数据。是否继续？",
     noSupportedImages: "未找到支持的图片文件。",
     clearSelection: "取消选择",
     selected: "已选择",
@@ -213,6 +230,14 @@ const copy = {
     searchPlaceholder: "Search title, OCR, notes, index",
     chooseImages: "Choose images",
     chooseFolder: "Choose folder",
+    backupData: "Backup",
+    backingUp: "Backing up",
+    restoreData: "Restore",
+    restoring: "Restoring",
+    backupFailed: "Backup failed. Please try again.",
+    restoreFailed: "Restore failed. Please confirm the zip file is valid and try again.",
+    restoreConfirmMessage:
+      "Restore will merge backup data: matching images overwrite title, notes, OCR, and index assignment, and data outside the backup will not be deleted. Continue?",
     noSupportedImages: "No supported image files found.",
     clearSelection: "Clear",
     selected: "selected",
@@ -381,6 +406,11 @@ function formatBytes(value: number) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function backupFileNameFromHeader(value: string | null) {
+  const match = value?.match(/filename="?([^"]+)"?/);
+  return match?.[1] ?? `brooks-pa-atlas-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+}
+
 function ocrTone(status: ChartImage["ocrStatus"]) {
   switch (status) {
     case "COMPLETED":
@@ -534,6 +564,8 @@ export default function AtlasWorkbench() {
   const [files, setFiles] = useState<SelectedFile[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [uploading, setUploading] = useState(false);
+  const [backingUp, setBackingUp] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [newIndexName, setNewIndexName] = useState("");
   const [detailDraft, setDetailDraft] = useState({ title: "", notes: "", indexNodeId: "" });
@@ -561,6 +593,7 @@ export default function AtlasWorkbench() {
   const importTableHeightRef = useRef(importTableHeight);
   const viewerResizeStartRef = useRef({ height: imageViewerHeight, y: 0 });
   const viewerHeightRef = useRef(imageViewerHeight);
+  const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const t = copy[locale];
   const isBrowseMode = viewMode === "browse";
 
@@ -1060,6 +1093,87 @@ export default function AtlasWorkbench() {
     await refresh();
   }
 
+  async function downloadBackup() {
+    setBackingUp(true);
+    try {
+      const response = await fetch("/api/backups/export", { cache: "no-store" });
+      if (!response.ok) {
+        const result = (await response.json().catch(() => null)) as { error?: string } | null;
+        window.alert(result?.error ?? t.backupFailed);
+        return;
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = backupFileNameFromHeader(response.headers.get("Content-Disposition"));
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      window.alert(t.backupFailed);
+    } finally {
+      setBackingUp(false);
+    }
+  }
+
+  function restoreCompleteMessage(stats: RestoreStats) {
+    if (locale === "zh") {
+      return [
+        "恢复完成。",
+        `索引：新建 ${stats.indexesCreated}，更新 ${stats.indexesUpdated}`,
+        `图片：新建 ${stats.imagesCreated}，更新 ${stats.imagesUpdated}`,
+        `文件：恢复 ${stats.filesRestored}`,
+      ].join("\n");
+    }
+
+    return [
+      "Restore complete.",
+      `Indexes: ${stats.indexesCreated} created, ${stats.indexesUpdated} updated`,
+      `Images: ${stats.imagesCreated} created, ${stats.imagesUpdated} updated`,
+      `Files restored: ${stats.filesRestored}`,
+    ].join("\n");
+  }
+
+  async function restoreBackup(file: File | null) {
+    if (!file) {
+      return;
+    }
+
+    if (!window.confirm(t.restoreConfirmMessage)) {
+      return;
+    }
+
+    setRestoring(true);
+    try {
+      const formData = new FormData();
+      formData.append("backup", file);
+
+      const response = await fetch("/api/backups/restore?mode=merge", {
+        method: "POST",
+        body: formData,
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { error?: string; stats?: RestoreStats }
+        | null;
+
+      if (!response.ok || !result?.stats) {
+        window.alert(result?.error ?? t.restoreFailed);
+        return;
+      }
+
+      window.alert(restoreCompleteMessage(result.stats));
+      setSelectedImageId(null);
+      await refresh();
+    } catch {
+      window.alert(t.restoreFailed);
+    } finally {
+      setRestoring(false);
+    }
+  }
+
   async function undoBatch(batchId: string) {
     setUndoingBatchId(batchId);
     try {
@@ -1392,6 +1506,34 @@ export default function AtlasWorkbench() {
                     {...({ webkitdirectory: "true", directory: "true" } as Record<string, string>)}
                   />
                 </label>
+                <button
+                  type="button"
+                  onClick={() => void downloadBackup()}
+                  disabled={backingUp || restoring}
+                  className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {backingUp ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                  <span>{backingUp ? t.backingUp : t.backupData}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => restoreInputRef.current?.click()}
+                  disabled={backingUp || restoring}
+                  className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {restoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                  <span>{restoring ? t.restoring : t.restoreData}</span>
+                </button>
+                <input
+                  ref={restoreInputRef}
+                  type="file"
+                  accept=".zip,application/zip"
+                  className="hidden"
+                  onChange={(event) => {
+                    void restoreBackup(event.target.files?.[0] ?? null);
+                    event.target.value = "";
+                  }}
+                />
               </>
             ) : null}
           </div>

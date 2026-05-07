@@ -405,46 +405,76 @@ function clampImportTableHeight(value: number) {
 function IndexBranch({
   nodes,
   selectedId,
+  collapsedIds,
   onSelect,
+  onToggleExpanded,
   onContextMenu,
 }: {
   nodes: IndexTreeNode[];
   selectedId: string | null;
+  collapsedIds: Set<string>;
   onSelect: (id: string | null) => void;
+  onToggleExpanded: (id: string) => void;
   onContextMenu?: (node: IndexTreeNode, event: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <div className="space-y-1">
-      {nodes.map((node) => (
-        <div key={node.id}>
-          <button
-            type="button"
-            onClick={() => onSelect(node.id)}
-            onContextMenu={(event) => onContextMenu?.(node, event)}
-            className={`grid h-9 w-full grid-cols-[16px_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm transition ${
-              selectedId === node.id
-                ? "bg-zinc-950 text-white"
-                : "text-zinc-700 hover:bg-zinc-100"
-            }`}
-            style={{ paddingLeft: 8 + node.depth * 12 }}
-            title={node.path}
-          >
-            <ChevronRight className="h-3.5 w-3.5 text-current opacity-60" />
-            <span className="truncate">{node.name}</span>
-            <span className="rounded border border-current/15 px-1.5 py-0.5 text-[11px] opacity-75">
-              {node.imageCount}
-            </span>
-          </button>
-          {node.children.length > 0 ? (
-            <IndexBranch
-              nodes={node.children}
-              selectedId={selectedId}
-              onSelect={onSelect}
-              onContextMenu={onContextMenu}
-            />
-          ) : null}
-        </div>
-      ))}
+      {nodes.map((node) => {
+        const hasChildren = node.children.length > 0;
+        const isCollapsed = collapsedIds.has(node.id);
+
+        return (
+          <div key={node.id}>
+            <button
+              type="button"
+              onClick={() => onSelect(node.id)}
+              onContextMenu={(event) => onContextMenu?.(node, event)}
+              className={`grid h-9 w-full grid-cols-[16px_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm transition ${
+                selectedId === node.id
+                  ? "bg-zinc-950 text-white"
+                  : "text-zinc-700 hover:bg-zinc-100"
+              }`}
+              style={{ paddingLeft: 8 + node.depth * 12 }}
+              title={node.path}
+            >
+              <span
+                className={`grid h-5 w-5 place-items-center rounded transition ${
+                  hasChildren ? "hover:bg-current/10" : "pointer-events-none opacity-0"
+                }`}
+                onClick={(event) => {
+                  if (!hasChildren) {
+                    return;
+                  }
+
+                  event.stopPropagation();
+                  onToggleExpanded(node.id);
+                }}
+                title={hasChildren ? (isCollapsed ? "展开索引" : "收起索引") : undefined}
+              >
+                <ChevronRight
+                  className={`h-3.5 w-3.5 text-current opacity-60 transition ${
+                    hasChildren && !isCollapsed ? "rotate-90" : ""
+                  }`}
+                />
+              </span>
+              <span className="truncate">{node.name}</span>
+              <span className="rounded border border-current/15 px-1.5 py-0.5 text-[11px] opacity-75">
+                {node.imageCount}
+              </span>
+            </button>
+            {hasChildren && !isCollapsed ? (
+              <IndexBranch
+                nodes={node.children}
+                selectedId={selectedId}
+                collapsedIds={collapsedIds}
+                onSelect={onSelect}
+                onToggleExpanded={onToggleExpanded}
+                onContextMenu={onContextMenu}
+              />
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -494,6 +524,7 @@ export default function AtlasWorkbench() {
   const [data, setData] = useState<AtlasData | null>(null);
   const [query, setQuery] = useState("");
   const [selectedIndexId, setSelectedIndexId] = useState<string | null>(null);
+  const [collapsedIndexIds, setCollapsedIndexIds] = useState<Set<string>>(() => new Set());
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [files, setFiles] = useState<SelectedFile[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
@@ -1079,6 +1110,20 @@ export default function AtlasWorkbench() {
     setImageGridPage(1);
   }
 
+  function toggleIndexExpanded(id: string) {
+    setCollapsedIndexIds((current) => {
+      const next = new Set(current);
+
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+
+      return next;
+    });
+  }
+
   function adjustImageZoom(delta: number) {
     setImageZoom((current) => clampZoom(current + delta));
   }
@@ -1279,7 +1324,9 @@ export default function AtlasWorkbench() {
                 <IndexBranch
                   nodes={data?.tree ?? []}
                   selectedId={selectedIndexId}
+                  collapsedIds={collapsedIndexIds}
                   onSelect={selectIndex}
+                  onToggleExpanded={toggleIndexExpanded}
                   onContextMenu={openIndexContextMenu}
                 />
               </nav>

@@ -32,8 +32,13 @@ yarn-error.log*
 
 # local dev server logs
 /.codex-dev-server.log
+/.codex-dev-server.err.log
+/.codex-run-dev.cmd
 /dev-server.log
 /dev-server.err.log
+
+# local npm cache fallback
+/.npm-cache/
 
 # env files (can opt-in for committing if needed)
 .env*

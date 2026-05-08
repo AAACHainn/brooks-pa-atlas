@@ -1375,19 +1375,21 @@ export default function AtlasWorkbench() {
 
     setRestoring(true);
     try {
-      const formData = new FormData();
-      formData.append("backup", file);
-
       const response = await fetch("/api/backups/restore?mode=merge", {
         method: "POST",
-        body: formData,
+        headers: {
+          "Content-Type": file.type || "application/zip",
+          "X-Backup-File-Name": encodeURIComponent(file.name),
+        },
+        body: file,
       });
       const result = (await response.json().catch(() => null)) as
-        | { error?: string; stats?: RestoreStats }
+        | { error?: string; restoreId?: string; stats?: RestoreStats }
         | null;
 
       if (!response.ok || !result?.stats) {
-        window.alert(result?.error ?? t.restoreFailed);
+        const message = result?.error ?? t.restoreFailed;
+        window.alert(result?.restoreId ? `${message}\nRestore ID: ${result.restoreId}` : message);
         return;
       }
 

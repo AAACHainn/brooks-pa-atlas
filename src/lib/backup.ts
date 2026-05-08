@@ -70,6 +70,12 @@ type RestoreStats = {
   filesRestored: number;
 };
 
+type RestoreLogMetadata = Record<string, boolean | number | string | null | undefined>;
+
+type RestoreOptions = {
+  log?: (message: string, metadata?: RestoreLogMetadata) => void;
+};
+
 function iso(value: Date | null | undefined) {
   return value ? value.toISOString() : null;
 }
@@ -401,8 +407,19 @@ export async function createBackupZip() {
   };
 }
 
-export async function restoreBackupZip(buffer: Buffer): Promise<RestoreStats> {
+export async function restoreBackupZip(
+  buffer: Buffer,
+  options: RestoreOptions = {},
+): Promise<RestoreStats> {
+  const log = options.log ?? (() => {});
+  log("zip validation started", { zipBytes: buffer.length });
   const manifest = await readManifestAndEntryNames(buffer);
+  log("manifest loaded", {
+    exportedAt: manifest.exportedAt,
+    indexes: manifest.indexes.length,
+    images: manifest.images.length,
+  });
+
   const stats: RestoreStats = {
     indexesCreated: 0,
     indexesUpdated: 0,
@@ -423,6 +440,7 @@ export async function restoreBackupZip(buffer: Buffer): Promise<RestoreStats> {
     return left.path.localeCompare(right.path);
   });
 
+  log("index restore started", { indexes: sortedIndexes.length });
   for (const index of sortedIndexes) {
     const parentId = index.parentPath ? indexIdByPath.get(index.parentPath) : null;
 
@@ -460,74 +478,109 @@ export async function restoreBackupZip(buffer: Buffer): Promise<RestoreStats> {
       stats.indexesCreated += 1;
     }
   }
+  log("index restore completed", {
+    indexesCreated: stats.indexesCreated,
+    indexesUpdated: stats.indexesUpdated,
+  });
 
   const imagesByPath = new Map(manifest.images.map((image) => [image.imagePath, image]));
+  let processedImages = 0;
 
+  log("image restore started", { images: manifest.images.length });
   await readZipEntries(buffer, async (zipFile, entry) => {
     const image = imagesByPath.get(entry.fileName);
     if (!image) {
       return;
     }
 
-    const buffer = await readStreamToBuffer(await openReadStream(zipFile, entry));
-    const actualHash = hashBuffer(buffer);
+    processedImages += 1;
 
-    if (actualHash !== image.hash) {
-      throw new Error(`Image hash mismatch: ${image.imagePath}`);
-    }
+    try {
+      const buffer = await readStreamToBuffer(await openReadStream(zipFile, entry));
+      const actualHash = hashBuffer(buffer);
 
-    if (buffer.length !== image.sizeBytes) {
-      throw new Error(`Image size mismatch: ${image.imagePath}`);
-    }
+      if (actualHash !== image.hash) {
+        throw new Error(`Image hash mismatch: ${image.imagePath}`);
+      }
 
-    const existing = await prisma.chartImage.findUnique({ where: { hash: image.hash } });
-    const existingFileOk = await currentImageFileExists(existing?.libraryPath);
-    const libraryPath =
-      existingFileOk && existing ? existing.libraryPath : await saveRestoredImage(image, buffer);
+      if (buffer.length !== image.sizeBytes) {
+        throw new Error(`Image size mismatch: ${image.imagePath}`);
+      }
 
-    if (!existingFileOk) {
-      stats.filesRestored += 1;
-    }
+      const existing = await prisma.chartImage.findUnique({ where: { hash: image.hash } });
+      const existingFileOk = await currentImageFileExists(existing?.libraryPath);
+      const libraryPath =
+        existingFileOk && existing ? existing.libraryPath : await saveRestoredImage(image, buffer);
 
-    const indexNodeId = image.indexPath ? indexIdByPath.get(image.indexPath) ?? null : null;
+      if (!existingFileOk) {
+        stats.filesRestored += 1;
+      }
 
-    if (image.indexPath && !indexNodeId) {
-      throw new Error(`Backup image references a missing index: ${image.indexPath}`);
-    }
+      const indexNodeId = image.indexPath ? indexIdByPath.get(image.indexPath) ?? null : null;
 
-    const imageData = {
-      libraryPath,
-      originalName: image.originalName,
-      mimeType: image.mimeType,
-      sizeBytes: buffer.length,
-      width: image.width,
-      height: image.height,
-      title: image.title,
-      notes: image.notes,
-      ocrText: image.ocrText,
-      ocrStatus: image.ocrStatus,
-      ocrError: image.ocrError,
-      ocrUpdatedAt: parseDate(image.ocrUpdatedAt),
-      indexNodeId,
-    };
+      if (image.indexPath && !indexNodeId) {
+        throw new Error(`Backup image references a missing index: ${image.indexPath}`);
+      }
 
-    if (existing) {
-      await prisma.chartImage.update({
-        where: { id: existing.id },
-        data: imageData,
+      const imageData = {
+        libraryPath,
+        originalName: image.originalName,
+        mimeType: image.mimeType,
+        sizeBytes: buffer.length,
+        width: image.width,
+        height: image.height,
+        title: image.title,
+        notes: image.notes,
+        ocrText: image.ocrText,
+        ocrStatus: image.ocrStatus,
+        ocrError: image.ocrError,
+        ocrUpdatedAt: parseDate(image.ocrUpdatedAt),
+        indexNodeId,
+      };
+
+      if (existing) {
+        await prisma.chartImage.update({
+          where: { id: existing.id },
+          data: imageData,
+        });
+        stats.imagesUpdated += 1;
+      } else {
+        await prisma.chartImage.create({
+          data: {
+            ...imageData,
+            hash: image.hash,
+            createdAt: parseDate(image.createdAt) ?? undefined,
+          },
+        });
+        stats.imagesCreated += 1;
+      }
+
+      if (processedImages === 1 || processedImages % 100 === 0 || processedImages === manifest.images.length) {
+        log("image restore progress", {
+          processedImages,
+          totalImages: manifest.images.length,
+          imagesCreated: stats.imagesCreated,
+          imagesUpdated: stats.imagesUpdated,
+          filesRestored: stats.filesRestored,
+        });
+      }
+    } catch (error) {
+      log("image restore failed", {
+        processedImages,
+        imagePath: image.imagePath,
+        originalName: image.originalName,
+        hash: image.hash,
+        error: error instanceof Error ? error.message : "Unknown error",
       });
-      stats.imagesUpdated += 1;
-    } else {
-      await prisma.chartImage.create({
-        data: {
-          ...imageData,
-          hash: image.hash,
-          createdAt: parseDate(image.createdAt) ?? undefined,
-        },
-      });
-      stats.imagesCreated += 1;
+      throw error;
     }
   });
 
+  log("image restore completed", {
+    imagesCreated: stats.imagesCreated,
+    imagesUpdated: stats.imagesUpdated,
+    filesRestored: stats.filesRestored,
+  });
+  log("restore completed", stats);
   return stats;
 }

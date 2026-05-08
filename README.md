@@ -78,7 +78,7 @@ http://电脑局域网IP:3000/api/atlas
 
 确认返回内容里的 `stats.imageCount` 是否大于 `0`。本机已有数据时，这个接口应该和电脑浏览器访问同一地址返回一致。
 
-如果电脑 IP 不是 `192.168.1.8`，可以在启动前指定允许的局域网地址：
+开发服务默认允许任意 IPv4 地址访问 Next.js dev resource，便于在不同局域网地址之间切换。如果仍然遇到浏览器控制台提示某个非 IPv4 主机名被 Next.js 阻止，可以在启动前手动追加允许的地址：
 
 ```powershell
 $env:BROOKS_ALLOWED_DEV_ORIGINS="192.168.1.23"

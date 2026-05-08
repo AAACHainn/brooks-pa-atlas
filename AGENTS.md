@@ -77,6 +77,7 @@ npm run db:init
 说明：
 
 - `npm run dev` 启动开发服务，默认访问 `http://localhost:3000`。
+- `npm run dev:lan` 启动局域网开发服务，绑定 `0.0.0.0`，用于手机或同局域网设备访问。
 - `npm run lint` 运行 ESLint。
 - `npm run build` 运行生产构建和类型检查。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
@@ -86,6 +87,7 @@ npm run db:init
 
 - 当前环境中 `npx prisma db push` 曾出现 schema engine 空报错；初始化空库优先使用 `npm run db:init`。
 - Codex 桌面环境下，普通沙箱有时无法更新 `.next` 生成文件，`npm run build` 可能因 `.next/*` 权限失败；按权限规则提升后重跑构建即可。
+- `next.config.ts` 默认用 `*.*.*.*` 允许任意 IPv4 地址访问 Next.js dev resource，避免局域网访问时 HMR 被阻止。必要时仍可用 `BROOKS_ALLOWED_DEV_ORIGINS` 追加手动允许的非 IPv4 主机名，多个地址用英文逗号分隔。
 
 ## 5. 目录导览
 

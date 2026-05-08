@@ -30,7 +30,46 @@ export async function PATCH(request: Request) {
     id?: string;
     name?: string;
     sortOrder?: number;
+    parentId?: string | null;
+    orderedIds?: string[];
   };
+
+  if (body.orderedIds) {
+    const parentId = body.parentId ?? null;
+    const orderedIds = body.orderedIds;
+    const uniqueIds = new Set(orderedIds);
+
+    if (orderedIds.length === 0 || uniqueIds.size !== orderedIds.length) {
+      return NextResponse.json({ error: "A unique node order is required." }, { status: 400 });
+    }
+
+    const siblings = await prisma.indexNode.findMany({
+      where: { parentId },
+      select: { id: true },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    });
+    const siblingIds = new Set(siblings.map((node) => node.id));
+    const matchesSiblings =
+      siblingIds.size === orderedIds.length && orderedIds.every((id) => siblingIds.has(id));
+
+    if (!matchesSiblings) {
+      return NextResponse.json(
+        { error: "Node order must contain every sibling exactly once." },
+        { status: 400 },
+      );
+    }
+
+    await prisma.$transaction(
+      orderedIds.map((id, sortOrder) =>
+        prisma.indexNode.update({
+          where: { id },
+          data: { sortOrder },
+        }),
+      ),
+    );
+
+    return NextResponse.json({ ok: true });
+  }
 
   if (!body.id) {
     return NextResponse.json({ error: "Node id is required." }, { status: 400 });

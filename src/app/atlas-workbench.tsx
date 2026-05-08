@@ -10,6 +10,7 @@ import {
   Download,
   Eye,
   FolderPlus,
+  GripVertical,
   ImageIcon,
   Loader2,
   PencilLine,
@@ -31,6 +32,7 @@ type IndexTreeNode = {
   parentId: string | null;
   depth: number;
   path: string;
+  sortOrder: number;
   imageCount: number;
   children: IndexTreeNode[];
 };
@@ -95,6 +97,8 @@ type RestoreStats = {
 type Locale = "zh" | "en";
 type ViewMode = "browse" | "manage";
 type IndexContextMenu = { node: IndexTreeNode; x: number; y: number };
+type IndexDropPosition = "before" | "after";
+type IndexDropIndicator = { id: string; position: IndexDropPosition };
 type IndexAction =
   | { mode: "rename"; node: IndexTreeNode }
   | { mode: "delete"; node: IndexTreeNode }
@@ -120,6 +124,9 @@ const copy = {
     clearIndexImagesTyping: "请输入“确认删除”以继续。",
     clearIndexImagesDisabled: "当前索引和子索引下没有图片可清空。",
     indexActionFailed: "索引操作失败，请稍后重试。",
+    reorderIndex: "拖动调整顺序",
+    reorderIndexMode: "索引排序",
+    reorderIndexFailed: "索引排序失败，请稍后重试。",
     allImages: "全部图片",
     searchPlaceholder: "搜索标题、OCR、备注、索引",
     chooseImages: "选择图片",
@@ -226,6 +233,9 @@ const copy = {
     clearIndexImagesTyping: "Type “确认删除” to continue.",
     clearIndexImagesDisabled: "This index and its child indexes have no images to clear.",
     indexActionFailed: "Index action failed. Please try again.",
+    reorderIndex: "Drag to reorder",
+    reorderIndexMode: "Reorder",
+    reorderIndexFailed: "Index reorder failed. Please try again.",
     allImages: "All images",
     searchPlaceholder: "Search title, OCR, notes, index",
     chooseImages: "Choose images",
@@ -398,6 +408,39 @@ function indexBranchImageCount(node: IndexTreeNode): number {
   return node.imageCount + node.children.reduce((total, child) => total + indexBranchImageCount(child), 0);
 }
 
+function orderedIndexSiblings(nodes: IndexTreeNode[], orderedIds: string[]) {
+  const order = new Map(orderedIds.map((id, index) => [id, index]));
+  return [...nodes]
+    .sort((left, right) => {
+      const leftOrder = order.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = order.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+      if (leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+
+      return left.name.localeCompare(right.name);
+    })
+    .map((node, sortOrder) => ({ ...node, sortOrder }));
+}
+
+function applyIndexSiblingOrder(
+  nodes: IndexTreeNode[],
+  parentId: string | null,
+  orderedIds: string[],
+): IndexTreeNode[] {
+  if (parentId === null) {
+    return orderedIndexSiblings(nodes, orderedIds);
+  }
+
+  return nodes.map((node) => ({
+    ...node,
+    children:
+      node.id === parentId
+        ? orderedIndexSiblings(node.children, orderedIds)
+        : applyIndexSiblingOrder(node.children, parentId, orderedIds),
+  }));
+}
+
 function formatBytes(value: number) {
   if (value < 1024 * 1024) {
     return `${Math.max(1, Math.round(value / 1024))} KB`;
@@ -440,33 +483,102 @@ function IndexBranch({
   nodes,
   selectedId,
   collapsedIds,
+  allowReorder,
+  draggedNodeId,
+  dropIndicator,
+  reorderTitle,
   onSelect,
   onToggleExpanded,
   onContextMenu,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
 }: {
   nodes: IndexTreeNode[];
   selectedId: string | null;
   collapsedIds: Set<string>;
+  allowReorder: boolean;
+  draggedNodeId: string | null;
+  dropIndicator: IndexDropIndicator | null;
+  reorderTitle: string;
   onSelect: (id: string | null) => void;
   onToggleExpanded: (id: string) => void;
   onContextMenu?: (node: IndexTreeNode, event: React.MouseEvent<HTMLButtonElement>) => void;
+  onDragStart: (node: IndexTreeNode, event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragOver: (
+    node: IndexTreeNode,
+    siblings: IndexTreeNode[],
+    position: IndexDropPosition,
+    event: React.DragEvent<HTMLButtonElement>,
+  ) => void;
+  onDrop: (
+    node: IndexTreeNode,
+    siblings: IndexTreeNode[],
+    position: IndexDropPosition,
+    event: React.DragEvent<HTMLButtonElement>,
+  ) => void;
+  onDragEnd: () => void;
 }) {
   return (
     <div className="space-y-1">
       {nodes.map((node) => {
         const hasChildren = node.children.length > 0;
         const isCollapsed = collapsedIds.has(node.id);
+        const isDragging = draggedNodeId === node.id;
+        const isDropTarget = dropIndicator?.id === node.id;
+        const dropLineTop = dropIndicator?.position === "before" ? 0 : undefined;
+        const dropLineBottom = dropIndicator?.position === "after" ? 0 : undefined;
 
         return (
-          <div key={node.id}>
+          <div key={node.id} className="relative">
+            {isDropTarget ? (
+              <span
+                className="pointer-events-none absolute right-2 z-10 h-0.5 rounded-full bg-cyan-600"
+                style={{
+                  left: 8 + node.depth * 12,
+                  top: dropLineTop,
+                  bottom: dropLineBottom,
+                }}
+              />
+            ) : null}
             <button
               type="button"
+              draggable={allowReorder}
+              onDragStart={(event) => {
+                if (!allowReorder) {
+                  return;
+                }
+
+                onDragStart(node, event);
+              }}
+              onDragOver={(event) => {
+                if (!allowReorder || !draggedNodeId || draggedNodeId === node.id) {
+                  return;
+                }
+
+                const rect = event.currentTarget.getBoundingClientRect();
+                const position = event.clientY > rect.top + rect.height / 2 ? "after" : "before";
+                onDragOver(node, nodes, position, event);
+              }}
+              onDrop={(event) => {
+                if (!allowReorder || !draggedNodeId || draggedNodeId === node.id) {
+                  return;
+                }
+
+                const rect = event.currentTarget.getBoundingClientRect();
+                const position = event.clientY > rect.top + rect.height / 2 ? "after" : "before";
+                onDrop(node, nodes, position, event);
+              }}
+              onDragEnd={allowReorder ? onDragEnd : undefined}
               onClick={() => onSelect(node.id)}
               onContextMenu={(event) => onContextMenu?.(node, event)}
-              className={`grid h-9 w-full grid-cols-[16px_1fr_auto] items-center gap-2 rounded-md px-2 text-left text-sm transition ${
+              className={`grid h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition ${
                 selectedId === node.id
                   ? "bg-zinc-950 text-white"
                   : "text-zinc-700 hover:bg-zinc-100"
+              } ${allowReorder ? "grid-cols-[16px_14px_1fr_auto] cursor-grab active:cursor-grabbing" : "grid-cols-[16px_1fr_auto]"} ${
+                isDragging ? "opacity-45" : ""
               }`}
               style={{ paddingLeft: 8 + node.depth * 12 }}
               title={node.path}
@@ -491,6 +603,14 @@ function IndexBranch({
                   }`}
                 />
               </span>
+              {allowReorder ? (
+                <span className="grid h-5 w-3.5 place-items-center" title={reorderTitle}>
+                  <GripVertical
+                    className="h-3.5 w-3.5 text-current opacity-45"
+                    aria-hidden="true"
+                  />
+                </span>
+              ) : null}
               <span className="truncate">{node.name}</span>
               <span className="rounded border border-current/15 px-1.5 py-0.5 text-[11px] opacity-75">
                 {node.imageCount}
@@ -501,9 +621,17 @@ function IndexBranch({
                 nodes={node.children}
                 selectedId={selectedId}
                 collapsedIds={collapsedIds}
+                allowReorder={allowReorder}
+                draggedNodeId={draggedNodeId}
+                dropIndicator={dropIndicator}
+                reorderTitle={reorderTitle}
                 onSelect={onSelect}
                 onToggleExpanded={onToggleExpanded}
                 onContextMenu={onContextMenu}
+                onDragStart={onDragStart}
+                onDragOver={onDragOver}
+                onDrop={onDrop}
+                onDragEnd={onDragEnd}
               />
             ) : null}
           </div>
@@ -586,6 +714,10 @@ export default function AtlasWorkbench() {
   const [indexActionBusy, setIndexActionBusy] = useState(false);
   const [renameIndexName, setRenameIndexName] = useState("");
   const [clearIndexConfirmText, setClearIndexConfirmText] = useState("");
+  const [isIndexReorderEnabled, setIsIndexReorderEnabled] = useState(false);
+  const [draggedIndexNodeId, setDraggedIndexNodeId] = useState<string | null>(null);
+  const [indexDropIndicator, setIndexDropIndicator] = useState<IndexDropIndicator | null>(null);
+  const [reorderingIndex, setReorderingIndex] = useState(false);
   const [imageViewerHeight, setImageViewerHeight] = useState(720);
   const [isResizingViewer, setIsResizingViewer] = useState(false);
   const [showBrowseThumbnails, setShowBrowseThumbnails] = useState(true);
@@ -596,6 +728,7 @@ export default function AtlasWorkbench() {
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const t = copy[locale];
   const isBrowseMode = viewMode === "browse";
+  const canReorderIndexes = !isBrowseMode && isIndexReorderEnabled && !reorderingIndex;
 
   const refresh = useCallback(async () => {
     const params = new URLSearchParams();
@@ -970,6 +1103,100 @@ export default function AtlasWorkbench() {
     setIndexContextMenu({ node, x: event.clientX, y: event.clientY });
   }
 
+  function startIndexDrag(node: IndexTreeNode, event: React.DragEvent<HTMLButtonElement>) {
+    if (!canReorderIndexes) {
+      event.preventDefault();
+      return;
+    }
+
+    setIndexContextMenu(null);
+    setDraggedIndexNodeId(node.id);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", node.id);
+  }
+
+  function updateIndexDropTarget(
+    node: IndexTreeNode,
+    siblings: IndexTreeNode[],
+    position: IndexDropPosition,
+    event: React.DragEvent<HTMLButtonElement>,
+  ) {
+    if (!draggedIndexNodeId || draggedIndexNodeId === node.id) {
+      setIndexDropIndicator(null);
+      return;
+    }
+
+    if (!siblings.some((sibling) => sibling.id === draggedIndexNodeId)) {
+      setIndexDropIndicator(null);
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setIndexDropIndicator({ id: node.id, position });
+  }
+
+  async function dropIndexNode(
+    node: IndexTreeNode,
+    siblings: IndexTreeNode[],
+    position: IndexDropPosition,
+    event: React.DragEvent<HTMLButtonElement>,
+  ) {
+    const sourceId = draggedIndexNodeId;
+    setDraggedIndexNodeId(null);
+    setIndexDropIndicator(null);
+
+    if (!sourceId || sourceId === node.id || !siblings.some((sibling) => sibling.id === sourceId)) {
+      return;
+    }
+
+    event.preventDefault();
+    const currentIds = siblings.map((sibling) => sibling.id);
+    const withoutSource = currentIds.filter((id) => id !== sourceId);
+    const targetIndex = withoutSource.indexOf(node.id);
+
+    if (targetIndex < 0) {
+      return;
+    }
+
+    const nextIds = [...withoutSource];
+    nextIds.splice(position === "after" ? targetIndex + 1 : targetIndex, 0, sourceId);
+
+    if (nextIds.every((id, index) => id === currentIds[index])) {
+      return;
+    }
+
+    const parentId = node.parentId;
+    setReorderingIndex(true);
+    setData((current) =>
+      current ? { ...current, tree: applyIndexSiblingOrder(current.tree, parentId, nextIds) } : current,
+    );
+
+    try {
+      const response = await fetch("/api/index-nodes", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parentId, orderedIds: nextIds }),
+      });
+
+      if (!response.ok) {
+        window.alert(t.reorderIndexFailed);
+      }
+
+      await refresh();
+    } catch {
+      window.alert(t.reorderIndexFailed);
+      await refresh();
+    } finally {
+      setReorderingIndex(false);
+    }
+  }
+
+  function clearIndexDragState() {
+    setDraggedIndexNodeId(null);
+    setIndexDropIndicator(null);
+  }
+
   function openIndexAction(action: IndexAction) {
     setIndexContextMenu(null);
     setIndexAction(action);
@@ -1286,6 +1513,11 @@ export default function AtlasWorkbench() {
   }
 
   function setPersistedViewModeWithPagination(mode: ViewMode) {
+    if (mode === "browse") {
+      setIsIndexReorderEnabled(false);
+      clearIndexDragState();
+    }
+
     setPersistedViewMode(mode);
     setImageGridPage(1);
   }
@@ -1428,12 +1660,40 @@ export default function AtlasWorkbench() {
                       <FolderPlus className="h-4 w-4" />
                     </button>
                   </div>
+                  <label
+                    className={`mt-3 flex h-9 cursor-pointer items-center justify-between rounded-md border px-3 text-xs font-medium transition ${
+                      isIndexReorderEnabled
+                        ? "border-cyan-700 bg-cyan-50 text-cyan-800"
+                        : "border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50"
+                    } ${reorderingIndex ? "cursor-not-allowed opacity-60" : ""}`}
+                    title={t.reorderIndex}
+                  >
+                    <span className="inline-flex min-w-0 items-center gap-2">
+                      <GripVertical className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{t.reorderIndexMode}</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={isIndexReorderEnabled}
+                      disabled={reorderingIndex}
+                      onChange={(event) => {
+                        setIndexContextMenu(null);
+                        const nextEnabled = event.target.checked;
+                        setIsIndexReorderEnabled(nextEnabled);
+                        if (!nextEnabled) {
+                          clearIndexDragState();
+                        }
+                      }}
+                      className="h-4 w-4 accent-cyan-700"
+                      aria-label={t.reorderIndexMode}
+                    />
+                  </label>
                 </div>
               ) : null}
 
               <nav
                 className={`max-h-96 overflow-auto p-3 xl:max-h-none ${
-                  isBrowseMode ? "xl:h-[calc(100vh-119px)]" : "xl:h-[calc(100vh-183px)]"
+                  isBrowseMode ? "xl:h-[calc(100vh-119px)]" : "xl:h-[calc(100vh-231px)]"
                 }`}
               >
                 <button
@@ -1453,9 +1713,17 @@ export default function AtlasWorkbench() {
                   nodes={data?.tree ?? []}
                   selectedId={selectedIndexId}
                   collapsedIds={collapsedIndexIds}
+                  allowReorder={canReorderIndexes}
+                  draggedNodeId={draggedIndexNodeId}
+                  dropIndicator={indexDropIndicator}
+                  reorderTitle={t.reorderIndex}
                   onSelect={selectIndex}
                   onToggleExpanded={toggleIndexExpanded}
                   onContextMenu={openIndexContextMenu}
+                  onDragStart={startIndexDrag}
+                  onDragOver={updateIndexDropTarget}
+                  onDrop={dropIndexNode}
+                  onDragEnd={clearIndexDragState}
                 />
               </nav>
             </>

@@ -7,7 +7,58 @@ Brooks PA Atlas 是一个本地 Web App，用来管理 Brooks 价格行为图表
 - Node.js：建议使用当前项目依赖兼容的 LTS 版本。
 - npm：随 Node.js 安装。
 - SQLite：项目通过 Prisma + better-sqlite3 使用本地 SQLite 数据库。
-- 可选 OCR：如果需要自动识别图片文字，请在本机安装 `tesseract`。
+- OCR：导入图片后会触发后台 OCR 队列，部署机器需要全局安装 `tesseract`，否则 OCR 会失败，并可能影响导入后的处理体验。
+
+## 安装 OCR 依赖（Tesseract）
+
+Brooks PA Atlas 默认调用命令行里的 `tesseract`：
+
+```text
+tesseract <imagePath> stdout -l eng
+```
+
+因此部署完成后必须能在终端直接运行：
+
+```powershell
+tesseract --version
+```
+
+Windows 推荐安装 UB Mannheim 提供的 Tesseract OCR 构建。优先使用 `winget`：
+
+```powershell
+winget install --id UB-Mannheim.TesseractOCR --exact
+```
+
+如果本机没有 `winget`，可从 UB Mannheim / Tesseract 的 Windows release 下载 `tesseract-ocr-w64-setup-*.exe` 安装器。安装目录建议保持默认：
+
+```text
+C:\Program Files\Tesseract-OCR
+```
+
+安装后请确认该目录已加入 PATH。PowerShell 可以这样添加到当前用户 PATH：
+
+```powershell
+$tessDir = "C:\Program Files\Tesseract-OCR"
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if (($userPath -split ";") -notcontains $tessDir) {
+  [Environment]::SetEnvironmentVariable("Path", ($userPath.TrimEnd(";") + ";" + $tessDir), "User")
+}
+```
+
+修改 PATH 后，需要重新打开终端；如果开发服务已经在运行，也需要重启 `npm run dev`，否则服务进程可能仍然读不到新的 `tesseract` 命令。
+
+Linux/macOS 常见安装方式：
+
+```bash
+sudo apt update
+sudo apt install tesseract-ocr
+```
+
+如果需要英文以外的语言包，也要安装对应 language data。例如 Ubuntu/Debian 的简体中文语言包通常是：
+
+```bash
+sudo apt install tesseract-ocr-chi-sim
+```
 
 ## 安装依赖
 
@@ -168,7 +219,7 @@ npm run build
 
 图片导入后会进入后台 OCR 队列。OCR 不会阻塞图片入库和浏览。
 
-如果某张图片 OCR 失败，可以在右侧详情面板点击重试按钮。默认 OCR 命令是：
+如果某张图片 OCR 失败，可以在右侧详情面板点击重试按钮。请先确认部署机器已经全局安装 Tesseract，并且运行服务的终端可以直接执行 `tesseract --version`。默认 OCR 命令是：
 
 ```text
 tesseract
@@ -254,7 +305,7 @@ Linux/macOS shell：
 tesseract --version
 ```
 
-如果命令不存在，需要先安装 Tesseract OCR，或者设置 `BROOKS_OCR_COMMAND` 指向可用命令。
+如果命令不存在，需要先安装 Tesseract OCR，或者设置 `BROOKS_OCR_COMMAND` 指向可用命令。安装或修改 PATH 后，请重启终端和开发服务。
 
 常见 Linux 安装方式：
 

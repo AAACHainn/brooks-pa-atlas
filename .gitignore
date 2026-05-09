@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+/node_modules.broken-*/
 /.pnp
 .pnp.*
 .yarn/*
@@ -39,6 +40,7 @@ yarn-error.log*
 
 # local npm cache fallback
 /.npm-cache/
+/local-tools/
 
 # env files (can opt-in for committing if needed)
 .env*

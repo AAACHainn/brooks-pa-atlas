@@ -94,6 +94,18 @@ type RestoreStats = {
   filesRestored: number;
 };
 
+type BackupJobSnapshot = {
+  id: string;
+  kind: "backup" | "restore";
+  status: "running" | "completed" | "failed";
+  phase: string;
+  processedImages: number;
+  totalImages: number;
+  error: string | null;
+  fileName: string | null;
+  stats: RestoreStats | null;
+};
+
 type Locale = "zh" | "en";
 type ViewMode = "browse" | "manage";
 type IndexContextMenu = { node: IndexTreeNode; x: number; y: number };
@@ -139,6 +151,19 @@ const copy = {
     restoreFailed: "恢复失败，请确认 zip 文件有效后重试。",
     restoreConfirmMessage:
       "恢复会合并备份数据：相同图片会覆盖标题、备注、OCR 和索引归属，不会删除当前系统中备份外的数据。是否继续？",
+    backupTaskTitle: "备份进度",
+    restoreTaskTitle: "恢复进度",
+    taskPreparing: "正在准备任务",
+    taskCollectingImages: "正在处理图片",
+    taskPacking: "正在打包备份文件",
+    taskUploading: "正在上传备份文件",
+    taskRestoringIndexes: "正在恢复索引",
+    taskRestoringImages: "正在恢复图片",
+    taskDownloading: "正在保存备份文件",
+    taskCompleted: "已完成",
+    taskFailed: "失败",
+    taskDismiss: "关闭",
+    taskKeepWorking: "可继续使用页面，任务会在后台运行。",
     noSupportedImages: "未找到支持的图片文件。",
     clearSelection: "取消选择",
     selected: "已选择",
@@ -248,6 +273,19 @@ const copy = {
     restoreFailed: "Restore failed. Please confirm the zip file is valid and try again.",
     restoreConfirmMessage:
       "Restore will merge backup data: matching images overwrite title, notes, OCR, and index assignment, and data outside the backup will not be deleted. Continue?",
+    backupTaskTitle: "Backup progress",
+    restoreTaskTitle: "Restore progress",
+    taskPreparing: "Preparing task",
+    taskCollectingImages: "Processing images",
+    taskPacking: "Packing backup file",
+    taskUploading: "Uploading backup file",
+    taskRestoringIndexes: "Restoring indexes",
+    taskRestoringImages: "Restoring images",
+    taskDownloading: "Saving backup file",
+    taskCompleted: "Completed",
+    taskFailed: "Failed",
+    taskDismiss: "Close",
+    taskKeepWorking: "You can keep using the page while this runs in the background.",
     noSupportedImages: "No supported image files found.",
     clearSelection: "Clear",
     selected: "selected",
@@ -452,6 +490,18 @@ function formatBytes(value: number) {
 function backupFileNameFromHeader(value: string | null) {
   const match = value?.match(/filename="?([^"]+)"?/);
   return match?.[1] ?? `brooks-pa-atlas-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+}
+
+function backupJobPercent(job: Pick<BackupJobSnapshot, "processedImages" | "status" | "totalImages">) {
+  if (job.status === "completed") {
+    return 100;
+  }
+
+  if (job.totalImages <= 0) {
+    return 0;
+  }
+
+  return Math.min(99, Math.round((job.processedImages / job.totalImages) * 100));
 }
 
 function ocrTone(status: ChartImage["ocrStatus"]) {
@@ -694,6 +744,7 @@ export default function AtlasWorkbench() {
   const [uploading, setUploading] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [backupTask, setBackupTask] = useState<BackupJobSnapshot | null>(null);
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [newIndexName, setNewIndexName] = useState("");
   const [detailDraft, setDetailDraft] = useState({ title: "", notes: "", indexNodeId: "" });
@@ -729,6 +780,38 @@ export default function AtlasWorkbench() {
   const t = copy[locale];
   const isBrowseMode = viewMode === "browse";
   const canReorderIndexes = !isBrowseMode && isIndexReorderEnabled && !reorderingIndex;
+  const backupTaskPercent = backupTask ? backupJobPercent(backupTask) : 0;
+  const backupTaskTitle = backupTask?.kind === "restore" ? t.restoreTaskTitle : t.backupTaskTitle;
+  const backupTaskPhase = (() => {
+    if (!backupTask) {
+      return "";
+    }
+
+    if (backupTask.status === "completed") {
+      return t.taskCompleted;
+    }
+
+    if (backupTask.status === "failed") {
+      return t.taskFailed;
+    }
+
+    switch (backupTask.phase) {
+      case "collecting-images":
+        return t.taskCollectingImages;
+      case "packing":
+        return t.taskPacking;
+      case "uploading":
+        return t.taskUploading;
+      case "restoring-indexes":
+        return t.taskRestoringIndexes;
+      case "restoring-images":
+        return t.taskRestoringImages;
+      case "downloading":
+        return t.taskDownloading;
+      default:
+        return t.taskPreparing;
+    }
+  })();
 
   const refresh = useCallback(async () => {
     const params = new URLSearchParams();
@@ -1320,27 +1403,86 @@ export default function AtlasWorkbench() {
     await refresh();
   }
 
+  async function readBackupJobResponse(response: Response) {
+    const result = (await response.json().catch(() => null)) as
+      | { error?: string; job?: BackupJobSnapshot }
+      | null;
+
+    if (!response.ok || !result?.job) {
+      throw new Error(result?.error ?? t.backupFailed);
+    }
+
+    return result.job;
+  }
+
+  async function pollBackupJob(kind: BackupJobSnapshot["kind"], jobId: string) {
+    const pathKind = kind === "backup" ? "export" : "restore";
+
+    for (;;) {
+      await new Promise((resolve) => window.setTimeout(resolve, 600));
+      const response = await fetch(`/api/backups/${pathKind}/jobs/${jobId}`, { cache: "no-store" });
+      const job = await readBackupJobResponse(response);
+      setBackupTask(job);
+
+      if (job.status !== "running") {
+        return job;
+      }
+    }
+  }
+
   async function downloadBackup() {
     setBackingUp(true);
+    setBackupTask({
+      id: "backup-starting",
+      kind: "backup",
+      status: "running",
+      phase: "preparing",
+      processedImages: 0,
+      totalImages: data?.stats.imageCount ?? 0,
+      error: null,
+      fileName: null,
+      stats: null,
+    });
+
     try {
-      const response = await fetch("/api/backups/export", { cache: "no-store" });
+      const started = await readBackupJobResponse(
+        await fetch("/api/backups/export/jobs", { method: "POST", cache: "no-store" }),
+      );
+      setBackupTask(started);
+
+      const completed = await pollBackupJob("backup", started.id);
+      if (completed.status !== "completed") {
+        throw new Error(completed.error ?? t.backupFailed);
+      }
+
+      setBackupTask({ ...completed, phase: "downloading" });
+      const response = await fetch(`/api/backups/export/jobs/${completed.id}/file`, { cache: "no-store" });
       if (!response.ok) {
-        const result = (await response.json().catch(() => null)) as { error?: string } | null;
-        window.alert(result?.error ?? t.backupFailed);
-        return;
+        throw new Error(t.backupFailed);
       }
 
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = backupFileNameFromHeader(response.headers.get("Content-Disposition"));
+      anchor.download = completed.fileName ?? backupFileNameFromHeader(response.headers.get("Content-Disposition"));
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
       URL.revokeObjectURL(url);
-    } catch {
-      window.alert(t.backupFailed);
+      setBackupTask({ ...completed, phase: "completed" });
+    } catch (error) {
+      setBackupTask((current) => ({
+        id: current?.id ?? "backup-failed",
+        kind: "backup",
+        status: "failed",
+        phase: "failed",
+        processedImages: current?.processedImages ?? 0,
+        totalImages: current?.totalImages ?? data?.stats.imageCount ?? 0,
+        error: error instanceof Error ? error.message : t.backupFailed,
+        fileName: current?.fileName ?? null,
+        stats: null,
+      }));
     } finally {
       setBackingUp(false);
     }
@@ -1374,30 +1516,49 @@ export default function AtlasWorkbench() {
     }
 
     setRestoring(true);
+    setBackupTask({
+      id: "restore-uploading",
+      kind: "restore",
+      status: "running",
+      phase: "uploading",
+      processedImages: 0,
+      totalImages: 0,
+      error: null,
+      fileName: null,
+      stats: null,
+    });
+
     try {
-      const response = await fetch("/api/backups/restore?mode=merge", {
+      const started = await readBackupJobResponse(await fetch("/api/backups/restore/jobs", {
         method: "POST",
         headers: {
           "Content-Type": file.type || "application/zip",
           "X-Backup-File-Name": encodeURIComponent(file.name),
         },
         body: file,
-      });
-      const result = (await response.json().catch(() => null)) as
-        | { error?: string; restoreId?: string; stats?: RestoreStats }
-        | null;
+      }));
+      setBackupTask(started);
 
-      if (!response.ok || !result?.stats) {
-        const message = result?.error ?? t.restoreFailed;
-        window.alert(result?.restoreId ? `${message}\nRestore ID: ${result.restoreId}` : message);
-        return;
+      const completed = await pollBackupJob("restore", started.id);
+      if (completed.status !== "completed" || !completed.stats) {
+        throw new Error(completed.error ?? t.restoreFailed);
       }
 
-      window.alert(restoreCompleteMessage(result.stats));
+      setBackupTask({ ...completed, phase: "completed" });
       setSelectedImageId(null);
       await refresh();
-    } catch {
-      window.alert(t.restoreFailed);
+    } catch (error) {
+      setBackupTask((current) => ({
+        id: current?.id ?? "restore-failed",
+        kind: "restore",
+        status: "failed",
+        phase: "failed",
+        processedImages: current?.processedImages ?? 0,
+        totalImages: current?.totalImages ?? 0,
+        error: error instanceof Error ? error.message : t.restoreFailed,
+        fileName: null,
+        stats: current?.stats ?? null,
+      }));
     } finally {
       setRestoring(false);
     }
@@ -2435,6 +2596,87 @@ export default function AtlasWorkbench() {
           </aside>
         ) : null}
       </div>
+      {backupTask ? (
+        <div
+          className="fixed bottom-4 right-4 z-50 w-[min(calc(100vw-2rem),24rem)] rounded-md border border-zinc-200 bg-white p-4 text-sm shadow-2xl"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex items-start gap-3">
+            <div
+              className={`grid h-9 w-9 shrink-0 place-items-center rounded-md border ${
+                backupTask.status === "failed"
+                  ? "border-rose-200 bg-rose-50 text-rose-700"
+                  : backupTask.status === "completed"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-cyan-200 bg-cyan-50 text-cyan-700"
+              }`}
+            >
+              {backupTask.status === "failed" ? (
+                <AlertTriangle className="h-4 w-4" />
+              ) : backupTask.status === "completed" ? (
+                <CheckCircle2 className="h-4 w-4" />
+              ) : (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-semibold text-zinc-950">{backupTaskTitle}</p>
+                  <p className="mt-0.5 truncate text-xs text-zinc-500">{backupTaskPhase}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-lg font-semibold tabular-nums text-zinc-950">
+                    {backupTaskPercent}%
+                  </span>
+                  {backupTask.status !== "running" ? (
+                    <button
+                      type="button"
+                      onClick={() => setBackupTask(null)}
+                      className="grid h-7 w-7 place-items-center rounded-md text-zinc-500 hover:bg-zinc-100"
+                      aria-label={t.taskDismiss}
+                      title={t.taskDismiss}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-100">
+                <div
+                  className={`h-full transition-all ${
+                    backupTask.status === "failed"
+                      ? "bg-rose-600"
+                      : backupTask.status === "completed"
+                        ? "bg-emerald-600"
+                        : "bg-cyan-700"
+                  }`}
+                  style={{ width: `${backupTaskPercent}%` }}
+                />
+              </div>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+                <span>
+                  {backupTask.totalImages > 0
+                    ? `${backupTask.processedImages}/${backupTask.totalImages} ${t.imageUnit}`
+                    : t.taskPreparing}
+                </span>
+                {backupTask.status === "running" ? <span>{t.taskKeepWorking}</span> : null}
+              </div>
+              {backupTask.status === "failed" && backupTask.error ? (
+                <p className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+                  {backupTask.error}
+                </p>
+              ) : null}
+              {backupTask.status === "completed" && backupTask.kind === "restore" && backupTask.stats ? (
+                <p className="mt-3 whitespace-pre-line rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-700">
+                  {restoreCompleteMessage(backupTask.stats)}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {indexContextMenu && !isBrowseMode ? (
         <div
           className="fixed z-40 w-56 rounded-md border border-zinc-200 bg-white p-1 text-sm shadow-xl"

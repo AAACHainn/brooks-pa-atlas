@@ -74,6 +74,11 @@ type RestoreLogMetadata = Record<string, boolean | number | string | null | unde
 
 type RestoreOptions = {
   log?: (message: string, metadata?: RestoreLogMetadata) => void;
+  onImageProgress?: (progress: { processedImages: number; totalImages: number }) => void;
+};
+
+type BackupOptions = {
+  onImageProgress?: (progress: { processedImages: number; totalImages: number }) => void;
 };
 
 function iso(value: Date | null | undefined) {
@@ -323,7 +328,7 @@ async function saveRestoredImage(image: BackupImage, buffer: Buffer) {
   return libraryRelativePath(fullPath);
 }
 
-export async function createBackupZip() {
+export async function createBackupZip(options: BackupOptions = {}) {
   const [indexes, images] = await Promise.all([
     prisma.indexNode.findMany({
       orderBy: [{ depth: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
@@ -335,6 +340,7 @@ export async function createBackupZip() {
   ]);
   const indexPathById = new Map(indexes.map((index) => [index.id, index.path]));
   const preparedImages: PreparedImage[] = [];
+  let processedImages = 0;
 
   for (const image of images) {
     const fullPath = absoluteImagePath(image.libraryPath);
@@ -369,6 +375,8 @@ export async function createBackupZip() {
         imagePath,
       },
     });
+    processedImages += 1;
+    options.onImageProgress?.({ processedImages, totalImages: images.length });
   }
 
   const manifest: BackupManifest = {
@@ -564,6 +572,7 @@ export async function restoreBackupZip(
           filesRestored: stats.filesRestored,
         });
       }
+      options.onImageProgress?.({ processedImages, totalImages: manifest.images.length });
     } catch (error) {
       log("image restore failed", {
         processedImages,

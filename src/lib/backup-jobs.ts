@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { createBackupZip, restoreBackupZip } from "@/lib/backup";
 
 type JobStatus = "running" | "completed" | "failed";
-type JobKind = "backup" | "restore";
 
 type BackupJobResult = {
   fileName: string;

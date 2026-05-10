@@ -42,6 +42,7 @@ Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart
 
 - 大批量本地图片图库管理，目标支持单次 1000 张以上导入。
 - 浏览器选择图片或文件夹，应用把图片复制到本地图库目录。
+- 管理模式提供“导入资料”入口，第一版支持 PDF：把每页转换成图片，并按 PDF 内置书签目录挂载到索引树。
 - 数据库只保存图片相对路径和元数据，不保存图片 blob。
 - 用无限层级索引树组织图表图片。
 - 导入后图片立刻入库并可浏览，OCR 在后台队列异步执行。
@@ -51,6 +52,7 @@ Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart
 ## 3. 技术栈
 
 - Next.js `16.2.4` App Router
+- Node.js 建议 `22.13.0` 或更新版本，PDF 导入依赖 `pdfjs-dist` 的现代 Node.js 支持
 - React `19.2.4`
 - TypeScript 严格模式
 - Tailwind CSS v4
@@ -59,6 +61,8 @@ Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart
 - `@prisma/adapter-better-sqlite3` + `better-sqlite3`
 - `sharp` 读取图片尺寸
 - `lucide-react` 提供图标
+- `pdfjs-dist` 解析 PDF 页和内置书签目录
+- `@napi-rs/canvas` 在 Node.js 中把 PDF 页面渲染为 PNG
 - `yazl`、`yauzl` 用于跨平台 zip 备份和恢复
 - `zod`、`xlsx`、`fuse.js` 已作为依赖存在，其中部分能力还不是核心路径
 
@@ -103,6 +107,7 @@ npm run db:init
 - `src/app/api/backups/export/route.ts`：导出跨平台备份 zip。
 - `src/app/api/backups/restore/route.ts`：导入备份 zip 并以合并覆盖模式恢复。
 - `src/app/api/import/route.ts`：分块批量导入接口。
+- `src/app/api/import/documents/route.ts`：通用资料导入接口，当前注册 PDF importer。
 - `src/app/api/import/[id]/undo/route.ts`：撤销导入批次。
 - `src/app/api/index-nodes/route.ts`：索引节点查询、创建、重命名、排序字段更新和删除。
 - `src/app/api/index-nodes/[id]/clear-images/route.ts`：清空某个索引及其后代下的图片。
@@ -112,6 +117,9 @@ npm run db:init
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
 - `src/lib/backup.ts`：备份 manifest、zip 导出、zip 校验和合并恢复逻辑。
 - `src/lib/index-tree.ts`：索引树创建、路径补全、树形查询。
+- `src/lib/import-images.ts`：把已得到的图片 buffer 保存为图库图片并创建 `ChartImage` / `ImportItem`。
+- `src/lib/document-importers.ts`：资料导入 importer 的最小接口。
+- `src/lib/pdf-importer.ts`：PDF 书签解析、逐页渲染和按目录挂载逻辑。
 - `src/lib/storage.ts`：图片存储、hash、文件名清洗、尺寸读取、安全路径校验。
 - `src/lib/ocr-queue.ts`：本地 OCR 并发队列。
 - `prisma/schema.prisma`：Prisma 数据模型。
@@ -189,6 +197,7 @@ npm run db:init
 管理模式特性：
 
 - 可以选择图片或文件夹导入。
+- 可以通过“导入资料”导入 PDF；系统会按 PDF 文件名创建容器索引，按内置书签目录创建子索引，并把每页转换后的 PNG 图片挂到对应节点。
 - 可以导出备份 zip，包含所有索引、图片文件、标题、备注、OCR 文本和 OCR 状态等元数据。
 - 可以导入备份 zip 进行恢复；恢复使用合并覆盖模式，相同 SHA-256 hash 的图片更新元数据和索引归属，不创建重复图片，也不删除当前系统里备份外的数据。
 - 可以创建当前选中索引下的新子索引。
@@ -267,6 +276,16 @@ npm run db:init
 - 新图片保存到图库目录并创建 `ChartImage` 与 `ImportItem`。
 - 每个 chunk 完成后更新 `ImportBatch` 并触发 `scheduleOcrPump()`。
 
+资料导入：
+
+- `POST /api/import/documents` 接收 `multipart/form-data`，字段 `file` 为资料文件，`baseIndexPath` 为 JSON 字符串数组。
+- 当前只注册 PDF importer；后续支持 PPT 等类型时应新增 importer，不要把入口改回某个具体格式名称。
+- PDF importer 使用 PDF 内置 outline/bookmarks 作为目录来源，不做正文目录页 OCR 识别。
+- 未选中索引时在根节点创建 PDF 文件名容器；选中索引时在该索引子树下创建 PDF 文件名容器。
+- 有书签时按书签层级创建子索引；没有书签或页面未命中书签时，页图片挂到 PDF 容器节点。
+- 每页渲染为 PNG 后复用 `importImageBuffer()` 入库，继续使用同一套图库保存、SHA-256 去重、`ImportBatch`、`ImportItem`、OCR、备份和撤销逻辑。
+- 单页渲染失败只创建该页 `FAILED` 导入项，其他页继续处理。
+
 ## 11. 图片列表、分页和排序
 
 `GET /api/atlas` 当前限制返回最多 `200` 张图片。服务端查询按 `originalName`、`createdAt` 排序，返回前又使用 `Intl.Collator` 做自然排序，避免 `1.jpg`、`2.jpg`、`10.jpg` 这类名称出现字典序错乱。
@@ -338,6 +357,14 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 支持逐文件 `indexPaths` 和旧式 `assignments`。
 - 写入图库文件、`ChartImage`、`ImportItem`。
 - 更新批次计数并调度 OCR。
+
+`POST /api/import/documents`
+
+- 通用资料导入接口，当前支持 PDF。
+- 接收 `multipart/form-data`：`file` 为资料文件，`baseIndexPath` 为选中索引路径数组。
+- PDF 会先创建 PDF 文件名容器索引，再按内置书签目录创建子索引。
+- 每页转换为 PNG 图片后按普通图库图片入库并调度 OCR。
+- 相同 SHA-256 hash 的页图片记录为 `DUPLICATE`，不创建重复 `ChartImage`。
 
 `POST /api/import/[id]/undo`
 

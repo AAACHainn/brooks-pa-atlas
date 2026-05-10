@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Download,
   Eye,
+  FileText,
   FolderPlus,
   GripVertical,
   ImageIcon,
@@ -143,6 +144,8 @@ const copy = {
     searchPlaceholder: "搜索标题、OCR、备注、索引",
     chooseImages: "选择图片",
     chooseFolder: "选择文件夹",
+    importDocuments: "导入资料",
+    importingDocuments: "导入资料中",
     backupData: "备份",
     backingUp: "备份中",
     restoreData: "恢复",
@@ -165,6 +168,9 @@ const copy = {
     taskDismiss: "关闭",
     taskKeepWorking: "可继续使用页面，任务会在后台运行。",
     noSupportedImages: "未找到支持的图片文件。",
+    noSupportedDocuments: "未找到支持的资料文件。",
+    documentImportCompletedWithErrors: "资料导入完成但有错误",
+    documentImportSummary: "成功 {imported}/{total}，失败 {failed}，重复 {duplicate}",
     clearSelection: "取消选择",
     selected: "已选择",
     groups: "个分组",
@@ -265,6 +271,8 @@ const copy = {
     searchPlaceholder: "Search title, OCR, notes, index",
     chooseImages: "Choose images",
     chooseFolder: "Choose folder",
+    importDocuments: "Import materials",
+    importingDocuments: "Importing materials",
     backupData: "Backup",
     backingUp: "Backing up",
     restoreData: "Restore",
@@ -287,6 +295,9 @@ const copy = {
     taskDismiss: "Close",
     taskKeepWorking: "You can keep using the page while this runs in the background.",
     noSupportedImages: "No supported image files found.",
+    noSupportedDocuments: "No supported material files found.",
+    documentImportCompletedWithErrors: "Material import completed with errors",
+    documentImportSummary: "Imported {imported}/{total}, failed {failed}, duplicates {duplicate}",
     clearSelection: "Clear",
     selected: "selected",
     groups: "groups",
@@ -490,6 +501,21 @@ function formatBytes(value: number) {
 function backupFileNameFromHeader(value: string | null) {
   const match = value?.match(/filename="?([^"]+)"?/);
   return match?.[1] ?? `brooks-pa-atlas-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+}
+
+function isSupportedDocumentFile(file: File) {
+  return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+}
+
+function formatDocumentImportSummary(
+  template: string,
+  result: { imported: number; totalCount: number; failed: number; duplicate: number },
+) {
+  return template
+    .replace("{imported}", String(result.imported))
+    .replace("{total}", String(result.totalCount))
+    .replace("{failed}", String(result.failed))
+    .replace("{duplicate}", String(result.duplicate));
 }
 
 function backupJobPercent(job: Pick<BackupJobSnapshot, "processedImages" | "status" | "totalImages">) {
@@ -742,6 +768,7 @@ export default function AtlasWorkbench() {
   const [files, setFiles] = useState<SelectedFile[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [uploading, setUploading] = useState(false);
+  const [documentImporting, setDocumentImporting] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [backupTask, setBackupTask] = useState<BackupJobSnapshot | null>(null);
@@ -777,6 +804,7 @@ export default function AtlasWorkbench() {
   const viewerResizeStartRef = useRef({ height: imageViewerHeight, y: 0 });
   const viewerHeightRef = useRef(imageViewerHeight);
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
+  const documentInputRef = useRef<HTMLInputElement | null>(null);
   const t = copy[locale];
   const isBrowseMode = viewMode === "browse";
   const canReorderIndexes = !isBrowseMode && isIndexReorderEnabled && !reorderingIndex;
@@ -1159,6 +1187,49 @@ export default function AtlasWorkbench() {
       await refresh();
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function uploadDocument(file: File | null) {
+    if (!file) {
+      return;
+    }
+
+    if (!isSupportedDocumentFile(file)) {
+      window.alert(t.noSupportedDocuments);
+      return;
+    }
+
+    setDocumentImporting(true);
+
+    try {
+      const formData = new FormData();
+      formData.set("file", file);
+      formData.set("baseIndexPath", JSON.stringify(indexPathParts(selectedIndexPath)));
+
+      const response = await fetch("/api/import/documents", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error ?? "Document import failed.");
+      }
+
+      if (typeof result.failed === "number" && result.failed > 0) {
+        window.alert(
+          `${t.documentImportCompletedWithErrors}\n${formatDocumentImportSummary(
+            t.documentImportSummary,
+            result,
+          )}`,
+        );
+      }
+
+      await refresh();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Document import failed.");
+    } finally {
+      setDocumentImporting(false);
     }
   }
 
@@ -1939,8 +2010,27 @@ export default function AtlasWorkbench() {
                 </label>
                 <button
                   type="button"
+                  onClick={() => documentInputRef.current?.click()}
+                  disabled={documentImporting || uploading}
+                  className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {documentImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                  <span>{documentImporting ? t.importingDocuments : t.importDocuments}</span>
+                </button>
+                <input
+                  ref={documentInputRef}
+                  type="file"
+                  accept=".pdf,application/pdf"
+                  className="hidden"
+                  onChange={(event) => {
+                    void uploadDocument(event.target.files?.[0] ?? null);
+                    event.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
                   onClick={() => void downloadBackup()}
-                  disabled={backingUp || restoring}
+                  disabled={backingUp || restoring || documentImporting}
                   className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {backingUp ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
@@ -1949,7 +2039,7 @@ export default function AtlasWorkbench() {
                 <button
                   type="button"
                   onClick={() => restoreInputRef.current?.click()}
-                  disabled={backingUp || restoring}
+                  disabled={backingUp || restoring || documentImporting}
                   className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {restoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}

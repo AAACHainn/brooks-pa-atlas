@@ -1,14 +1,11 @@
 import { NextResponse } from "next/server";
 
-import { ensureIndexPath } from "@/lib/index-tree";
 import { prisma } from "@/lib/db";
 import {
   fileToBuffer,
-  getImageDimensions,
-  hashBuffer,
   isSupportedImage,
-  saveImageBuffer,
 } from "@/lib/storage";
+import { importImageBuffer } from "@/lib/import-images";
 import { scheduleOcrPump, updateBatchCounters } from "@/lib/ocr-queue";
 
 export const runtime = "nodejs";
@@ -97,62 +94,22 @@ export async function POST(request: Request) {
         throw new Error(`Unsupported file type: ${file.type || "unknown"}`);
       }
 
-      const indexNode = assignment.length ? await ensureIndexPath(assignment) : null;
       const buffer = await fileToBuffer(file);
-      const hash = hashBuffer(buffer);
-      const existing = await prisma.chartImage.findUnique({ where: { hash } });
+      const result = await importImageBuffer({
+        batchId: batch.id,
+        buffer,
+        fileName: file.name,
+        mimeType: file.type || "application/octet-stream",
+        sizeBytes: file.size,
+        relativePath,
+        groupKey,
+        indexPath: assignment,
+      });
 
-      if (existing) {
-        await prisma.importItem.create({
-          data: {
-            batchId: batch.id,
-            chartImageId: existing.id,
-            indexNodeId: indexNode?.id ?? existing.indexNodeId,
-            originalName: file.name,
-            relativePath,
-            savedPath: existing.libraryPath,
-            groupKey,
-            status: "DUPLICATE",
-            error: "Duplicate image skipped by SHA-256 hash.",
-          },
-        });
+      if (result.status === "DUPLICATE") {
         duplicate += 1;
         continue;
       }
-
-      const [dimensions, libraryPath] = await Promise.all([
-        getImageDimensions(buffer),
-        saveImageBuffer(file, buffer, hash),
-      ]);
-
-      const image = await prisma.chartImage.create({
-        data: {
-          libraryPath,
-          originalName: file.name,
-          mimeType: file.type || "application/octet-stream",
-          sizeBytes: file.size,
-          width: dimensions.width,
-          height: dimensions.height,
-          hash,
-          title: file.name.replace(/\.[^.]+$/, ""),
-          indexNodeId: indexNode?.id ?? null,
-          importBatchId: batch.id,
-          ocrStatus: "PENDING",
-        },
-      });
-
-      await prisma.importItem.create({
-        data: {
-          batchId: batch.id,
-          chartImageId: image.id,
-          indexNodeId: indexNode?.id ?? null,
-          originalName: file.name,
-          relativePath,
-          savedPath: libraryPath,
-          groupKey,
-          status: "IMPORTED",
-        },
-      });
 
       imported += 1;
     } catch (error) {

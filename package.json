@@ -13,6 +13,7 @@
     "db:init": "node scripts/init-db.mjs"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.100",
     "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "better-sqlite3": "^12.9.0",
@@ -20,6 +21,7 @@
     "fuse.js": "^7.3.0",
     "lucide-react": "^1.14.0",
     "next": "16.2.4",
+    "pdfjs-dist": "^5.7.284",
     "prisma": "^7.8.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",

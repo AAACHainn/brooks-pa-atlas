@@ -16,6 +16,7 @@ const allowedDevOrigins = Array.from(new Set(["*.*.*.*", ...configuredDevOrigins
 
 const nextConfig: NextConfig = {
   allowedDevOrigins,
+  serverExternalPackages: ["@napi-rs/canvas", "pdfjs-dist"],
   turbopack: {
     // Avoid parent lockfiles making Turbopack treat a user or monorepo directory as this app's root.
     root: turbopackRoot,

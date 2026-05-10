@@ -20,6 +20,8 @@ export const imageMimeTypes = new Set([
   "image/tiff",
 ]);
 
+type ImageFileLike = Pick<File, "name" | "type">;
+
 export function getLibraryRoot() {
   return process.env.BROOKS_LIBRARY_ROOT
     ? path.resolve(process.env.BROOKS_LIBRARY_ROOT)
@@ -56,7 +58,7 @@ export function sanitizeFileName(value: string) {
     .slice(0, 140);
 }
 
-export function extensionFor(file: File) {
+export function extensionFor(file: ImageFileLike) {
   const fromName = path.extname(file.name).toLowerCase();
   if (fromName) {
     return fromName;
@@ -80,7 +82,7 @@ export function extensionFor(file: File) {
   }
 }
 
-export async function saveImageBuffer(file: File, buffer: Buffer, hash: string) {
+export async function saveImageBuffer(file: ImageFileLike, buffer: Buffer, hash: string) {
   await ensureLibraryRoot();
 
   const ext = extensionFor(file);

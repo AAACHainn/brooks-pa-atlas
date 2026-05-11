@@ -96,7 +96,7 @@ export async function getIndexTree() {
     }),
   ]);
 
-  const counts = new Map(
+  const directCounts = new Map(
     groupedImages.map((item) => [item.indexNodeId, item._count._all]),
   );
 
@@ -111,7 +111,7 @@ export async function getIndexTree() {
       depth: node.depth,
       path: node.path,
       sortOrder: node.sortOrder,
-      imageCount: counts.get(node.id) ?? 0,
+      imageCount: directCounts.get(node.id) ?? 0,
       children: [],
     });
   }
@@ -123,6 +123,17 @@ export async function getIndexTree() {
       roots.push(node);
     }
   }
+
+  const aggregateImageCounts = (node: IndexTreeNode): number => {
+    const total = node.children.reduce(
+      (sum, child) => sum + aggregateImageCounts(child),
+      node.imageCount,
+    );
+    node.imageCount = total;
+    return total;
+  };
+
+  roots.forEach(aggregateImageCounts);
 
   return roots;
 }

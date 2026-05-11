@@ -107,6 +107,20 @@ type BackupJobSnapshot = {
   stats: RestoreStats | null;
 };
 
+type DocumentImportJobSnapshot = {
+  id: string;
+  kind: string;
+  status: "running" | "completed" | "failed";
+  phase: string;
+  processedPages: number;
+  totalPages: number;
+  imported: number;
+  failed: number;
+  duplicate: number;
+  batchId: string | null;
+  error: string | null;
+};
+
 type Locale = "zh" | "en";
 type ViewMode = "browse" | "manage";
 type IndexContextMenu = { node: IndexTreeNode; x: number; y: number };
@@ -454,7 +468,7 @@ function flattenTree(nodes: IndexTreeNode[]) {
 }
 
 function indexBranchImageCount(node: IndexTreeNode): number {
-  return node.imageCount + node.children.reduce((total, child) => total + indexBranchImageCount(child), 0);
+  return node.imageCount;
 }
 
 function orderedIndexSiblings(nodes: IndexTreeNode[], orderedIds: string[]) {
@@ -769,6 +783,7 @@ export default function AtlasWorkbench() {
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const [uploading, setUploading] = useState(false);
   const [documentImporting, setDocumentImporting] = useState(false);
+  const [documentImportJob, setDocumentImportJob] = useState<DocumentImportJobSnapshot | null>(null);
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [backupTask, setBackupTask] = useState<BackupJobSnapshot | null>(null);
@@ -808,6 +823,12 @@ export default function AtlasWorkbench() {
   const t = copy[locale];
   const isBrowseMode = viewMode === "browse";
   const canReorderIndexes = !isBrowseMode && isIndexReorderEnabled && !reorderingIndex;
+  const documentImportButtonLabel =
+    documentImporting && documentImportJob?.totalPages
+      ? `${documentImportJob.processedPages}/${documentImportJob.totalPages}`
+      : documentImporting
+        ? t.importingDocuments
+        : t.importDocuments;
   const backupTaskPercent = backupTask ? backupJobPercent(backupTask) : 0;
   const backupTaskTitle = backupTask?.kind === "restore" ? t.restoreTaskTitle : t.backupTaskTitle;
   const backupTaskPhase = (() => {
@@ -1190,6 +1211,31 @@ export default function AtlasWorkbench() {
     }
   }
 
+  async function readDocumentImportJobResponse(response: Response) {
+    const result = (await response.json().catch(() => null)) as
+      | { error?: string; job?: DocumentImportJobSnapshot }
+      | null;
+
+    if (!response.ok || !result?.job) {
+      throw new Error(result?.error ?? "Document import failed.");
+    }
+
+    return result.job;
+  }
+
+  async function pollDocumentImportJob(jobId: string) {
+    for (;;) {
+      await new Promise((resolve) => window.setTimeout(resolve, 600));
+      const response = await fetch(`/api/import/documents/jobs/${jobId}`, { cache: "no-store" });
+      const job = await readDocumentImportJobResponse(response);
+      setDocumentImportJob(job);
+
+      if (job.status !== "running") {
+        return job;
+      }
+    }
+  }
+
   async function uploadDocument(file: File | null) {
     if (!file) {
       return;
@@ -1201,18 +1247,22 @@ export default function AtlasWorkbench() {
     }
 
     setDocumentImporting(true);
+    setDocumentImportJob(null);
 
     try {
       const formData = new FormData();
       formData.set("file", file);
       formData.set("baseIndexPath", JSON.stringify(indexPathParts(selectedIndexPath)));
 
-      const response = await fetch("/api/import/documents", {
+      const started = await readDocumentImportJobResponse(await fetch("/api/import/documents/jobs", {
         method: "POST",
         body: formData,
-      });
-      const result = await response.json();
-      if (!response.ok) {
+        cache: "no-store",
+      }));
+      setDocumentImportJob(started);
+
+      const result = await pollDocumentImportJob(started.id);
+      if (result.status !== "completed") {
         throw new Error(result.error ?? "Document import failed.");
       }
 
@@ -1220,7 +1270,12 @@ export default function AtlasWorkbench() {
         window.alert(
           `${t.documentImportCompletedWithErrors}\n${formatDocumentImportSummary(
             t.documentImportSummary,
-            result,
+            {
+              imported: result.imported,
+              totalCount: result.totalPages,
+              failed: result.failed,
+              duplicate: result.duplicate,
+            },
           )}`,
         );
       }
@@ -1230,6 +1285,7 @@ export default function AtlasWorkbench() {
       window.alert(error instanceof Error ? error.message : "Document import failed.");
     } finally {
       setDocumentImporting(false);
+      setDocumentImportJob(null);
     }
   }
 
@@ -2015,7 +2071,7 @@ export default function AtlasWorkbench() {
                   className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {documentImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-                  <span>{documentImporting ? t.importingDocuments : t.importDocuments}</span>
+                  <span>{documentImportButtonLabel}</span>
                 </button>
                 <input
                   ref={documentInputRef}

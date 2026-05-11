@@ -107,7 +107,9 @@ npm run db:init
 - `src/app/api/backups/export/route.ts`：导出跨平台备份 zip。
 - `src/app/api/backups/restore/route.ts`：导入备份 zip 并以合并覆盖模式恢复。
 - `src/app/api/import/route.ts`：分块批量导入接口。
-- `src/app/api/import/documents/route.ts`：通用资料导入接口，当前注册 PDF importer。
+- `src/app/api/import/documents/route.ts`：通用资料导入同步接口，当前注册 PDF importer。
+- `src/app/api/import/documents/jobs/route.ts`：启动资料导入后台任务。
+- `src/app/api/import/documents/jobs/[id]/route.ts`：查询资料导入后台任务进度。
 - `src/app/api/import/[id]/undo/route.ts`：撤销导入批次。
 - `src/app/api/index-nodes/route.ts`：索引节点查询、创建、重命名、排序字段更新和删除。
 - `src/app/api/index-nodes/[id]/clear-images/route.ts`：清空某个索引及其后代下的图片。
@@ -119,6 +121,7 @@ npm run db:init
 - `src/lib/index-tree.ts`：索引树创建、路径补全、树形查询。
 - `src/lib/import-images.ts`：把已得到的图片 buffer 保存为图库图片并创建 `ChartImage` / `ImportItem`。
 - `src/lib/document-importers.ts`：资料导入 importer 的最小接口。
+- `src/lib/document-import-jobs.ts`：资料导入后台任务状态，供前端轮询进度。
 - `src/lib/pdf-importer.ts`：PDF 书签解析、逐页渲染和按目录挂载逻辑。
 - `src/lib/storage.ts`：图片存储、hash、文件名清洗、尺寸读取、安全路径校验。
 - `src/lib/ocr-queue.ts`：本地 OCR 并发队列。
@@ -218,7 +221,7 @@ npm run db:init
 - 有子节点的索引前方有箭头，点击箭头可展开或收起子索引。
 - 点击索引名称区域会选中索引并筛选图片。
 - 目前展开/收起状态只保存在组件状态中，没有写入 `localStorage`。
-- 左侧树上显示的数量是当前节点直接图片数，不是整棵子树汇总数。
+- 左侧树上显示的数量是当前节点及其所有后代节点的图片汇总数；后端用直接图片数 groupBy 后在内存树上后序汇总，避免逐节点数据库查询。
 
 管理模式下，索引树节点支持右键菜单：
 
@@ -278,13 +281,14 @@ npm run db:init
 
 资料导入：
 
-- `POST /api/import/documents` 接收 `multipart/form-data`，字段 `file` 为资料文件，`baseIndexPath` 为 JSON 字符串数组。
+- `POST /api/import/documents` 接收 `multipart/form-data`，字段 `file` 为资料文件，`baseIndexPath` 为 JSON 字符串数组；这是兼容用同步接口。
+- 前端默认使用 `POST /api/import/documents/jobs` 启动后台导入任务，并轮询 `GET /api/import/documents/jobs/[id]` 显示页级进度。
 - 当前只注册 PDF importer；后续支持 PPT 等类型时应新增 importer，不要把入口改回某个具体格式名称。
 - PDF importer 使用 PDF 内置 outline/bookmarks 作为目录来源，不做正文目录页 OCR 识别。
 - 未选中索引时在根节点创建 PDF 文件名容器；选中索引时在该索引子树下创建 PDF 文件名容器。
 - 有书签时按书签层级创建子索引；没有书签或页面未命中书签时，页图片挂到 PDF 容器节点。
-- 每页默认以 1.5 倍渲染，再用 `sharp` 限制最长边 1800px 并压缩为 JPEG 质量 82，之后复用 `importImageBuffer()` 入库，继续使用同一套图库保存、SHA-256 去重、`ImportBatch`、`ImportItem`、OCR、备份和撤销逻辑。
-- PDF 转图片参数可通过环境变量调整：`BROOKS_PDF_RENDER_SCALE`、`BROOKS_PDF_MAX_IMAGE_EDGE`、`BROOKS_PDF_JPEG_QUALITY`。
+- 每页默认最多以 1.5 倍渲染，最长边限制为 1800px，并用 JPEG 质量 82 直接输出图片；之后复用 `importImageBuffer()` 入库，继续使用同一套图库保存、SHA-256 去重、`ImportBatch`、`ImportItem`、OCR、备份和撤销逻辑。
+- PDF 转图片和导入并发参数可通过环境变量调整：`BROOKS_PDF_RENDER_SCALE`、`BROOKS_PDF_MAX_IMAGE_EDGE`、`BROOKS_PDF_JPEG_QUALITY`、`BROOKS_PDF_IMPORT_CONCURRENCY`。并发默认 `2`，范围 `1-4`。
 - 单页渲染失败只创建该页 `FAILED` 导入项，其他页继续处理。
 
 ## 11. 图片列表、分页和排序
@@ -366,8 +370,19 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 通用资料导入接口，当前支持 PDF。
 - 接收 `multipart/form-data`：`file` 为资料文件，`baseIndexPath` 为选中索引路径数组。
 - PDF 会先创建 PDF 文件名容器索引，再按内置书签目录创建子索引。
-- 每页转换为 PNG 图片后按普通图库图片入库并调度 OCR。
+- 每页转换为 JPEG 图片后按普通图库图片入库并调度 OCR。
 - 相同 SHA-256 hash 的页图片记录为 `DUPLICATE`，不创建重复 `ChartImage`。
+
+`POST /api/import/documents/jobs`
+
+- 启动资料导入后台任务，接收字段与同步资料导入接口一致。
+- 返回 `{ job }`，job 包含 `id`、`status`、`processedPages`、`totalPages`、`imported`、`failed`、`duplicate`、`batchId` 和 `error`。
+- 任务状态保存在当前 Node.js 进程内存中，TTL 为 30 分钟；开发服务器重启后未完成任务状态会丢失。
+
+`GET /api/import/documents/jobs/[id]`
+
+- 查询资料导入后台任务进度。
+- 前端每 600ms 轮询一次，完成后刷新工作台数据。
 
 `POST /api/import/[id]/undo`
 

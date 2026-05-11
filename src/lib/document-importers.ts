@@ -2,6 +2,7 @@ export type DocumentImportInput = {
   file: File;
   buffer: Buffer;
   baseIndexPath: string[];
+  onProgress?: (progress: DocumentImportProgress) => void;
 };
 
 export type DocumentImportResult = {
@@ -11,6 +12,15 @@ export type DocumentImportResult = {
   failed: number;
   duplicate: number;
   processedCount: number;
+};
+
+export type DocumentImportProgress = {
+  batchId: string;
+  totalCount: number;
+  processedCount: number;
+  imported: number;
+  failed: number;
+  duplicate: number;
 };
 
 export type DocumentImporter = {

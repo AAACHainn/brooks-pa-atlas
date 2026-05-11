@@ -14,7 +14,12 @@ export type ImportImageBufferInput = {
   sizeBytes: number;
   relativePath?: string | null;
   groupKey: string;
-  indexPath: string[];
+  indexPath?: string[];
+  indexNodeId?: string | null;
+  dimensions?: {
+    width: number | null;
+    height: number | null;
+  };
   title?: string | null;
 };
 
@@ -33,9 +38,15 @@ export async function importImageBuffer({
   relativePath,
   groupKey,
   indexPath,
+  indexNodeId,
+  dimensions: knownDimensions,
   title,
 }: ImportImageBufferInput): Promise<ImportImageBufferResult> {
-  const indexNode = indexPath.length ? await ensureIndexPath(indexPath) : null;
+  const indexNode = indexNodeId
+    ? { id: indexNodeId }
+    : indexPath?.length
+      ? await ensureIndexPath(indexPath)
+      : null;
   const hash = hashBuffer(buffer);
   const existing = await prisma.chartImage.findUnique({ where: { hash } });
 
@@ -61,7 +72,7 @@ export async function importImageBuffer({
   }
 
   const [dimensions, libraryPath] = await Promise.all([
-    getImageDimensions(buffer),
+    knownDimensions ? Promise.resolve(knownDimensions) : getImageDimensions(buffer),
     saveImageBuffer({ name: fileName, type: mimeType }, buffer, hash),
   ]);
 

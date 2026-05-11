@@ -8,9 +8,8 @@ import {
   getDocument,
   type PDFDocumentProxy,
 } from "pdfjs-dist/legacy/build/pdf.mjs";
-import sharp from "sharp";
 
-import type { DocumentImporter } from "@/lib/document-importers";
+import type { DocumentImportProgress, DocumentImporter } from "@/lib/document-importers";
 
 import { ensureIndexPath } from "@/lib/index-tree";
 import { importImageBuffer } from "@/lib/import-images";
@@ -31,10 +30,27 @@ type OutlineEntry = {
   order: number;
 };
 
+type PdfPagePlan = {
+  pageNumber: number;
+  outlinePath: string[];
+  targetIndexPath: string[];
+  indexNodeId: string | null;
+  fileName: string;
+  groupKey: string;
+  relativePath: string;
+};
+
+type RenderedPdfPage = {
+  buffer: Buffer;
+  width: number;
+  height: number;
+};
+
 const pdfMimeTypes = new Set(["application/pdf", "application/x-pdf"]);
 const defaultPdfRenderScale = 1.5;
 const defaultPdfMaxImageEdge = 1800;
 const defaultPdfJpegQuality = 82;
+const defaultPdfImportConcurrency = 2;
 const requireFromProject = createRequire(`${process.cwd()}${path.sep}`);
 const drawOps = {
   moveTo: 0,
@@ -94,6 +110,39 @@ function getPdfRenderOptions() {
       }),
     ),
   };
+}
+
+function getPdfImportConcurrency() {
+  return Math.round(
+    numberFromEnv("BROOKS_PDF_IMPORT_CONCURRENCY", defaultPdfImportConcurrency, {
+      min: 1,
+      max: 4,
+    }),
+  );
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+) {
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      for (;;) {
+        const index = nextIndex;
+        nextIndex += 1;
+
+        if (index >= items.length) {
+          return;
+        }
+
+        await worker(items[index]);
+      }
+    }),
+  );
 }
 
 function pathFromDrawOps(value: unknown) {
@@ -244,10 +293,16 @@ function outlinePathForPage(entries: OutlineEntry[], pageNumber: number) {
   return best?.path ?? [];
 }
 
-async function renderPdfPage(pdf: PDFDocumentProxy, pageNumber: number) {
+async function renderPdfPage(pdf: PDFDocumentProxy, pageNumber: number): Promise<RenderedPdfPage> {
   const renderOptions = getPdfRenderOptions();
   const page = await pdf.getPage(pageNumber);
-  const viewport = page.getViewport({ scale: renderOptions.scale });
+  const baseViewport = page.getViewport({ scale: 1 });
+  const maxBaseEdge = Math.max(baseViewport.width, baseViewport.height);
+  const scale = Math.min(
+    renderOptions.scale,
+    maxBaseEdge > 0 ? renderOptions.maxImageEdge / maxBaseEdge : renderOptions.scale,
+  );
+  const viewport = page.getViewport({ scale });
   const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
   const canvasContext = patchPdfRenderContext(
     canvas.getContext("2d") as unknown as CanvasRenderingContext2D,
@@ -263,18 +318,11 @@ async function renderPdfPage(pdf: PDFDocumentProxy, pageNumber: number) {
     page.cleanup();
   }
 
-  return sharp(canvas.toBuffer("image/png"))
-    .resize({
-      width: renderOptions.maxImageEdge,
-      height: renderOptions.maxImageEdge,
-      fit: "inside",
-      withoutEnlargement: true,
-    })
-    .jpeg({
-      quality: renderOptions.jpegQuality,
-      mozjpeg: true,
-    })
-    .toBuffer();
+  return {
+    buffer: canvas.toBuffer("image/jpeg", { quality: renderOptions.jpegQuality / 100 }),
+    width: canvas.width,
+    height: canvas.height,
+  };
 }
 
 export const pdfImporter: DocumentImporter = {
@@ -282,7 +330,7 @@ export const pdfImporter: DocumentImporter = {
 
   supports: isPdf,
 
-  async importDocument({ file, buffer, baseIndexPath }) {
+  async importDocument({ file, buffer, baseIndexPath, onProgress }) {
     configurePdfWorker();
     console.info("[pdf-import] starting", {
       fileName: file.name,
@@ -320,10 +368,38 @@ export const pdfImporter: DocumentImporter = {
     let imported = 0;
     let failed = 0;
     let duplicate = 0;
+    let processedCount = 0;
+    let importLock = Promise.resolve();
+
+    async function withImportLock<T>(operation: () => Promise<T>) {
+      const previous = importLock;
+      let release: () => void = () => undefined;
+      importLock = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+
+      await previous;
+
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    }
+
+    function emitProgress() {
+      const progress: DocumentImportProgress = {
+        batchId: batch.id,
+        totalCount: pdf.numPages,
+        processedCount,
+        imported,
+        failed,
+        duplicate,
+      };
+      onProgress?.(progress);
+    }
 
     try {
-      await ensureIndexPath(containerPath);
-
       const outline = (await pdf.getOutline()) as OutlineNode[] | null;
       const outlineEntries: OutlineEntry[] = [];
       await collectOutlineEntries(pdf, outline, [], outlineEntries, { current: 0 });
@@ -333,26 +409,66 @@ export const pdfImporter: DocumentImporter = {
         mappedOutlineCount: outlineEntries.length,
       });
 
-      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const pagePlans: PdfPagePlan[] = Array.from({ length: pdf.numPages }, (_, index) => {
+        const pageNumber = index + 1;
         const outlinePath = outlinePathForPage(outlineEntries, pageNumber);
         const targetIndexPath = [...containerPath, ...outlinePath];
         const fileName = pageFileName(stem, pageNumber, pdf.numPages);
         const groupKey = outlinePath.length ? outlinePath.join(" / ") : stem;
         const relativePath = `${file.name}/${fileName}`;
 
+        return {
+          pageNumber,
+          outlinePath,
+          targetIndexPath,
+          indexNodeId: null,
+          fileName,
+          groupKey,
+          relativePath,
+        };
+      });
+
+      const indexNodeIdByPath = new Map<string, string | null>();
+      for (const targetIndexPath of pagePlans.map((plan) => plan.targetIndexPath)) {
+        const cacheKey = JSON.stringify(targetIndexPath);
+        if (indexNodeIdByPath.has(cacheKey)) {
+          continue;
+        }
+
+        const indexNode = await ensureIndexPath(targetIndexPath);
+        indexNodeIdByPath.set(cacheKey, indexNode?.id ?? null);
+      }
+
+      for (const plan of pagePlans) {
+        plan.indexNodeId = indexNodeIdByPath.get(JSON.stringify(plan.targetIndexPath)) ?? null;
+      }
+
+      const concurrency = getPdfImportConcurrency();
+      console.info("[pdf-import] pages queued", {
+        fileName: file.name,
+        pageCount: pagePlans.length,
+        indexPathCount: indexNodeIdByPath.size,
+        concurrency,
+      });
+
+      await runWithConcurrency(pagePlans, concurrency, async (plan) => {
         try {
-          const imageBuffer = await renderPdfPage(pdf, pageNumber);
-          const result = await importImageBuffer({
+          const renderedPage = await renderPdfPage(pdf, plan.pageNumber);
+          const result = await withImportLock(() => importImageBuffer({
             batchId: batch.id,
-            buffer: imageBuffer,
-            fileName,
+            buffer: renderedPage.buffer,
+            fileName: plan.fileName,
             mimeType: "image/jpeg",
-            sizeBytes: imageBuffer.length,
-            relativePath,
-            groupKey,
-            indexPath: targetIndexPath,
-            title: fileName.replace(/\.jpg$/i, ""),
-          });
+            sizeBytes: renderedPage.buffer.length,
+            relativePath: plan.relativePath,
+            groupKey: plan.groupKey,
+            indexNodeId: plan.indexNodeId,
+            dimensions: {
+              width: renderedPage.width,
+              height: renderedPage.height,
+            },
+            title: plan.fileName.replace(/\.jpg$/i, ""),
+          }));
 
           if (result.status === "DUPLICATE") {
             duplicate += 1;
@@ -363,25 +479,29 @@ export const pdfImporter: DocumentImporter = {
           const message = error instanceof Error ? error.message : "PDF page import failed.";
           console.error("[pdf-import] page failed", {
             fileName: file.name,
-            pageNumber,
+            pageNumber: plan.pageNumber,
             message,
             stack: error instanceof Error ? error.stack : null,
           });
           failed += 1;
-          await prisma.importItem.create({
+          await withImportLock(() => prisma.importItem.create({
             data: {
               batchId: batch.id,
-              originalName: fileName,
-              relativePath,
-              groupKey,
+              indexNodeId: plan.indexNodeId,
+              originalName: plan.fileName,
+              relativePath: plan.relativePath,
+              groupKey: plan.groupKey,
               status: "FAILED",
               error: message.slice(0, 1000),
             },
-          });
+          }));
+        } finally {
+          processedCount += 1;
+          emitProgress();
         }
-      }
+      });
 
-      const processedCount = await prisma.importItem.count({ where: { batchId: batch.id } });
+      const persistedProcessedCount = await prisma.importItem.count({ where: { batchId: batch.id } });
       await prisma.importBatch.update({
         where: { id: batch.id },
         data: {
@@ -392,13 +512,15 @@ export const pdfImporter: DocumentImporter = {
 
       await updateBatchCounters(batch.id);
       scheduleOcrPump();
+      processedCount = persistedProcessedCount;
+      emitProgress();
       console.info("[pdf-import] completed", {
         fileName: file.name,
         batchId: batch.id,
         imported,
         duplicate,
         failed,
-        processedCount,
+        processedCount: persistedProcessedCount,
       });
 
       return {
@@ -407,7 +529,7 @@ export const pdfImporter: DocumentImporter = {
         imported,
         failed,
         duplicate,
-        processedCount,
+        processedCount: persistedProcessedCount,
       };
     } finally {
       await pdf.destroy();

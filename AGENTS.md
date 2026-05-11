@@ -312,8 +312,10 @@ npm run db:init
 - OCR 队列在导入后通过 `scheduleOcrPump()` 异步触发。
 - 默认 OCR 命令是 `tesseract`。
 - 可用环境变量 `BROOKS_OCR_COMMAND` 指定 OCR 命令。
-- 当前调用参数：`<command> <imagePath> stdout -l eng`。
-- 默认识别语言是英文 `eng`。
+- 当前调用参数：`<command> <imagePath> stdout -l <language>`。
+- 默认识别语言是简体中文加英文 `chi_sim+eng`。
+- 可用环境变量 `BROOKS_OCR_LANG` 指定 Tesseract 语言组合，例如 `eng`、`chi_sim+eng` 或其他已安装语言包。
+- 可用环境变量 `BROOKS_TESSDATA_DIR` 指定 Tesseract language data 目录；适合 Windows 上不写入 `Program Files`、改用项目本地 `data/tessdata` 的部署方式。
 - 默认并发数为 CPU 核心数一半，限制在 `2` 到 `4`。
 - `AppSetting` 的 `ocr.concurrency` 可覆盖并发数，最大 `8`。
 - 单张 OCR 超时为 `120_000ms`，stdout buffer 上限为 `8MB`。
@@ -471,7 +473,7 @@ https://github.com/AAACHainn/brooks-pa-atlas.git
 
 - `/api/atlas` 图片列表仍限制 `take: 200`；当前分页是前端分页，后续大图库应做真正的后端分页。
 - 搜索由数据库 `contains` 完成，后续可考虑全文索引或更强搜索。
-- OCR 默认英文 `eng`；如需中文或多语言，需要调整 `ocr-queue.ts` 或做成设置项。
+- OCR 默认使用 `chi_sim+eng` 中英混合识别；部署机器需要安装对应 Tesseract 语言包，或用 `BROOKS_OCR_LANG` 改成已安装语言组合。
 - 索引节点支持创建、重命名、删除空索引、清空图片、展开/收起和 `sortOrder` 字段更新，但尚未实现拖拽移动和完整排序 UI。
 - 图片详情支持单张编辑和删除，尚未支持已导入图片的批量编辑。
 - 导入表格支持逐文件索引选择，但尚未支持批量套用某一索引到当前页或全部选中项。

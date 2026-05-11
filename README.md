@@ -14,7 +14,7 @@ Brooks PA Atlas 是一个本地 Web App，用来管理 Brooks 价格行为图表
 Brooks PA Atlas 默认调用命令行里的 `tesseract`：
 
 ```text
-tesseract <imagePath> stdout -l eng
+tesseract <imagePath> stdout -l chi_sim+eng
 ```
 
 因此部署完成后必须能在终端直接运行：
@@ -54,7 +54,7 @@ sudo apt update
 sudo apt install tesseract-ocr
 ```
 
-如果需要英文以外的语言包，也要安装对应 language data。例如 Ubuntu/Debian 的简体中文语言包通常是：
+默认 OCR 语言是简体中文加英文混合识别，因此还需要安装简体中文 language data。例如 Ubuntu/Debian 的简体中文语言包通常是：
 
 ```bash
 sudo apt install tesseract-ocr-chi-sim
@@ -239,25 +239,49 @@ Windows PowerShell 可以这样指定其他 OCR 命令：
 $env:BROOKS_OCR_COMMAND="tesseract"
 ```
 
+也可以指定 Tesseract 语言组合：
+
+```powershell
+$env:BROOKS_OCR_LANG="chi_sim+eng"
+```
+
+如果语言包不在 Tesseract 默认安装目录，可以指定 tessdata 目录：
+
+```powershell
+$env:BROOKS_TESSDATA_DIR="D:\path\to\tessdata"
+```
+
 Linux/macOS shell 可以这样指定：
 
 ```bash
 export BROOKS_OCR_COMMAND=tesseract
 ```
 
+也可以指定 Tesseract 语言组合：
+
+```bash
+export BROOKS_OCR_LANG=chi_sim+eng
+```
+
+如果语言包不在 Tesseract 默认安装目录，可以指定 tessdata 目录：
+
+```bash
+export BROOKS_TESSDATA_DIR=/path/to/tessdata
+```
+
 如果希望只对本次启动生效，也可以在 Linux/macOS 下这样运行：
 
 ```bash
-BROOKS_OCR_COMMAND=tesseract npm run dev
+BROOKS_OCR_COMMAND=tesseract BROOKS_OCR_LANG=chi_sim+eng BROOKS_TESSDATA_DIR=/path/to/tessdata npm run dev
 ```
 
 默认 OCR 调用参数相当于：
 
 ```text
-tesseract <imagePath> stdout -l eng
+tesseract <imagePath> stdout -l chi_sim+eng
 ```
 
-因此默认识别语言是英文 `eng`。如果需要识别其他语言，需要先安装对应的 Tesseract language data，并在代码或配置中调整 OCR 参数。
+因此默认会同时识别简体中文和英文。如果需要识别其他语言，需要先安装对应的 Tesseract language data，并通过 `BROOKS_OCR_LANG` 调整语言组合。
 
 ### 8. 删除和撤销
 
@@ -315,6 +339,8 @@ tesseract --version
 
 如果命令不存在，需要先安装 Tesseract OCR，或者设置 `BROOKS_OCR_COMMAND` 指向可用命令。安装或修改 PATH 后，请重启终端和开发服务。
 
+如果错误提示缺少 `chi_sim.traineddata`，请安装简体中文语言包，或临时把 `BROOKS_OCR_LANG` 改成当前机器已安装的语言组合。
+
 常见 Linux 安装方式：
 
 ```bash
@@ -322,7 +348,7 @@ sudo apt update
 sudo apt install tesseract-ocr
 ```
 
-如果需要英文以外的语言包，也要安装对应语言数据。例如 Ubuntu/Debian 的简体中文语言包通常是：
+默认语言组合包含简体中文，因此需要安装对应语言数据。例如 Ubuntu/Debian 的简体中文语言包通常是：
 
 ```bash
 sudo apt install tesseract-ocr-chi-sim

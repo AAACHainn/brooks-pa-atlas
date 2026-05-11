@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db";
 import { absoluteImagePath } from "@/lib/storage";
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_OCR_LANGUAGE = "chi_sim+eng";
 
 const running = new Set<string>();
 let activeWorkers = 0;
@@ -74,8 +75,17 @@ async function updateBatchCounters(batchId: string) {
 
 async function runLocalOcr(libraryPath: string) {
   const command = process.env.BROOKS_OCR_COMMAND ?? "tesseract";
+  const language = process.env.BROOKS_OCR_LANG ?? DEFAULT_OCR_LANGUAGE;
+  const tessdataDir = process.env.BROOKS_TESSDATA_DIR;
   const imagePath = absoluteImagePath(libraryPath);
-  const { stdout } = await execFileAsync(command, [imagePath, "stdout", "-l", "eng"], {
+  const args = [
+    ...(tessdataDir ? ["--tessdata-dir", tessdataDir] : []),
+    imagePath,
+    "stdout",
+    "-l",
+    language,
+  ];
+  const { stdout } = await execFileAsync(command, args, {
     timeout: 120_000,
     maxBuffer: 1024 * 1024 * 8,
     windowsHide: true,

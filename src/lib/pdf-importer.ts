@@ -8,6 +8,7 @@ import {
   getDocument,
   type PDFDocumentProxy,
 } from "pdfjs-dist/legacy/build/pdf.mjs";
+import sharp from "sharp";
 
 import type { DocumentImporter } from "@/lib/document-importers";
 
@@ -31,7 +32,9 @@ type OutlineEntry = {
 };
 
 const pdfMimeTypes = new Set(["application/pdf", "application/x-pdf"]);
-const pdfRenderScale = 2;
+const defaultPdfRenderScale = 1.5;
+const defaultPdfMaxImageEdge = 1800;
+const defaultPdfJpegQuality = 82;
 const requireFromProject = createRequire(`${process.cwd()}${path.sep}`);
 const drawOps = {
   moveTo: 0,
@@ -60,7 +63,37 @@ function pdfStem(fileName: string) {
 
 function pageFileName(stem: string, pageNumber: number, pageCount: number) {
   const width = Math.max(3, String(pageCount).length);
-  return `${stem}-p${String(pageNumber).padStart(width, "0")}.png`;
+  return `${stem}-p${String(pageNumber).padStart(width, "0")}.jpg`;
+}
+
+function numberFromEnv(name: string, fallback: number, options: { min: number; max: number }) {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(options.max, Math.max(options.min, parsed));
+}
+
+function getPdfRenderOptions() {
+  return {
+    scale: numberFromEnv("BROOKS_PDF_RENDER_SCALE", defaultPdfRenderScale, {
+      min: 0.5,
+      max: 3,
+    }),
+    maxImageEdge: Math.round(
+      numberFromEnv("BROOKS_PDF_MAX_IMAGE_EDGE", defaultPdfMaxImageEdge, {
+        min: 800,
+        max: 4000,
+      }),
+    ),
+    jpegQuality: Math.round(
+      numberFromEnv("BROOKS_PDF_JPEG_QUALITY", defaultPdfJpegQuality, {
+        min: 40,
+        max: 95,
+      }),
+    ),
+  };
 }
 
 function pathFromDrawOps(value: unknown) {
@@ -212,8 +245,9 @@ function outlinePathForPage(entries: OutlineEntry[], pageNumber: number) {
 }
 
 async function renderPdfPage(pdf: PDFDocumentProxy, pageNumber: number) {
+  const renderOptions = getPdfRenderOptions();
   const page = await pdf.getPage(pageNumber);
-  const viewport = page.getViewport({ scale: pdfRenderScale });
+  const viewport = page.getViewport({ scale: renderOptions.scale });
   const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
   const canvasContext = patchPdfRenderContext(
     canvas.getContext("2d") as unknown as CanvasRenderingContext2D,
@@ -229,7 +263,18 @@ async function renderPdfPage(pdf: PDFDocumentProxy, pageNumber: number) {
     page.cleanup();
   }
 
-  return canvas.toBuffer("image/png");
+  return sharp(canvas.toBuffer("image/png"))
+    .resize({
+      width: renderOptions.maxImageEdge,
+      height: renderOptions.maxImageEdge,
+      fit: "inside",
+      withoutEnlargement: true,
+    })
+    .jpeg({
+      quality: renderOptions.jpegQuality,
+      mozjpeg: true,
+    })
+    .toBuffer();
 }
 
 export const pdfImporter: DocumentImporter = {
@@ -301,12 +346,12 @@ export const pdfImporter: DocumentImporter = {
             batchId: batch.id,
             buffer: imageBuffer,
             fileName,
-            mimeType: "image/png",
+            mimeType: "image/jpeg",
             sizeBytes: imageBuffer.length,
             relativePath,
             groupKey,
             indexPath: targetIndexPath,
-            title: fileName.replace(/\.png$/i, ""),
+            title: fileName.replace(/\.jpg$/i, ""),
           });
 
           if (result.status === "DUPLICATE") {

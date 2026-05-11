@@ -59,10 +59,10 @@ Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart
 - Prisma `7.8.0`
 - SQLite
 - `@prisma/adapter-better-sqlite3` + `better-sqlite3`
-- `sharp` 读取图片尺寸
+- `sharp` 读取图片尺寸，并压缩 PDF 页面转换后的图片
 - `lucide-react` 提供图标
 - `pdfjs-dist` 解析 PDF 页和内置书签目录
-- `@napi-rs/canvas` 在 Node.js 中把 PDF 页面渲染为 PNG
+- `@napi-rs/canvas` 在 Node.js 中渲染 PDF 页面
 - `yazl`、`yauzl` 用于跨平台 zip 备份和恢复
 - `zod`、`xlsx`、`fuse.js` 已作为依赖存在，其中部分能力还不是核心路径
 
@@ -283,7 +283,8 @@ npm run db:init
 - PDF importer 使用 PDF 内置 outline/bookmarks 作为目录来源，不做正文目录页 OCR 识别。
 - 未选中索引时在根节点创建 PDF 文件名容器；选中索引时在该索引子树下创建 PDF 文件名容器。
 - 有书签时按书签层级创建子索引；没有书签或页面未命中书签时，页图片挂到 PDF 容器节点。
-- 每页渲染为 PNG 后复用 `importImageBuffer()` 入库，继续使用同一套图库保存、SHA-256 去重、`ImportBatch`、`ImportItem`、OCR、备份和撤销逻辑。
+- 每页默认以 1.5 倍渲染，再用 `sharp` 限制最长边 1800px 并压缩为 JPEG 质量 82，之后复用 `importImageBuffer()` 入库，继续使用同一套图库保存、SHA-256 去重、`ImportBatch`、`ImportItem`、OCR、备份和撤销逻辑。
+- PDF 转图片参数可通过环境变量调整：`BROOKS_PDF_RENDER_SCALE`、`BROOKS_PDF_MAX_IMAGE_EDGE`、`BROOKS_PDF_JPEG_QUALITY`。
 - 单页渲染失败只创建该页 `FAILED` 导入项，其他页继续处理。
 
 ## 11. 图片列表、分页和排序

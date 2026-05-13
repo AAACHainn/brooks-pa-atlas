@@ -81,6 +81,8 @@ type BackupOptions = {
   onImageProgress?: (progress: { processedImages: number; totalImages: number }) => void;
 };
 
+type ZipSource = Buffer | { filePath: string };
+
 function iso(value: Date | null | undefined) {
   return value ? value.toISOString() : null;
 }
@@ -172,20 +174,28 @@ function assertManifestImagePath(imagePath: string, hash: string) {
   }
 }
 
-function openZip(buffer: Buffer) {
+function openZip(source: ZipSource) {
   return new Promise<yauzl.ZipFile>((resolve, reject) => {
-    yauzl.fromBuffer(
-      buffer,
-      { lazyEntries: true, strictFileNames: true, validateEntrySizes: true },
-      (error, zipFile) => {
-        if (error) {
-          reject(error);
-          return;
-        }
+    const options = { lazyEntries: true, strictFileNames: true, validateEntrySizes: true };
+    const callback = (error: Error | null, zipFile?: yauzl.ZipFile) => {
+      if (error) {
+        reject(error);
+        return;
+      }
 
-        resolve(zipFile);
-      },
-    );
+      if (!zipFile) {
+        reject(new Error("Backup zip could not be opened."));
+        return;
+      }
+
+      resolve(zipFile);
+    };
+
+    if (Buffer.isBuffer(source)) {
+      yauzl.fromBuffer(source, options, callback);
+    } else {
+      yauzl.open(source.filePath, options, callback);
+    }
   });
 }
 
@@ -215,10 +225,10 @@ function readStreamToBuffer(stream: Readable) {
 }
 
 async function readZipEntries(
-  buffer: Buffer,
+  source: ZipSource,
   onEntry: (zipFile: yauzl.ZipFile, entry: yauzl.Entry) => Promise<void>,
 ) {
-  const zipFile = await openZip(buffer);
+  const zipFile = await openZip(source);
 
   await new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -251,11 +261,11 @@ async function readZipEntries(
   });
 }
 
-async function readManifestAndEntryNames(buffer: Buffer) {
+async function readManifestAndEntryNames(source: ZipSource) {
   const manifestState: { buffer: Buffer | null } = { buffer: null };
   const entryNames = new Set<string>();
 
-  await readZipEntries(buffer, async (zipFile, entry) => {
+  await readZipEntries(source, async (zipFile, entry) => {
     assertSafeZipEntryName(entry.fileName);
     entryNames.add(entry.fileName);
 
@@ -297,6 +307,14 @@ async function readManifestAndEntryNames(buffer: Buffer) {
   }
 
   return manifest;
+}
+
+async function zipSourceSize(source: ZipSource) {
+  if (Buffer.isBuffer(source)) {
+    return source.length;
+  }
+
+  return (await stat(source.filePath)).size;
 }
 
 async function currentImageFileExists(libraryPath: string | null | undefined) {
@@ -415,13 +433,13 @@ export async function createBackupZip(options: BackupOptions = {}) {
   };
 }
 
-export async function restoreBackupZip(
-  buffer: Buffer,
+async function restoreBackupSource(
+  source: ZipSource,
   options: RestoreOptions = {},
 ): Promise<RestoreStats> {
   const log = options.log ?? (() => {});
-  log("zip validation started", { zipBytes: buffer.length });
-  const manifest = await readManifestAndEntryNames(buffer);
+  log("zip validation started", { zipBytes: await zipSourceSize(source) });
+  const manifest = await readManifestAndEntryNames(source);
   log("manifest loaded", {
     exportedAt: manifest.exportedAt,
     indexes: manifest.indexes.length,
@@ -495,7 +513,7 @@ export async function restoreBackupZip(
   let processedImages = 0;
 
   log("image restore started", { images: manifest.images.length });
-  await readZipEntries(buffer, async (zipFile, entry) => {
+  await readZipEntries(source, async (zipFile, entry) => {
     const image = imagesByPath.get(entry.fileName);
     if (!image) {
       return;
@@ -504,21 +522,21 @@ export async function restoreBackupZip(
     processedImages += 1;
 
     try {
-      const buffer = await readStreamToBuffer(await openReadStream(zipFile, entry));
-      const actualHash = hashBuffer(buffer);
+      const imageBuffer = await readStreamToBuffer(await openReadStream(zipFile, entry));
+      const actualHash = hashBuffer(imageBuffer);
 
       if (actualHash !== image.hash) {
         throw new Error(`Image hash mismatch: ${image.imagePath}`);
       }
 
-      if (buffer.length !== image.sizeBytes) {
+      if (imageBuffer.length !== image.sizeBytes) {
         throw new Error(`Image size mismatch: ${image.imagePath}`);
       }
 
       const existing = await prisma.chartImage.findUnique({ where: { hash: image.hash } });
       const existingFileOk = await currentImageFileExists(existing?.libraryPath);
       const libraryPath =
-        existingFileOk && existing ? existing.libraryPath : await saveRestoredImage(image, buffer);
+        existingFileOk && existing ? existing.libraryPath : await saveRestoredImage(image, imageBuffer);
 
       if (!existingFileOk) {
         stats.filesRestored += 1;
@@ -534,7 +552,7 @@ export async function restoreBackupZip(
         libraryPath,
         originalName: image.originalName,
         mimeType: image.mimeType,
-        sizeBytes: buffer.length,
+        sizeBytes: imageBuffer.length,
         width: image.width,
         height: image.height,
         title: image.title,
@@ -592,4 +610,18 @@ export async function restoreBackupZip(
   });
   log("restore completed", stats);
   return stats;
+}
+
+export async function restoreBackupZip(
+  buffer: Buffer,
+  options: RestoreOptions = {},
+): Promise<RestoreStats> {
+  return restoreBackupSource(buffer, options);
+}
+
+export async function restoreBackupZipFromFile(
+  filePath: string,
+  options: RestoreOptions = {},
+): Promise<RestoreStats> {
+  return restoreBackupSource({ filePath }, options);
 }

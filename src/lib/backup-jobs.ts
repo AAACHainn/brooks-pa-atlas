@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { unlink } from "node:fs/promises";
 
-import { createBackupZip, restoreBackupZip } from "@/lib/backup";
+import { createBackupZip, restoreBackupZip, restoreBackupZipFromFile } from "@/lib/backup";
 
 type JobStatus = "running" | "completed" | "failed";
 
@@ -197,6 +198,71 @@ export function startRestoreJob(buffer: Buffer) {
       job.phase = "failed";
       job.error = errorMessage(error);
       touch(job);
+      console.error(`[backup-restore:${job.id}] job failed`, {
+        error: job.error,
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
+  })();
+
+  return job;
+}
+
+export function startRestoreJobFromFile(filePath: string) {
+  cleanupJobs();
+  const id = randomUUID();
+  const job: RestoreJob = {
+    id,
+    kind: "restore",
+    status: "running",
+    phase: "reading-zip",
+    processedImages: 0,
+    totalImages: 0,
+    error: null,
+    result: null,
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  jobs.set(id, job);
+
+  void (async () => {
+    try {
+      const stats = await restoreBackupZipFromFile(filePath, {
+        log(message, metadata) {
+          if (message === "manifest loaded") {
+            job.phase = "restoring-indexes";
+            job.totalImages = Number(metadata?.images ?? 0);
+            touch(job);
+          }
+          if (message === "image restore started") {
+            job.phase = "restoring-images";
+            job.totalImages = Number(metadata?.images ?? job.totalImages);
+            touch(job);
+          }
+        },
+        onImageProgress(progress) {
+          job.phase = "restoring-images";
+          job.processedImages = progress.processedImages;
+          job.totalImages = progress.totalImages;
+          touch(job);
+        },
+      });
+
+      job.status = "completed";
+      job.phase = "completed";
+      job.result = stats;
+      touch(job);
+    } catch (error) {
+      job.status = "failed";
+      job.phase = "failed";
+      job.error = errorMessage(error);
+      touch(job);
+      console.error(`[backup-restore:${job.id}] job failed`, {
+        error: job.error,
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    } finally {
+      await unlink(filePath).catch(() => {});
     }
   })();
 

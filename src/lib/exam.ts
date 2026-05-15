@@ -56,13 +56,11 @@ export function questionStatus(input: {
 }) {
   const prompt = input.prompt?.trim() ?? "";
   const correctOption = input.correctOption?.trim() ?? "";
-  const explanation = input.explanation?.trim() ?? "";
 
   return prompt &&
     input.options.length >= 2 &&
     correctOption &&
     input.options.includes(correctOption) &&
-    explanation &&
     input.maskRects.length > 0
     ? "READY"
     : "DRAFT";
@@ -102,16 +100,26 @@ export function serializeExamQuestion(question: {
     indexNode?: { id: string; name: string; path: string } | null;
   };
 }) {
+  const options = parseExamOptions(question.optionsJson);
+  const maskRects = parseMaskRects(question.maskRectsJson);
+  const status = questionStatus({
+    prompt: question.prompt,
+    options,
+    correctOption: question.correctOption,
+    explanation: question.explanation,
+    maskRects,
+  });
+
   return {
     id: question.id,
     paperId: question.paperId,
     chartImageId: question.chartImageId,
     prompt: question.prompt,
-    options: parseExamOptions(question.optionsJson),
+    options,
     correctOption: question.correctOption,
     explanation: question.explanation,
-    maskRects: parseMaskRects(question.maskRectsJson),
-    status: question.status,
+    maskRects,
+    status,
     sortOrder: question.sortOrder,
     createdAt: question.createdAt,
     updatedAt: question.updatedAt,

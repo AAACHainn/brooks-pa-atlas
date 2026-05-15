@@ -97,6 +97,12 @@ type ConfirmDialogState =
   | { kind: "publish"; title: string; message: string; confirmLabel: string }
   | { kind: "delete-paper"; title: string; message: string; confirmLabel: string };
 
+type NoticeDialogState = {
+  title: string;
+  message: string;
+  items: string[];
+};
+
 const copy = {
   zh: {
     title: "考试模式",
@@ -105,6 +111,8 @@ const copy = {
     untitled: "未命名试卷",
     description: "描述",
     defaultOptions: "默认选项模板",
+    addOption: "添加选项",
+    removeOption: "删除选项",
     savePaper: "保存试卷",
     deletePaper: "删除试卷",
     publish: "发布",
@@ -121,6 +129,8 @@ const copy = {
     options: "选项",
     correct: "正确答案",
     explanation: "解析",
+    explanationOptional: "解析（可选）",
+    explanationPlaceholder: "可留空；需要复盘时再补充你的分析。",
     mask: "遮罩",
     maskColor: "遮罩颜色",
     saveQuestion: "保存题目草稿",
@@ -143,7 +153,18 @@ const copy = {
     noQuestions: "先从右侧图片库选择图片加入试卷。",
     locked: "发布后内容已锁定。",
     loadFailed: "加载失败，请稍后重试。",
-    publishFailed: "发布失败：请确认每道题都有题干、选项、正确答案、解析和遮罩。",
+    publishFailed: "发布失败：请确认每道题都有题干、选项、正确答案和遮罩。",
+    errorTitle: "操作没有完成",
+    duplicateImage: "这张图片已经在当前试卷中。",
+    paperAlreadyPublished: "这套试卷已经发布。",
+    attemptAlreadySubmitted: "这次考试已经提交。",
+    questionDraftTitle: "题目仍是草稿",
+    questionDraftMessage: "已保存，但发布前还需要补充：",
+    missingPrompt: "题干",
+    missingOptions: "至少 2 个选项",
+    missingCorrect: "正确答案",
+    missingMask: "至少 1 个遮罩",
+    gotIt: "知道了",
     cancel: "取消",
     publishConfirmTitle: "发布这套试卷？",
     publishConfirmMessage: "发布后试卷和题目内容会锁定，可用于考试。",
@@ -159,6 +180,8 @@ const copy = {
     untitled: "Untitled paper",
     description: "Description",
     defaultOptions: "Default options",
+    addOption: "Add option",
+    removeOption: "Remove option",
     savePaper: "Save paper",
     deletePaper: "Delete paper",
     publish: "Publish",
@@ -175,6 +198,8 @@ const copy = {
     options: "Options",
     correct: "Correct answer",
     explanation: "Explanation",
+    explanationOptional: "Explanation (optional)",
+    explanationPlaceholder: "Optional. Add notes later if you want review context.",
     mask: "Mask",
     maskColor: "Mask color",
     saveQuestion: "Save draft",
@@ -198,6 +223,17 @@ const copy = {
     locked: "Published content is locked.",
     loadFailed: "Load failed. Please try again.",
     publishFailed: "Publish failed. Make every question ready first.",
+    errorTitle: "Action did not finish",
+    duplicateImage: "This image is already in the paper.",
+    paperAlreadyPublished: "This paper is already published.",
+    attemptAlreadySubmitted: "This attempt has already been submitted.",
+    questionDraftTitle: "Question is still a draft",
+    questionDraftMessage: "Saved, but add these before publishing:",
+    missingPrompt: "Prompt",
+    missingOptions: "At least 2 options",
+    missingCorrect: "Correct answer",
+    missingMask: "At least 1 mask",
+    gotIt: "Got it",
     cancel: "Cancel",
     publishConfirmTitle: "Publish this paper?",
     publishConfirmMessage: "After publishing, the paper and questions are locked and can be used for exams.",
@@ -284,20 +320,141 @@ function replaceMaskRect(rects: MaskRect[], index: number, rect: MaskRect) {
   return rects.map((item, itemIndex) => (itemIndex === index ? rect : item));
 }
 
-function optionLines(options: string[]) {
-  return options.join("\n");
+function normalizeOptions(options: string[]) {
+  const normalized = options.map((option) => option.trim()).filter(Boolean);
+  return normalized.length >= 2 ? normalized.slice(0, 8) : defaultOptions;
 }
 
-function parseOptionLines(value: string) {
-  const options = value
-    .split(/\r?\n/)
-    .map((option) => option.trim())
-    .filter(Boolean);
-  return options.length >= 2 ? options.slice(0, 8) : defaultOptions;
+function missingQuestionFields(
+  question: Pick<ExamQuestion, "correctOption" | "maskRects" | "options" | "prompt">,
+  labels: (typeof copy)["zh"],
+) {
+  const options = normalizeOptions(question.options);
+  const missing: string[] = [];
+
+  if (!question.prompt.trim()) {
+    missing.push(labels.missingPrompt);
+  }
+
+  if (options.length < 2) {
+    missing.push(labels.missingOptions);
+  }
+
+  if (!question.correctOption || !options.includes(question.correctOption)) {
+    missing.push(labels.missingCorrect);
+  }
+
+  if (question.maskRects.length === 0) {
+    missing.push(labels.missingMask);
+  }
+
+  return missing;
+}
+
+function localizedErrorMessage(message: string | undefined, labels: (typeof copy)["zh"]) {
+  switch (message) {
+    case "This image is already in the paper.":
+      return labels.duplicateImage;
+    case "Paper is already published.":
+      return labels.paperAlreadyPublished;
+    case "Exam attempt has already been submitted.":
+      return labels.attemptAlreadySubmitted;
+    case "All questions must be ready before publishing.":
+      return labels.publishFailed;
+    default:
+      return message || labels.loadFailed;
+  }
+}
+
+function optionLabel(index: number) {
+  return String.fromCharCode(65 + index);
 }
 
 function percent(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+function OptionsEditor({
+  label,
+  options,
+  locked,
+  t,
+  onChange,
+}: {
+  label: string;
+  options: string[];
+  locked: boolean;
+  t: (typeof copy)["zh"];
+  onChange: (options: string[]) => void;
+}) {
+  const visibleOptions = options.length > 0 ? options : defaultOptions;
+
+  function updateOption(index: number, value: string) {
+    onChange(visibleOptions.map((option, optionIndex) => (optionIndex === index ? value : option)));
+  }
+
+  function removeOption(index: number) {
+    if (visibleOptions.length <= 2) {
+      return;
+    }
+
+    onChange(visibleOptions.filter((_, optionIndex) => optionIndex !== index));
+  }
+
+  function addOption() {
+    if (visibleOptions.length >= 8) {
+      return;
+    }
+
+    onChange([...visibleOptions, ""]);
+  }
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="block text-xs font-medium text-zinc-500">{label}</span>
+        {!locked ? (
+          <button
+            type="button"
+            onClick={addOption}
+            disabled={visibleOptions.length >= 8}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t.addOption}
+          </button>
+        ) : null}
+      </div>
+      <div className="space-y-2 rounded-md border border-zinc-200 bg-zinc-50 p-2">
+        {visibleOptions.map((option, index) => (
+          <div key={index} className="grid grid-cols-[28px_minmax(0,1fr)_32px] items-center gap-2">
+            <span className="grid h-7 w-7 place-items-center rounded-md bg-zinc-950 text-xs font-semibold text-white">
+              {optionLabel(index)}
+            </span>
+            <input
+              value={option}
+              disabled={locked}
+              onChange={(event) => updateOption(index, event.target.value)}
+              className="h-9 min-w-0 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-zinc-500 disabled:bg-zinc-100"
+            />
+            {!locked ? (
+              <button
+                type="button"
+                onClick={() => removeOption(index)}
+                disabled={visibleOptions.length <= 2}
+                className="grid h-8 w-8 place-items-center rounded-md text-zinc-500 hover:bg-white hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-30"
+                title={t.removeOption}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            ) : (
+              <span />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function MaskedImage({
@@ -456,7 +613,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
   const [paperDraft, setPaperDraft] = useState({
     title: "",
     description: "",
-    defaultOptionsText: optionLines(defaultOptions),
+    defaultOptions,
   });
   const [imageQuery, setImageQuery] = useState("");
   const [imageIndexId, setImageIndexId] = useState("");
@@ -469,6 +626,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
   const [wrongOnly, setWrongOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [noticeDialog, setNoticeDialog] = useState<NoticeDialogState | null>(null);
 
   const selectedQuestion = selectedPaper?.questions?.find((question) => question.id === selectedQuestionId) ?? null;
   const isLocked = selectedPaper?.status === "PUBLISHED";
@@ -501,7 +659,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
       setPaperDraft({
         title: result.paper.title,
         description: result.paper.description ?? "",
-        defaultOptionsText: optionLines(result.paper.defaultOptions),
+        defaultOptions: result.paper.defaultOptions,
       });
     },
     [t.loadFailed],
@@ -577,7 +735,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
         body: JSON.stringify({
           title: paperDraft.title,
           description: paperDraft.description,
-          defaultOptions: parseOptionLines(paperDraft.defaultOptionsText),
+          defaultOptions: normalizeOptions(paperDraft.defaultOptions),
         }),
       });
       await loadPapers();
@@ -599,7 +757,11 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     });
     const result = (await response.json()) as { question?: ExamQuestion; error?: string };
     if (!response.ok || !result.question) {
-      window.alert(result.error ?? t.loadFailed);
+      setNoticeDialog({
+        title: t.errorTitle,
+        message: localizedErrorMessage(result.error, t),
+        items: [],
+      });
       return;
     }
 
@@ -612,19 +774,37 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
       return;
     }
 
+    const options = normalizeOptions(question.options);
+    const missing = missingQuestionFields({ ...question, options }, t);
     const response = await fetch(`/api/exam/questions/${question.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(question),
+      body: JSON.stringify({
+        ...question,
+        options,
+        correctOption: options.includes(question.correctOption ?? "") ? question.correctOption : options[0],
+      }),
     });
     const result = (await response.json()) as { error?: string };
     if (!response.ok) {
-      window.alert(result.error ?? t.loadFailed);
+      setNoticeDialog({
+        title: t.errorTitle,
+        message: localizedErrorMessage(result.error, t),
+        items: [],
+      });
       return;
     }
 
     if (selectedPaper) {
       await loadPaper(selectedPaper.id);
+    }
+
+    if (missing.length > 0) {
+      setNoticeDialog({
+        title: t.questionDraftTitle,
+        message: t.questionDraftMessage,
+        items: missing,
+      });
     }
   }
 
@@ -647,7 +827,11 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     const response = await fetch(`/api/exam/papers/${paperId}`, { method: "DELETE" });
     const result = (await response.json().catch(() => ({}))) as { error?: string };
     if (!response.ok) {
-      window.alert(result.error ?? t.loadFailed);
+      setNoticeDialog({
+        title: t.errorTitle,
+        message: localizedErrorMessage(result.error, t),
+        items: [],
+      });
       return;
     }
 
@@ -656,7 +840,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     setPaperDraft({
       title: "",
       description: "",
-      defaultOptionsText: optionLines(defaultOptions),
+      defaultOptions,
     });
     await loadPapers();
   }
@@ -669,7 +853,11 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     const response = await fetch(`/api/exam/papers/${selectedPaper.id}/publish`, { method: "POST" });
     const result = (await response.json()) as { error?: string };
     if (!response.ok) {
-      window.alert(result.error ?? t.publishFailed);
+      setNoticeDialog({
+        title: t.errorTitle,
+        message: localizedErrorMessage(result.error, t),
+        items: [],
+      });
       return;
     }
 
@@ -728,7 +916,11 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     });
     const result = (await response.json()) as { attempt?: ExamAttempt; error?: string };
     if (!response.ok || !result.attempt) {
-      window.alert(result.error ?? t.loadFailed);
+      setNoticeDialog({
+        title: t.errorTitle,
+        message: localizedErrorMessage(result.error, t),
+        items: [],
+      });
       return;
     }
 
@@ -749,7 +941,11 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     });
     const result = (await response.json()) as { attempt?: ExamAttempt; error?: string };
     if (!response.ok || !result.attempt) {
-      window.alert(result.error ?? t.loadFailed);
+      setNoticeDialog({
+        title: t.errorTitle,
+        message: localizedErrorMessage(result.error, t),
+        items: [],
+      });
       return;
     }
 
@@ -887,7 +1083,9 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
                   {t.yourAnswer}: <strong>{answer.userAnswer ?? "-"}</strong> / {t.correctAnswer}:{" "}
                   <strong>{answer.question.correctOption}</strong>
                 </p>
-                <p className="mt-1 text-zinc-600">{answer.question.explanation}</p>
+                {answer.question.explanation ? (
+                  <p className="mt-1 text-zinc-600">{answer.question.explanation}</p>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -1009,7 +1207,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
                   </button>
                 </div>
               </div>
-              <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(360px,1.1fr)]">
                 <label>
                   <span className="mb-1 block text-xs font-medium text-zinc-500">{t.description}</span>
                   <textarea
@@ -1019,17 +1217,13 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
                     className="min-h-20 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:bg-zinc-50"
                   />
                 </label>
-                <label>
-                  <span className="mb-1 block text-xs font-medium text-zinc-500">{t.defaultOptions}</span>
-                  <textarea
-                    value={paperDraft.defaultOptionsText}
-                    disabled={isLocked}
-                    onChange={(event) =>
-                      setPaperDraft((draft) => ({ ...draft, defaultOptionsText: event.target.value }))
-                    }
-                    className="min-h-20 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:bg-zinc-50"
-                  />
-                </label>
+                <OptionsEditor
+                  label={t.defaultOptions}
+                  options={paperDraft.defaultOptions}
+                  locked={isLocked}
+                  t={t}
+                  onChange={(defaultOptions) => setPaperDraft((draft) => ({ ...draft, defaultOptions }))}
+                />
               </div>
               {isLocked ? <p className="mt-3 text-xs text-zinc-500">{t.locked}</p> : null}
             </div>
@@ -1234,6 +1428,48 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
         </div>
       </div>
     ) : null}
+    {noticeDialog ? (
+      <div
+        className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
+        role="dialog"
+        aria-modal="true"
+        onClick={() => setNoticeDialog(null)}
+      >
+        <div
+          className="w-full max-w-md rounded-md border border-zinc-200 bg-white p-5 shadow-2xl"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-start gap-3">
+            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-amber-200 bg-amber-50 text-amber-700">
+              <AlertTriangle className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-base font-semibold text-zinc-950">{noticeDialog.title}</h3>
+              <p className="mt-2 text-sm leading-6 text-zinc-600">{noticeDialog.message}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {noticeDialog.items.map((item) => (
+                  <span
+                    key={item}
+                    className="inline-flex h-7 items-center rounded-md border border-amber-200 bg-amber-50 px-2 text-xs font-medium text-amber-800"
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="mt-5 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setNoticeDialog(null)}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800"
+            >
+              {t.gotIt}
+            </button>
+          </div>
+        </div>
+      </div>
+    ) : null}
     </>
   );
 }
@@ -1355,21 +1591,18 @@ function QuestionEditor({
             className="h-10 w-full rounded-md border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-500 disabled:bg-zinc-50"
           />
         </label>
-        <label>
-          <span className="mb-1 block text-xs font-medium text-zinc-500">{t.options}</span>
-          <textarea
-            value={optionLines(question.options)}
-            disabled={locked}
-            onChange={(event) => {
-              const options = parseOptionLines(event.target.value);
-              onPatch({
-                options,
-                correctOption: options.includes(question.correctOption ?? "") ? question.correctOption : options[0],
-              });
-            }}
-            className="min-h-32 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:bg-zinc-50"
-          />
-        </label>
+        <OptionsEditor
+          label={t.options}
+          options={question.options}
+          locked={locked}
+          t={t}
+          onChange={(options) =>
+            onPatch({
+              options,
+              correctOption: options.includes(question.correctOption ?? "") ? question.correctOption : options[0],
+            })
+          }
+        />
         <div className="space-y-3">
           <label>
             <span className="mb-1 block text-xs font-medium text-zinc-500">{t.correct}</span>
@@ -1388,10 +1621,11 @@ function QuestionEditor({
             </select>
           </label>
           <label>
-            <span className="mb-1 block text-xs font-medium text-zinc-500">{t.explanation}</span>
+            <span className="mb-1 block text-xs font-medium text-zinc-500">{t.explanationOptional}</span>
             <textarea
               value={question.explanation}
               disabled={locked}
+              placeholder={t.explanationPlaceholder}
               onChange={(event) => onPatch({ explanation: event.target.value })}
               className="min-h-20 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-500 disabled:bg-zinc-50"
             />

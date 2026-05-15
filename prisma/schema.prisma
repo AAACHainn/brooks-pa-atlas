@@ -36,6 +36,21 @@ enum OcrStatus {
   SKIPPED
 }
 
+enum ExamPaperStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum ExamQuestionStatus {
+  DRAFT
+  READY
+}
+
+enum ExamAttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+}
+
 model IndexNode {
   id        String      @id @default(cuid())
   name      String
@@ -79,6 +94,7 @@ model ChartImage {
   indexNode   IndexNode?   @relation(fields: [indexNodeId], references: [id], onDelete: SetNull)
   importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   importItem  ImportItem?
+  examQuestions ExamQuestion[]
 
   @@index([indexNodeId])
   @@index([importBatchId])
@@ -139,4 +155,85 @@ model AppSetting {
   value     String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model ExamPaper {
+  id                 String          @id @default(cuid())
+  title              String
+  description        String?
+  status             ExamPaperStatus @default(DRAFT)
+  defaultOptionsJson String          @default("[]")
+  publishedAt        DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  questions ExamQuestion[]
+  attempts  ExamAttempt[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ExamQuestion {
+  id            String             @id @default(cuid())
+  paperId       String
+  chartImageId  String
+  prompt        String             @default("")
+  optionsJson   String             @default("[]")
+  correctOption String?
+  explanation   String             @default("")
+  maskRectsJson String             @default("[]")
+  status        ExamQuestionStatus @default(DRAFT)
+  sortOrder     Int                @default(0)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  paper    ExamPaper   @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  image    ChartImage  @relation(fields: [chartImageId], references: [id], onDelete: Restrict)
+  answers  ExamAttemptAnswer[]
+
+  @@index([paperId])
+  @@index([chartImageId])
+  @@index([status])
+  @@unique([paperId, chartImageId])
+}
+
+model ExamAttempt {
+  id              String            @id @default(cuid())
+  paperId         String
+  status          ExamAttemptStatus @default(IN_PROGRESS)
+  startedAt       DateTime          @default(now())
+  submittedAt     DateTime?
+  durationSeconds Int?
+  totalCount      Int               @default(0)
+  correctCount    Int               @default(0)
+  accuracy        Float             @default(0)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  paper   ExamPaper           @relation(fields: [paperId], references: [id], onDelete: Restrict)
+  answers ExamAttemptAnswer[]
+
+  @@index([paperId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ExamAttemptAnswer {
+  id          String   @id @default(cuid())
+  attemptId   String
+  questionId  String
+  order       Int
+  userAnswer  String?
+  isCorrect   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  attempt  ExamAttempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question ExamQuestion @relation(fields: [questionId], references: [id], onDelete: Restrict)
+
+  @@index([attemptId])
+  @@index([questionId])
+  @@unique([attemptId, questionId])
+  @@unique([attemptId, order])
 }

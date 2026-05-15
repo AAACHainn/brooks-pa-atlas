@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   Download,
   Eye,
   FileText,
@@ -26,6 +27,9 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import ExamMode from "@/app/exam-mode";
+import type { ExamIndexOption } from "@/app/exam-mode";
 
 type IndexTreeNode = {
   id: string;
@@ -93,6 +97,8 @@ type RestoreStats = {
   imagesCreated: number;
   imagesUpdated: number;
   filesRestored: number;
+  examPapersRestored?: number;
+  examAttemptsRestored?: number;
 };
 
 type BackupJobSnapshot = {
@@ -122,7 +128,7 @@ type DocumentImportJobSnapshot = {
 };
 
 type Locale = "zh" | "en";
-type ViewMode = "browse" | "manage";
+type ViewMode = "browse" | "manage" | "exam";
 type IndexContextMenu = { node: IndexTreeNode; x: number; y: number };
 type IndexDropPosition = "before" | "after";
 type IndexDropIndicator = { id: string; position: IndexDropPosition };
@@ -247,8 +253,10 @@ const copy = {
     ocrFailedShort: "OCR 失败",
     browse: "浏览",
     manage: "管理",
+    exam: "考试",
     browseMode: "浏览模式",
     manageMode: "管理模式",
+    examMode: "考试模式",
     previousImage: "上一张图片",
     nextImage: "下一张图片",
     previousImageShortcut: "上一张图片（快捷键 ←）",
@@ -377,8 +385,10 @@ const copy = {
     ocrFailedShort: "OCR failed",
     browse: "Browse",
     manage: "Manage",
+    exam: "Exam",
     browseMode: "Browse mode",
     manageMode: "Manage mode",
+    examMode: "Exam mode",
     previousImage: "Previous image",
     nextImage: "Next image",
     previousImageShortcut: "Previous image (shortcut ←)",
@@ -739,11 +749,18 @@ function ModeSwitch({
   onChange,
 }: {
   mode: ViewMode;
-  labels: { browse: string; manage: string; browseMode: string; manageMode: string };
+  labels: {
+    browse: string;
+    manage: string;
+    exam: string;
+    browseMode: string;
+    manageMode: string;
+    examMode: string;
+  };
   onChange: (mode: ViewMode) => void;
 }) {
   return (
-    <div className="grid h-9 grid-cols-2 rounded-md border border-zinc-200 bg-zinc-50 p-0.5">
+    <div className="grid h-9 grid-cols-3 rounded-md border border-zinc-200 bg-zinc-50 p-0.5">
       <button
         type="button"
         onClick={() => onChange("browse")}
@@ -765,6 +782,17 @@ function ModeSwitch({
       >
         <PencilLine className="h-3.5 w-3.5" />
         <span>{labels.manage}</span>
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("exam")}
+        className={`inline-flex items-center justify-center gap-1.5 rounded px-2 text-xs font-medium transition ${
+          mode === "exam" ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-white"
+        }`}
+        title={labels.examMode}
+      >
+        <ClipboardList className="h-3.5 w-3.5" />
+        <span>{labels.exam}</span>
       </button>
     </div>
   );
@@ -824,7 +852,9 @@ export default function AtlasWorkbench() {
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const t = copy[locale];
   const isBrowseMode = viewMode === "browse";
-  const canReorderIndexes = !isBrowseMode && isIndexReorderEnabled && !reorderingIndex;
+  const isExamMode = viewMode === "exam";
+  const isManageMode = viewMode === "manage";
+  const canReorderIndexes = isManageMode && isIndexReorderEnabled && !reorderingIndex;
   const documentImportButtonLabel =
     documentImporting && documentImportJob?.totalPages
       ? `${documentImportJob.processedPages}/${documentImportJob.totalPages}`
@@ -892,7 +922,8 @@ export default function AtlasWorkbench() {
         setLocale(window.localStorage.getItem("brooks-pa-atlas.locale") === "en" ? "en" : "zh");
         setIsSidebarCollapsed(window.localStorage.getItem("brooks-pa-atlas.sidebar") === "collapsed");
         setIsOverviewCollapsed(window.localStorage.getItem("brooks-pa-atlas.overview") === "collapsed");
-        setViewMode(window.localStorage.getItem("brooks-pa-atlas.viewMode") === "browse" ? "browse" : "manage");
+        const savedViewMode = window.localStorage.getItem("brooks-pa-atlas.viewMode");
+        setViewMode(savedViewMode === "browse" || savedViewMode === "exam" ? savedViewMode : "manage");
         setShowBrowseThumbnails(window.localStorage.getItem("brooks-pa-atlas.browseThumbnails") !== "hidden");
 
         const savedGridPageSize = Number(window.localStorage.getItem("brooks-pa-atlas.imageGridPageSize"));
@@ -1038,7 +1069,7 @@ export default function AtlasWorkbench() {
     : 0;
   const indexActionImageCount = indexAction ? indexBranchImageCount(indexAction.node) : 0;
   const canNavigateSelectedImage = (data?.images.length ?? 0) > 1;
-  const shouldShowImageGrid = !isBrowseMode || showBrowseThumbnails || !selectedImage;
+  const shouldShowImageGrid = isManageMode || (isBrowseMode && (showBrowseThumbnails || !selectedImage));
   const selectedImageTip = selectedImage
     ? [
         `${t.title}: ${selectedImage.title ?? selectedImage.originalName}`,
@@ -1058,7 +1089,7 @@ export default function AtlasWorkbench() {
         .filter(Boolean)
         .join("\n")
     : "";
-  const layoutClass = isBrowseMode
+  const layoutClass = isBrowseMode || isExamMode
     ? isSidebarCollapsed
       ? "grid min-h-screen grid-cols-1 xl:grid-cols-[64px_minmax(0,1fr)]"
       : "grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)]"
@@ -1306,7 +1337,7 @@ export default function AtlasWorkbench() {
   }
 
   function openIndexContextMenu(node: IndexTreeNode, event: React.MouseEvent<HTMLButtonElement>) {
-    if (isBrowseMode) {
+    if (!isManageMode) {
       return;
     }
 
@@ -1629,6 +1660,7 @@ export default function AtlasWorkbench() {
         `索引：新建 ${stats.indexesCreated}，更新 ${stats.indexesUpdated}`,
         `图片：新建 ${stats.imagesCreated}，更新 ${stats.imagesUpdated}`,
         `文件：恢复 ${stats.filesRestored}`,
+        `试卷：恢复 ${stats.examPapersRestored ?? 0}，考试记录 ${stats.examAttemptsRestored ?? 0}`,
       ].join("\n");
     }
 
@@ -1637,6 +1669,7 @@ export default function AtlasWorkbench() {
       `Indexes: ${stats.indexesCreated} created, ${stats.indexesUpdated} updated`,
       `Images: ${stats.imagesCreated} created, ${stats.imagesUpdated} updated`,
       `Files restored: ${stats.filesRestored}`,
+      `Exams restored: ${stats.examPapersRestored ?? 0}, attempts ${stats.examAttemptsRestored ?? 0}`,
     ].join("\n");
   }
 
@@ -1810,7 +1843,7 @@ export default function AtlasWorkbench() {
   }
 
   function setPersistedViewModeWithPagination(mode: ViewMode) {
-    if (mode === "browse") {
+    if (mode !== "manage") {
       setIsIndexReorderEnabled(false);
       clearIndexDragState();
     }
@@ -1891,7 +1924,13 @@ export default function AtlasWorkbench() {
                 className="grid h-10 w-10 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50"
                 title={isBrowseMode ? t.manageMode : t.browseMode}
               >
-                {isBrowseMode ? <PencilLine className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                {isExamMode ? (
+                  <ClipboardList className="h-4 w-4" />
+                ) : isBrowseMode ? (
+                  <PencilLine className="h-4 w-4" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
               </button>
             </div>
           ) : (
@@ -1939,7 +1978,7 @@ export default function AtlasWorkbench() {
                 />
               </div>
 
-              {!isBrowseMode ? (
+              {isManageMode ? (
                 <div className="border-b border-zinc-200 p-4">
                   <div className="flex gap-2">
                     <input
@@ -1990,7 +2029,7 @@ export default function AtlasWorkbench() {
 
               <nav
                 className={`max-h-96 overflow-auto p-3 xl:max-h-none ${
-                  isBrowseMode ? "xl:h-[calc(100vh-119px)]" : "xl:h-[calc(100vh-231px)]"
+                  isManageMode ? "xl:h-[calc(100vh-231px)]" : "xl:h-[calc(100vh-119px)]"
                 }`}
               >
                 <button
@@ -2029,19 +2068,31 @@ export default function AtlasWorkbench() {
 
         <section className="min-w-0">
           <div className="flex h-16 items-center gap-3 border-b border-zinc-200 bg-white px-5">
-            <div className="relative min-w-0 flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
-              <input
-                value={query}
-                onChange={(event) => {
-                  setQuery(event.target.value);
-                  setImageGridPage(1);
-                }}
-                className="h-10 w-full rounded-md border border-zinc-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-zinc-500"
-                placeholder={t.searchPlaceholder}
-              />
-            </div>
-            {!isBrowseMode ? (
+            {isExamMode ? (
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <div className="grid h-10 w-10 place-items-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-700">
+                  <ClipboardList className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">{t.examMode}</p>
+                  <p className="truncate text-xs text-zinc-500">Brooks PA Atlas</p>
+                </div>
+              </div>
+            ) : (
+              <div className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                <input
+                  value={query}
+                  onChange={(event) => {
+                    setQuery(event.target.value);
+                    setImageGridPage(1);
+                  }}
+                  className="h-10 w-full rounded-md border border-zinc-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-zinc-500"
+                  placeholder={t.searchPlaceholder}
+                />
+              </div>
+            )}
+            {isManageMode ? (
               <>
                 <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800">
                   <ImageIcon className="h-4 w-4" />
@@ -2122,7 +2173,7 @@ export default function AtlasWorkbench() {
             ) : null}
           </div>
 
-          {!isBrowseMode && files.length > 0 ? (
+          {isManageMode && files.length > 0 ? (
             <div className="border-b border-zinc-200 bg-white px-5 py-4">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
@@ -2289,7 +2340,21 @@ export default function AtlasWorkbench() {
               </div>
             ) : null}
 
-            {!isBrowseMode ? (
+            {isExamMode ? (
+              <ExamMode
+                locale={locale}
+                indexes={flatIndexes.map(
+                  (node): ExamIndexOption => ({
+                    id: node.id,
+                    name: node.name,
+                    path: node.path,
+                    depth: node.depth,
+                  }),
+                )}
+              />
+            ) : null}
+
+            {isManageMode ? (
               <div className="mb-4 rounded-md border border-zinc-200 bg-white">
               <div className="flex min-h-12 items-center justify-between gap-3 px-3 py-2">
                 <div className="min-w-0">
@@ -2574,7 +2639,7 @@ export default function AtlasWorkbench() {
               </>
             ) : null}
 
-            {data?.images.length === 0 ? (
+            {!isExamMode && data?.images.length === 0 ? (
               <div className="grid h-72 place-items-center rounded-md border border-dashed border-zinc-300 bg-white text-sm text-zinc-500">
                 {t.noImages}
               </div>
@@ -2582,7 +2647,7 @@ export default function AtlasWorkbench() {
           </div>
         </section>
 
-        {!isBrowseMode ? (
+        {isManageMode ? (
           <aside className="border-l border-zinc-200 bg-white">
           <div className="h-16 border-b border-zinc-200 px-4 py-3">
             <p className="text-sm font-semibold">{t.imageDetail}</p>
@@ -2830,7 +2895,7 @@ export default function AtlasWorkbench() {
           </div>
         </div>
       ) : null}
-      {indexContextMenu && !isBrowseMode ? (
+      {indexContextMenu && isManageMode ? (
         <div
           className="fixed z-40 w-56 rounded-md border border-zinc-200 bg-white p-1 text-sm shadow-xl"
           style={{ left: indexContextMenu.x, top: indexContextMenu.y }}

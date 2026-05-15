@@ -40,6 +40,16 @@ export async function POST(
     where: { indexNodeId: { in: nodeIds } },
     select: { id: true, libraryPath: true },
   });
+  const examQuestionCount = await prisma.examQuestion.count({
+    where: { chartImageId: { in: images.map((image) => image.id) } },
+  });
+
+  if (examQuestionCount > 0) {
+    return NextResponse.json(
+      { error: "Some images are used by exam questions and cannot be deleted." },
+      { status: 409 },
+    );
+  }
 
   for (const image of images) {
     try {

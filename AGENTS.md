@@ -75,6 +75,7 @@ npm run dev
 npm run lint
 npm run build
 npm run prisma:generate
+npm run db:migrate
 npm run db:init
 ```
 
@@ -85,6 +86,7 @@ npm run db:init
 - `npm run lint` 运行 ESLint。
 - `npm run build` 运行生产构建和类型检查。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
+- `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
 - `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库。
 
 注意：
@@ -103,7 +105,9 @@ npm run db:init
 - `src/app/layout.tsx`：根布局、字体和 metadata。
 - `src/app/globals.css`：Tailwind v4 入口和全局 CSS。
 - `src/app/atlas-workbench.tsx`：主工作台客户端组件，绝大多数前端交互在这里。
+- `src/app/exam-mode.tsx`：考试模式客户端组件，包含试卷管理、制题、遮罩、考试和结果复盘。
 - `src/app/api/atlas/route.ts`：工作台聚合查询接口。
+- `src/app/api/exam/**/route.ts`：考试模式 API，负责试卷、题目、发布、考试记录和提交评分。
 - `src/app/api/backups/export/route.ts`：导出跨平台备份 zip。
 - `src/app/api/backups/restore/route.ts`：导入备份 zip 并以合并覆盖模式恢复。
 - `src/app/api/import/route.ts`：分块批量导入接口。
@@ -114,6 +118,7 @@ npm run db:init
 - `src/app/api/index-nodes/route.ts`：索引节点查询、创建、重命名、排序字段更新和删除。
 - `src/app/api/index-nodes/[id]/clear-images/route.ts`：清空某个索引及其后代下的图片。
 - `src/app/api/images/[id]/route.ts`：更新或删除单张图片。
+- `src/app/api/images/route.ts`：分页查询图库图片，供考试模式选择已有图片。
 - `src/app/api/images/[id]/file/route.ts`：读取图库内图片文件并返回给浏览器。
 - `src/app/api/ocr/retry/route.ts`：重试失败 OCR。
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
@@ -128,6 +133,7 @@ npm run db:init
 - `prisma/schema.prisma`：Prisma 数据模型。
 - `prisma/migrations/20260505000000_init/migration.sql`：初始 SQLite schema。
 - `scripts/init-db.mjs`：本地 SQLite 初始化脚本。
+- `scripts/migrate-db.mjs`：本地 SQLite 增量迁移脚本。
 - `public/*.svg`：create-next-app 默认静态图标，目前不是产品核心资源。
 
 ## 6. 本地数据和生成物
@@ -157,12 +163,19 @@ npm run db:init
 - `ImportBatch`：一次批量导入任务，保存总数、成功数、失败数、重复数、OCR 进度、状态、开始和结束时间。
 - `ImportItem`：导入批次中的单张图片记录，保存原始文件名、相对路径、保存路径、分组、状态、错误和映射索引。
 - `AppSetting`：本地设置，目前用于 OCR 并发数等键值配置。
+- `ExamPaper`：试卷，支持草稿和发布状态，保存标题、描述、默认选项模板和发布时间。
+- `ExamQuestion`：试题，关联已有 `ChartImage`，保存题干、选项、正确答案、解析和遮罩坐标 JSON。
+- `ExamAttempt`：一次考试记录，保存开始/提交时间、耗时、正确数、总题数和正确率。
+- `ExamAttemptAnswer`：单题作答记录，保存随机题序、用户答案和是否正确。
 
 枚举：
 
 - `ImportBatchStatus`：`DRAFT`、`IMPORTING`、`PROCESSING_OCR`、`COMPLETED`、`COMPLETED_WITH_ERRORS`、`FAILED`
 - `ImportItemStatus`：`PENDING`、`IMPORTED`、`DUPLICATE`、`FAILED`
 - `OcrStatus`：`PENDING`、`RUNNING`、`COMPLETED`、`FAILED`、`SKIPPED`
+- `ExamPaperStatus`：`DRAFT`、`PUBLISHED`
+- `ExamQuestionStatus`：`DRAFT`、`READY`
+- `ExamAttemptStatus`：`IN_PROGRESS`、`SUBMITTED`
 
 重要约束：
 
@@ -170,15 +183,18 @@ npm run db:init
 - `ChartImage.libraryPath` 唯一，数据库只保存应用图库内的相对路径。
 - `IndexNode` 在同一父节点下 `name` 唯一。
 - `ImportItem.chartImageId` 唯一，一张已入库图片最多对应一个导入 item 记录。
+- `ExamQuestion` 复用已有 `ChartImage`，不重复上传图片；图片被试题引用时禁止删除，避免发布试卷和历史记录断图。
+- 发布后的 `ExamPaper` 内容锁定；修改应通过复制为新草稿等后续能力处理。
 
 ## 8. 工作台 UI 行为
 
 `src/app/atlas-workbench.tsx` 是客户端组件，默认中文，支持中英文切换。为了避免 React hydration mismatch，首屏状态使用固定默认值，挂载后再异步读取 `localStorage` 恢复用户偏好。
 
-当前有两种模式：
+当前有三种模式：
 
 - 管理模式：导入、创建索引、编辑图片详情、OCR 重试、撤销批次、删除图片、索引右键管理。
 - 浏览模式：只读，隐藏导入、新建索引、保存、OCR 重试、撤销、删除等写操作。
+- 考试模式：创建试卷、从图库选图制题、多矩形遮罩、发布考试、随机顺序作答和结果复盘。
 
 主要布局：
 
@@ -210,6 +226,17 @@ npm run db:init
 - 最近导入批次可撤销，撤销前必须二次确认。
 - 概览区可折叠。
 - 图片网格有客户端分页，避免一次渲染过多图片导致打开缓慢。
+
+考试模式特性：
+
+- 用户可以创建试卷草稿，并从现有图库分页搜索图片加入试卷。
+- 每张图片对应一道选择题；题目保存题干、选项、正确答案、解析和遮罩坐标。
+- 遮罩支持多个不透明矩形，保存为相对图片显示区域的 `0..1` 坐标和颜色 JSON，不生成新图片；默认颜色为黑色，已绘制矩形可选中、拖动和拉角缩放。
+- 试卷级默认选项模板会用于新题；单题可以自定义选项。
+- 发布前所有题目必须处于 `READY`；发布后试卷和题目内容锁定。
+- 开始考试时后端随机题目顺序，选项顺序固定。
+- 提交后保存本次考试记录，包含每题答案、是否正确、作答耗时、正确数、总题数和正确率。
+- 结果页展示正确率、用户答案、正确答案、解析，并支持只看错题。
 
 ## 9. 索引树管理
 
@@ -295,6 +322,8 @@ npm run db:init
 
 `GET /api/atlas` 当前限制返回最多 `200` 张图片。服务端查询按 `originalName`、`createdAt` 排序，返回前又使用 `Intl.Collator` 做自然排序，避免 `1.jpg`、`2.jpg`、`10.jpg` 这类名称出现字典序错乱。
 
+考试模式选图使用 `GET /api/images?q=&indexId=&page=&pageSize=`，支持分页查询，不受 `/api/atlas` 200 张返回上限影响。
+
 前端图片网格分页：
 
 - 默认每页 `50` 张。
@@ -344,9 +373,10 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 - 导出 `brooks-pa-atlas-backup-YYYYMMDD-HHmmssZ.zip`。
 - zip 顶层包含 `manifest.json` 和 `images/<hash>.<ext>` 图片文件。
-- manifest 格式为 `brooks-pa-atlas.backup` v1，保存索引树、图片元数据和 zip 内相对图片路径。
+- manifest 格式为 `brooks-pa-atlas.backup` v2，保存索引树、图片元数据、试卷、题目、考试记录和 zip 内相对图片路径；恢复仍兼容 v1。
 - 不保存 Windows 或 Linux 绝对路径，便于跨部署环境恢复。
 - 导出前会校验数据库中每张图片的图库文件存在；如果缺失则返回错误，不生成不完整备份。
+- 全量备份包含考试数据；按索引子树导出时仍只导出该索引下的索引和图片，不导出试卷，避免试卷引用缺失图片。
 
 `POST /api/backups/restore?mode=merge`
 
@@ -357,6 +387,22 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 按 SHA-256 hash 恢复图片；相同 hash 更新元数据和索引归属，不创建重复图片。
 - 如果相同 hash 的数据库记录存在但图库文件丢失，会从备份重新写入当前环境图库目录并更新 `libraryPath`。
 - 不删除当前系统中备份外的索引、图片或文件；不恢复旧 `ImportBatch` / `ImportItem` 历史。
+- v2 恢复会通过图片 SHA-256 hash 重新映射试题图片；缺失图片时拒绝恢复对应考试数据，避免断开的题目引用。
+
+考试 API：
+
+- `GET /api/exam/papers`：列出试卷。
+- `POST /api/exam/papers`：创建试卷草稿。
+- `GET /api/exam/papers/[id]`：读取试卷详情和题目。
+- `PATCH /api/exam/papers/[id]`：更新草稿试卷。
+- `DELETE /api/exam/papers/[id]`：删除草稿或已发布试卷；已发布试卷会一并删除相关考试记录和答案。
+- `POST /api/exam/papers/[id]/questions`：把现有图片加入草稿试卷。
+- `PATCH /api/exam/questions/[id]`：保存题目草稿、选项、答案、解析和遮罩。
+- `DELETE /api/exam/questions/[id]`：从草稿试卷移除题目。
+- `POST /api/exam/papers/[id]/publish`：发布全部题目已就绪的试卷。
+- `POST /api/exam/attempts`：为已发布试卷创建一次考试，后端随机题序。
+- `GET /api/exam/attempts/[id]`：读取考试或结果。
+- `POST /api/exam/attempts/[id]/submit`：提交答案并保存评分。
 
 `POST /api/import`
 
@@ -444,7 +490,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - `brooks-pa-atlas.locale`：语言，`zh` 或 `en`。
 - `brooks-pa-atlas.sidebar`：侧栏折叠状态。
 - `brooks-pa-atlas.overview`：概览折叠状态。
-- `brooks-pa-atlas.viewMode`：`browse` 或 `manage`。
+- `brooks-pa-atlas.viewMode`：`browse`、`manage` 或 `exam`。
 - `brooks-pa-atlas.imageGridPageSize`：管理模式图片网格每页数量。
 - `brooks-pa-atlas.viewerHeight`：浏览模式大图查看器高度。
 - `brooks-pa-atlas.browseThumbnails`：浏览模式缩略图显隐。
@@ -463,6 +509,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 文件读取和本地文件操作路由必须保持 `runtime = "nodejs"`。
 - 涉及本地图片路径时优先使用 `absoluteImagePath()`。
 - 任何删除文件的代码都必须逐个明确路径删除，不能批量删除目录。
+- 删除图片、撤销导入批次或清空索引图片前，后端必须校验图片是否被 `ExamQuestion` 引用；被引用时应拒绝删除。
 - 高风险写操作需要二次确认；清空索引图片必须要求用户输入 `确认删除`。
 - 浏览模式必须保持只读，不要暴露导入、保存、OCR 重试、撤销、删除等写操作。
 - 读取 `localStorage` 的用户偏好不要放进 `useState` lazy initializer，否则可能再次造成 hydration mismatch；应在挂载后恢复偏好。

@@ -29,6 +29,16 @@ export async function POST(
     return NextResponse.json({ error: "Import batch not found." }, { status: 404 });
   }
 
+  const examQuestionCount = await prisma.examQuestion.count({
+    where: { chartImageId: { in: batch.images.map((image) => image.id) } },
+  });
+  if (examQuestionCount > 0) {
+    return NextResponse.json(
+      { error: "Some imported images are used by exam questions and cannot be deleted." },
+      { status: 409 },
+    );
+  }
+
   for (const image of batch.images) {
     try {
       await unlink(absoluteImagePath(image.libraryPath));

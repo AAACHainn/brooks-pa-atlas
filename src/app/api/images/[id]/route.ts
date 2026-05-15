@@ -46,6 +46,16 @@ export async function DELETE(
     return NextResponse.json({ error: "Image not found." }, { status: 404 });
   }
 
+  const examQuestionCount = await prisma.examQuestion.count({
+    where: { chartImageId: image.id },
+  });
+  if (examQuestionCount > 0) {
+    return NextResponse.json(
+      { error: "This image is used by exam questions and cannot be deleted." },
+      { status: 409 },
+    );
+  }
+
   try {
     await unlink(absoluteImagePath(image.libraryPath));
   } catch (error) {

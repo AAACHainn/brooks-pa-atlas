@@ -8,13 +8,22 @@ import * as yazl from "yazl";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
+import {
+  maskRectsSchema,
+  normalizeExamOptions,
+  parseExamOptions,
+  parseMaskRects,
+} from "@/lib/exam";
 import { absoluteImagePath, getLibraryRoot, sanitizeFileName } from "@/lib/storage";
 
 const backupFormat = "brooks-pa-atlas.backup";
-const backupVersion = 1;
+const backupVersion = 2;
 const imageZipPrefix = "images/";
 
 const ocrStatusSchema = z.enum(["PENDING", "RUNNING", "COMPLETED", "FAILED", "SKIPPED"]);
+const examPaperStatusSchema = z.enum(["DRAFT", "PUBLISHED"]);
+const examQuestionStatusSchema = z.enum(["DRAFT", "READY"]);
+const examAttemptStatusSchema = z.enum(["IN_PROGRESS", "SUBMITTED"]);
 
 const backupIndexSchema = z.object({
   id: z.string().optional(),
@@ -46,12 +55,63 @@ const backupImageSchema = z.object({
   imagePath: z.string().min(1),
 });
 
+const backupExamQuestionSchema = z.object({
+  id: z.string().optional(),
+  imageHash: z.string().regex(/^[a-f0-9]{64}$/),
+  prompt: z.string(),
+  options: z.array(z.string()),
+  correctOption: z.string().nullable(),
+  explanation: z.string(),
+  maskRects: maskRectsSchema,
+  status: examQuestionStatusSchema,
+  sortOrder: z.number().int(),
+  createdAt: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+});
+
+const backupExamPaperSchema = z.object({
+  id: z.string().optional(),
+  title: z.string().min(1),
+  description: z.string().nullable(),
+  status: examPaperStatusSchema,
+  defaultOptions: z.array(z.string()),
+  publishedAt: z.string().nullable(),
+  createdAt: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+  questions: z.array(backupExamQuestionSchema),
+});
+
+const backupExamAttemptAnswerSchema = z.object({
+  questionImageHash: z.string().regex(/^[a-f0-9]{64}$/),
+  order: z.number().int().min(0),
+  userAnswer: z.string().nullable(),
+  isCorrect: z.boolean(),
+});
+
+const backupExamAttemptSchema = z.object({
+  id: z.string().optional(),
+  paperId: z.string().optional(),
+  paperTitle: z.string().min(1),
+  status: examAttemptStatusSchema,
+  startedAt: z.string().nullable(),
+  submittedAt: z.string().nullable(),
+  durationSeconds: z.number().int().nonnegative().nullable(),
+  totalCount: z.number().int().nonnegative(),
+  correctCount: z.number().int().nonnegative(),
+  accuracy: z.number().min(0).max(1),
+  createdAt: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+  answers: z.array(backupExamAttemptAnswerSchema),
+});
+
 const backupManifestSchema = z.object({
   format: z.literal(backupFormat),
-  version: z.literal(backupVersion),
+  version: z.union([z.literal(1), z.literal(backupVersion)]),
   exportedAt: z.string(),
   indexes: z.array(backupIndexSchema),
   images: z.array(backupImageSchema),
+  exams: z.array(backupExamPaperSchema).optional().default([]),
+  examAttempts: z.array(backupExamAttemptSchema).optional().default([]),
 });
 
 type BackupManifest = z.infer<typeof backupManifestSchema>;
@@ -68,6 +128,8 @@ type RestoreStats = {
   imagesCreated: number;
   imagesUpdated: number;
   filesRestored: number;
+  examPapersRestored: number;
+  examAttemptsRestored: number;
 };
 
 type RestoreLogMetadata = Record<string, boolean | number | string | null | undefined>;
@@ -375,6 +437,29 @@ export async function createBackupZip(options: BackupOptions = {}) {
     orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],
     include: { indexNode: true },
   });
+  const [examPapers, examAttempts] = rootIndex
+    ? [[], []] as const
+    : await Promise.all([
+        prisma.examPaper.findMany({
+          orderBy: [{ createdAt: "asc" }],
+          include: {
+            questions: {
+              include: { image: true },
+              orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            },
+          },
+        }),
+        prisma.examAttempt.findMany({
+          orderBy: [{ createdAt: "asc" }],
+          include: {
+            paper: true,
+            answers: {
+              include: { question: { include: { image: true } } },
+              orderBy: { order: "asc" },
+            },
+          },
+        }),
+      ]);
   const indexPathById = new Map(indexes.map((index) => [index.id, index.path]));
   const exportPathByOriginalPath = new Map(
     indexes.map((index) => [
@@ -424,7 +509,7 @@ export async function createBackupZip(options: BackupOptions = {}) {
 
   const manifest: BackupManifest = {
     format: backupFormat,
-    version: backupVersion,
+    version: rootIndex ? 1 : backupVersion,
     exportedAt: new Date().toISOString(),
     indexes: indexes.map((index) => ({
       id: index.id,
@@ -442,6 +527,53 @@ export async function createBackupZip(options: BackupOptions = {}) {
       updatedAt: iso(index.updatedAt),
     })),
     images: preparedImages.map((item) => item.image),
+    exams: rootIndex
+      ? []
+      : examPapers.map((paper) => ({
+          id: paper.id,
+          title: paper.title,
+          description: paper.description,
+          status: paper.status,
+          defaultOptions: parseExamOptions(paper.defaultOptionsJson),
+          publishedAt: iso(paper.publishedAt),
+          createdAt: iso(paper.createdAt),
+          updatedAt: iso(paper.updatedAt),
+          questions: paper.questions.map((question) => ({
+            id: question.id,
+            imageHash: question.image.hash,
+            prompt: question.prompt,
+            options: parseExamOptions(question.optionsJson),
+            correctOption: question.correctOption,
+            explanation: question.explanation,
+            maskRects: parseMaskRects(question.maskRectsJson),
+            status: question.status,
+            sortOrder: question.sortOrder,
+            createdAt: iso(question.createdAt),
+            updatedAt: iso(question.updatedAt),
+          })),
+        })),
+    examAttempts: rootIndex
+      ? []
+      : examAttempts.map((attempt) => ({
+          id: attempt.id,
+          paperId: attempt.paperId,
+          paperTitle: attempt.paper.title,
+          status: attempt.status,
+          startedAt: iso(attempt.startedAt),
+          submittedAt: iso(attempt.submittedAt),
+          durationSeconds: attempt.durationSeconds,
+          totalCount: attempt.totalCount,
+          correctCount: attempt.correctCount,
+          accuracy: attempt.accuracy,
+          createdAt: iso(attempt.createdAt),
+          updatedAt: iso(attempt.updatedAt),
+          answers: attempt.answers.map((answer) => ({
+            questionImageHash: answer.question.image.hash,
+            order: answer.order,
+            userAnswer: answer.userAnswer,
+            isCorrect: answer.isCorrect,
+          })),
+        })),
   };
 
   const zipFile = new yazl.ZipFile();
@@ -484,6 +616,8 @@ async function restoreBackupSource(
     imagesCreated: 0,
     imagesUpdated: 0,
     filesRestored: 0,
+    examPapersRestored: 0,
+    examAttemptsRestored: 0,
   };
   const indexIdByPath = new Map<string, string>();
   const sortedIndexes = [...manifest.indexes].sort((left, right) => {
@@ -640,6 +774,179 @@ async function restoreBackupSource(
     imagesUpdated: stats.imagesUpdated,
     filesRestored: stats.filesRestored,
   });
+
+  if (manifest.version >= 2 && manifest.exams.length > 0) {
+    const imagesByHash = new Map(
+      (
+        await prisma.chartImage.findMany({
+          where: { hash: { in: manifest.images.map((image) => image.hash) } },
+          select: { id: true, hash: true },
+        })
+      ).map((image) => [image.hash, image.id]),
+    );
+    const paperIdByBackupId = new Map<string, string>();
+    const questionIdByPaperAndImageHash = new Map<string, string>();
+
+    log("exam restore started", {
+      papers: manifest.exams.length,
+      attempts: manifest.examAttempts.length,
+    });
+
+    for (const paper of manifest.exams) {
+      const existing = paper.id
+        ? await prisma.examPaper.findUnique({ where: { id: paper.id } })
+        : null;
+      const paperData = {
+        title: paper.title,
+        description: paper.description,
+        status: paper.status,
+        defaultOptionsJson: JSON.stringify(normalizeExamOptions(paper.defaultOptions)),
+        publishedAt: parseDate(paper.publishedAt),
+        createdAt: parseDate(paper.createdAt) ?? undefined,
+      };
+      const restoredPaper = existing
+        ? await prisma.examPaper.update({
+            where: { id: existing.id },
+            data: {
+              title: paperData.title,
+              description: paperData.description,
+              status: paperData.status,
+              defaultOptionsJson: paperData.defaultOptionsJson,
+              publishedAt: paperData.publishedAt,
+            },
+          })
+        : await prisma.examPaper.create({
+            data: {
+              id: paper.id,
+              ...paperData,
+            },
+          });
+
+      if (paper.id) {
+        paperIdByBackupId.set(paper.id, restoredPaper.id);
+      }
+      stats.examPapersRestored += 1;
+
+      for (const question of paper.questions) {
+        const chartImageId = imagesByHash.get(question.imageHash);
+        if (!chartImageId) {
+          throw new Error(`Backup exam question references a missing image: ${question.imageHash}`);
+        }
+
+        const existingQuestion = await prisma.examQuestion.findFirst({
+          where: { paperId: restoredPaper.id, chartImageId },
+        });
+        const questionData = {
+          paperId: restoredPaper.id,
+          chartImageId,
+          prompt: question.prompt,
+          optionsJson: JSON.stringify(normalizeExamOptions(question.options)),
+          correctOption: question.correctOption,
+          explanation: question.explanation,
+          maskRectsJson: JSON.stringify(question.maskRects),
+          status: question.status,
+          sortOrder: question.sortOrder,
+          createdAt: parseDate(question.createdAt) ?? undefined,
+        };
+        const restoredQuestion = existingQuestion
+          ? await prisma.examQuestion.update({
+              where: { id: existingQuestion.id },
+              data: {
+                prompt: questionData.prompt,
+                optionsJson: questionData.optionsJson,
+                correctOption: questionData.correctOption,
+                explanation: questionData.explanation,
+                maskRectsJson: questionData.maskRectsJson,
+                status: questionData.status,
+                sortOrder: questionData.sortOrder,
+              },
+            })
+          : await prisma.examQuestion.create({
+              data: {
+                id: question.id,
+                ...questionData,
+              },
+            });
+
+        questionIdByPaperAndImageHash.set(
+          `${restoredPaper.id}:${question.imageHash}`,
+          restoredQuestion.id,
+        );
+      }
+    }
+
+    for (const attempt of manifest.examAttempts) {
+      const paperId = attempt.paperId ? paperIdByBackupId.get(attempt.paperId) : null;
+      if (!paperId) {
+        continue;
+      }
+
+      const existingAttempt = attempt.id
+        ? await prisma.examAttempt.findUnique({ where: { id: attempt.id } })
+        : null;
+      const attemptData = {
+        paperId,
+        status: attempt.status,
+        startedAt: parseDate(attempt.startedAt) ?? new Date(),
+        submittedAt: parseDate(attempt.submittedAt),
+        durationSeconds: attempt.durationSeconds,
+        totalCount: attempt.totalCount,
+        correctCount: attempt.correctCount,
+        accuracy: attempt.accuracy,
+        createdAt: parseDate(attempt.createdAt) ?? undefined,
+      };
+      const restoredAttempt = existingAttempt
+        ? await prisma.examAttempt.update({
+            where: { id: existingAttempt.id },
+            data: {
+              paperId: attemptData.paperId,
+              status: attemptData.status,
+              startedAt: attemptData.startedAt,
+              submittedAt: attemptData.submittedAt,
+              durationSeconds: attemptData.durationSeconds,
+              totalCount: attemptData.totalCount,
+              correctCount: attemptData.correctCount,
+              accuracy: attemptData.accuracy,
+            },
+          })
+        : await prisma.examAttempt.create({
+            data: {
+              id: attempt.id,
+              ...attemptData,
+            },
+          });
+
+      await prisma.examAttemptAnswer.deleteMany({
+        where: { attemptId: restoredAttempt.id },
+      });
+
+      for (const answer of attempt.answers) {
+        const questionId = questionIdByPaperAndImageHash.get(
+          `${paperId}:${answer.questionImageHash}`,
+        );
+        if (!questionId) {
+          throw new Error(`Backup exam answer references a missing question: ${answer.questionImageHash}`);
+        }
+
+        await prisma.examAttemptAnswer.create({
+          data: {
+            attemptId: restoredAttempt.id,
+            questionId,
+            order: answer.order,
+            userAnswer: answer.userAnswer,
+            isCorrect: answer.isCorrect,
+          },
+        });
+      }
+      stats.examAttemptsRestored += 1;
+    }
+
+    log("exam restore completed", {
+      examPapersRestored: stats.examPapersRestored,
+      examAttemptsRestored: stats.examAttemptsRestored,
+    });
+  }
+
   log("restore completed", stats);
   return stats;
 }

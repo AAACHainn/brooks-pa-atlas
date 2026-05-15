@@ -10,6 +10,7 @@
     "start:lan": "next start -H 0.0.0.0",
     "lint": "eslint",
     "prisma:generate": "prisma generate",
+    "db:migrate": "node scripts/migrate-db.mjs",
     "db:init": "node scripts/init-db.mjs"
   },
   "dependencies": {

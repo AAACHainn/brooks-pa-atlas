@@ -78,6 +78,7 @@ type RestoreOptions = {
 };
 
 type BackupOptions = {
+  indexId?: string | null;
   onImageProgress?: (progress: { processedImages: number; totalImages: number }) => void;
 };
 
@@ -102,6 +103,11 @@ function timestampForFileName(date = new Date()) {
     .replace(/[-:]/g, "")
     .replace(/\.\d{3}Z$/, "Z")
     .replace("T", "-");
+}
+
+function rebaseSubtreePath(pathValue: string, rootPath: string) {
+  const rootName = rootPath.split(" / ").at(-1) ?? rootPath;
+  return pathValue === rootPath ? rootName : `${rootName} / ${pathValue.slice(rootPath.length + 3)}`;
 }
 
 function extensionForBackup(libraryPath: string, originalName: string, mimeType: string) {
@@ -347,16 +353,35 @@ async function saveRestoredImage(image: BackupImage, buffer: Buffer) {
 }
 
 export async function createBackupZip(options: BackupOptions = {}) {
-  const [indexes, images] = await Promise.all([
-    prisma.indexNode.findMany({
-      orderBy: [{ depth: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
-    }),
-    prisma.chartImage.findMany({
-      orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],
-      include: { indexNode: true },
-    }),
-  ]);
+  const allIndexes = await prisma.indexNode.findMany({
+    orderBy: [{ depth: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
+  });
+  const rootIndex = options.indexId
+    ? allIndexes.find((index) => index.id === options.indexId)
+    : null;
+
+  if (options.indexId && !rootIndex) {
+    throw new Error("Backup index was not found.");
+  }
+
+  const indexes = rootIndex
+    ? allIndexes.filter(
+        (index) => index.id === rootIndex.id || index.path.startsWith(`${rootIndex.path} / `),
+      )
+    : allIndexes;
+  const indexIds = new Set(indexes.map((index) => index.id));
+  const images = await prisma.chartImage.findMany({
+    where: rootIndex ? { indexNodeId: { in: [...indexIds] } } : undefined,
+    orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],
+    include: { indexNode: true },
+  });
   const indexPathById = new Map(indexes.map((index) => [index.id, index.path]));
+  const exportPathByOriginalPath = new Map(
+    indexes.map((index) => [
+      index.path,
+      rootIndex ? rebaseSubtreePath(index.path, rootIndex.path) : index.path,
+    ]),
+  );
   const preparedImages: PreparedImage[] = [];
   let processedImages = 0;
 
@@ -389,7 +414,7 @@ export async function createBackupZip(options: BackupOptions = {}) {
         ocrUpdatedAt: iso(image.ocrUpdatedAt),
         createdAt: iso(image.createdAt),
         updatedAt: iso(image.updatedAt),
-        indexPath: image.indexNode?.path ?? null,
+        indexPath: image.indexNode?.path ? exportPathByOriginalPath.get(image.indexNode.path) ?? null : null,
         imagePath,
       },
     });
@@ -404,9 +429,14 @@ export async function createBackupZip(options: BackupOptions = {}) {
     indexes: indexes.map((index) => ({
       id: index.id,
       name: index.name,
-      parentPath: index.parentId ? indexPathById.get(index.parentId) ?? null : null,
-      depth: index.depth,
-      path: index.path,
+      parentPath:
+        rootIndex && index.id === rootIndex.id
+          ? null
+          : index.parentId
+            ? exportPathByOriginalPath.get(indexPathById.get(index.parentId) ?? "") ?? null
+            : null,
+      depth: rootIndex ? index.depth - rootIndex.depth : index.depth,
+      path: exportPathByOriginalPath.get(index.path) ?? index.path,
       sortOrder: index.sortOrder,
       createdAt: iso(index.createdAt),
       updatedAt: iso(index.updatedAt),
@@ -428,7 +458,9 @@ export async function createBackupZip(options: BackupOptions = {}) {
   zipFile.end();
 
   return {
-    fileName: `brooks-pa-atlas-backup-${timestampForFileName()}.zip`,
+    fileName: rootIndex
+      ? `brooks-pa-atlas-${sanitizeFileName(rootIndex.name) || "index"}-${timestampForFileName()}.zip`
+      : `brooks-pa-atlas-backup-${timestampForFileName()}.zip`,
     stream: Readable.toWeb(zipFile.outputStream) as ReadableStream<Uint8Array>,
   };
 }

@@ -41,6 +41,9 @@ type RestoreJob = {
 export type BackupTaskJob = BackupJob | RestoreJob;
 
 type JobStore = Map<string, BackupTaskJob>;
+type BackupJobOptions = {
+  indexId?: string | null;
+};
 
 const jobTtlMs = 30 * 60 * 1000;
 
@@ -99,7 +102,7 @@ export function getBackupJob(id: string) {
   return jobs.get(id) ?? null;
 }
 
-export function startBackupJob() {
+export function startBackupJob(options: BackupJobOptions = {}) {
   cleanupJobs();
   const id = randomUUID();
   const job: BackupJob = {
@@ -119,6 +122,7 @@ export function startBackupJob() {
   void (async () => {
     try {
       const backup = await createBackupZip({
+        indexId: options.indexId,
         onImageProgress(progress) {
           job.phase = "collecting-images";
           job.processedImages = progress.processedImages;

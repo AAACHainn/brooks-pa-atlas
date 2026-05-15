@@ -5,9 +5,10 @@ import { createBackupZip } from "@/lib/backup";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const backup = await createBackupZip();
+    const url = new URL(request.url);
+    const backup = await createBackupZip({ indexId: url.searchParams.get("indexId") });
 
     return new Response(backup.stream, {
       headers: {

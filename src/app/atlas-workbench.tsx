@@ -141,6 +141,7 @@ const copy = {
     newIndex: "新建索引",
     addIndex: "添加索引",
     renameIndex: "重命名索引",
+    exportIndex: "导出索引",
     deleteIndex: "删除索引",
     clearIndexImages: "清空索引图片",
     deleteIndexConfirmTitle: "删除索引？",
@@ -266,6 +267,7 @@ const copy = {
     newIndex: "New index",
     addIndex: "Add index",
     renameIndex: "Rename index",
+    exportIndex: "Export index",
     deleteIndex: "Delete index",
     clearIndexImages: "Clear index images",
     deleteIndexConfirmTitle: "Delete index?",
@@ -1557,7 +1559,8 @@ export default function AtlasWorkbench() {
     }
   }
 
-  async function downloadBackup() {
+  async function downloadBackup(indexNode?: IndexTreeNode) {
+    setIndexContextMenu(null);
     setBackingUp(true);
     setBackupTask({
       id: "backup-starting",
@@ -1565,15 +1568,19 @@ export default function AtlasWorkbench() {
       status: "running",
       phase: "preparing",
       processedImages: 0,
-      totalImages: data?.stats.imageCount ?? 0,
+      totalImages: indexNode ? indexBranchImageCount(indexNode) : data?.stats.imageCount ?? 0,
       error: null,
       fileName: null,
       stats: null,
     });
 
     try {
+      const params = new URLSearchParams();
+      if (indexNode) {
+        params.set("indexId", indexNode.id);
+      }
       const started = await readBackupJobResponse(
-        await fetch("/api/backups/export/jobs", { method: "POST", cache: "no-store" }),
+        await fetch(`/api/backups/export/jobs?${params.toString()}`, { method: "POST", cache: "no-store" }),
       );
       setBackupTask(started);
 
@@ -2829,6 +2836,15 @@ export default function AtlasWorkbench() {
           style={{ left: indexContextMenu.x, top: indexContextMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
+          <button
+            type="button"
+            onClick={() => void downloadBackup(indexContextMenu.node)}
+            disabled={backingUp}
+            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent"
+          >
+            <Download className="h-4 w-4" />
+            <span>{t.exportIndex}</span>
+          </button>
           <button
             type="button"
             onClick={() => openIndexAction({ mode: "rename", node: indexContextMenu.node })}

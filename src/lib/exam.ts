@@ -207,7 +207,14 @@ export function serializeExamAttempt(
     accuracy: attempt.accuracy,
     createdAt: attempt.createdAt,
     updatedAt: attempt.updatedAt,
-    paper: attempt.paper ?? null,
+    paper: attempt.paper
+      ? {
+          id: attempt.paper.id,
+          title: attempt.paper.title,
+          description: attempt.paper.description,
+          status: attempt.paper.status,
+        }
+      : null,
     answers: attempt.answers?.map((answer) => {
       const question = serializeExamQuestion(answer.question);
 

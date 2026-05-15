@@ -9,6 +9,7 @@ import {
   ChevronRight,
   ClipboardList,
   Eye,
+  EyeOff,
   Loader2,
   Plus,
   RotateCcw,
@@ -103,6 +104,10 @@ type ExamAttempt = {
   answers: AttemptAnswer[];
 };
 
+type ExamAttemptSummary = Omit<ExamAttempt, "answers"> & {
+  answers?: AttemptAnswer[];
+};
+
 type ConfirmDialogState =
   | { kind: "publish"; title: string; message: string; confirmLabel: string }
   | { kind: "delete-paper"; title: string; message: string; confirmLabel: string };
@@ -155,15 +160,25 @@ const copy = {
     ready: "已就绪",
     notReady: "草稿",
     startExam: "开始测试",
+    continueExam: "继续",
     submitExam: "提交答案",
     result: "考试结果",
     accuracy: "正确率",
     correctCount: "正确题数",
     wrongOnly: "只看错题",
+    hideMask: "隐藏遮罩",
+    showMask: "显示遮罩",
     backToPapers: "返回试卷",
     yourAnswer: "你的答案",
     correctAnswer: "正确答案",
     noPapers: "暂无试卷",
+    noAttempts: "还没有考试记录。",
+    attemptHistory: "考试记录",
+    refreshAttempts: "刷新记录",
+    attemptInProgress: "未提交",
+    viewAttempt: "查看",
+    duration: "用时",
+    submittedAt: "提交时间",
     noQuestions: "先从右侧图片库选择图片加入试卷。",
     locked: "发布后内容已锁定。",
     loadFailed: "加载失败，请稍后重试。",
@@ -232,15 +247,25 @@ const copy = {
     ready: "Ready",
     notReady: "Draft",
     startExam: "Start exam",
+    continueExam: "Continue",
     submitExam: "Submit",
     result: "Result",
     accuracy: "Accuracy",
     correctCount: "Correct",
     wrongOnly: "Wrong only",
+    hideMask: "Hide mask",
+    showMask: "Show mask",
     backToPapers: "Back",
     yourAnswer: "Your answer",
     correctAnswer: "Correct answer",
     noPapers: "No papers yet",
+    noAttempts: "No exam records yet.",
+    attemptHistory: "Attempts",
+    refreshAttempts: "Refresh",
+    attemptInProgress: "In progress",
+    viewAttempt: "View",
+    duration: "Duration",
+    submittedAt: "Submitted",
     noQuestions: "Choose images from the library on the right.",
     locked: "Published content is locked.",
     loadFailed: "Load failed. Please try again.",
@@ -403,6 +428,29 @@ function optionLabel(index: number) {
 
 function percent(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+function formatDateTime(value: string | null, locale: Locale) {
+  if (!value) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatDuration(seconds: number | null) {
+  if (!seconds || seconds < 0) {
+    return "-";
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = seconds % 60;
+  return minutes > 0 ? `${minutes}m ${restSeconds}s` : `${restSeconds}s`;
 }
 
 function OptionsEditor({
@@ -707,7 +755,7 @@ function MaskedImage({
         >
           <button
             type="button"
-            onClick={() => updateZoom(-20)}
+            onClick={() => updateZoom(-10)}
             disabled={zoom <= 80}
             className="grid h-7 w-7 place-items-center rounded text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
             title={zoomLabels?.zoomOut}
@@ -718,7 +766,7 @@ function MaskedImage({
           <span className="w-11 text-center text-xs font-medium text-zinc-600">{zoom}%</span>
           <button
             type="button"
-            onClick={() => updateZoom(20)}
+            onClick={() => updateZoom(10)}
             disabled={zoom >= 240}
             className="grid h-7 w-7 place-items-center rounded text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
             title={zoomLabels?.zoomIn}
@@ -837,13 +885,16 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
   const [images, setImages] = useState<ExamImage[]>([]);
   const [loading, setLoading] = useState(false);
   const [attempt, setAttempt] = useState<ExamAttempt | null>(null);
+  const [attempts, setAttempts] = useState<ExamAttemptSummary[]>([]);
   const [attemptPageIndex, setAttemptPageIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [wrongOnly, setWrongOnly] = useState(false);
+  const [isMaskHidden, setIsMaskHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [noticeDialog, setNoticeDialog] = useState<NoticeDialogState | null>(null);
 
+  const selectedPaperId = selectedPaper?.id ?? null;
   const selectedQuestion = selectedPaper?.questions?.find((question) => question.id === selectedQuestionId) ?? null;
   const isLocked = selectedPaper?.status === "PUBLISHED";
   const imageTotalPages = Math.max(1, Math.ceil(imageTotal / 24));
@@ -884,6 +935,42 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     [t.loadFailed],
   );
 
+  const loadAttempts = useCallback(
+    async (paperId: string) => {
+      const response = await fetch(`/api/exam/papers/${paperId}/attempts`, { cache: "no-store" });
+      const result = (await response.json()) as { attempts?: ExamAttemptSummary[]; error?: string };
+      if (!response.ok || !result.attempts) {
+        throw new Error(result.error ?? t.loadFailed);
+      }
+
+      setAttempts(result.attempts);
+    },
+    [t.loadFailed],
+  );
+
+  const loadAttempt = useCallback(
+    async (attemptId: string) => {
+      const response = await fetch(`/api/exam/attempts/${attemptId}`, { cache: "no-store" });
+      const result = (await response.json()) as { attempt?: ExamAttempt; error?: string };
+      if (!response.ok || !result.attempt) {
+        throw new Error(result.error ?? t.loadFailed);
+      }
+
+      setAttempt(result.attempt);
+      setAttemptPageIndex(0);
+      setWrongOnly(false);
+      setIsMaskHidden(false);
+      setAnswers(
+        Object.fromEntries(
+          result.attempt.answers
+            .filter((answer) => answer.userAnswer)
+            .map((answer) => [answer.questionId, answer.userAnswer as string]),
+        ),
+      );
+    },
+    [t.loadFailed],
+  );
+
   const loadImages = useCallback(async () => {
     const params = new URLSearchParams({
       page: String(imagePage),
@@ -919,6 +1006,20 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
 
     return () => window.clearTimeout(timer);
   }, [loadImages]);
+
+  useEffect(() => {
+    if (!selectedPaperId) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadAttempts(selectedPaperId).catch((loadError) =>
+        setError(loadError instanceof Error ? localizedErrorMessage(loadError.message, t) : t.loadFailed),
+      );
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [loadAttempts, selectedPaperId, t, t.loadFailed]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1186,6 +1287,9 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     setAttemptPageIndex(0);
     setAnswers({});
     setWrongOnly(false);
+    setIsMaskHidden(false);
+    await loadPapers();
+    await loadAttempts(paperId);
   }
 
   async function submitExam() {
@@ -1210,6 +1314,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
 
     setAttempt(result.attempt);
     await loadPapers();
+    await loadAttempts(result.attempt.paperId);
   }
 
   function selectAdjacentAttemptAnswer(direction: -1 | 1) {
@@ -1275,18 +1380,32 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
               </div>
               <div className="flex shrink-0 items-center justify-end gap-2">
                 {attempt.status === "SUBMITTED" ? (
-                  <label className="inline-flex h-8 items-center gap-2 rounded-md border border-zinc-200 bg-white px-2 text-xs font-medium text-zinc-700">
-                    <input
-                      type="checkbox"
-                      checked={wrongOnly}
-                      onChange={(event) => {
-                        setWrongOnly(event.target.checked);
-                        setAttemptPageIndex(0);
-                      }}
-                      className="h-4 w-4 accent-zinc-950"
-                    />
-                    {t.wrongOnly}
-                  </label>
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setIsMaskHidden((current) => !current)}
+                      className={`inline-flex h-8 items-center gap-2 rounded-md border px-2 text-xs font-medium ${
+                        isMaskHidden
+                          ? "border-cyan-200 bg-cyan-50 text-cyan-800"
+                          : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+                      }`}
+                    >
+                      {isMaskHidden ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                      {isMaskHidden ? t.showMask : t.hideMask}
+                    </button>
+                    <label className="inline-flex h-8 items-center gap-2 rounded-md border border-zinc-200 bg-white px-2 text-xs font-medium text-zinc-700">
+                      <input
+                        type="checkbox"
+                        checked={wrongOnly}
+                        onChange={(event) => {
+                          setWrongOnly(event.target.checked);
+                          setAttemptPageIndex(0);
+                        }}
+                        className="h-4 w-4 accent-zinc-950"
+                      />
+                      {t.wrongOnly}
+                    </label>
+                  </>
                 ) : null}
                 <button
                   type="button"
@@ -1310,7 +1429,10 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
                 </button>
                 <button
                   type="button"
-                  onClick={() => setAttempt(null)}
+                  onClick={() => {
+                    setAttempt(null);
+                    setIsMaskHidden(false);
+                  }}
                   className="inline-flex h-8 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
                 >
                   <ChevronLeft className="h-3.5 w-3.5" />
@@ -1330,7 +1452,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
             </div>
             <MaskedImage
               image={currentAttemptAnswer.question.image}
-              rects={currentAttemptAnswer.question.maskRects}
+              rects={attempt.status === "SUBMITTED" && isMaskHidden ? [] : currentAttemptAnswer.question.maskRects}
               zoomable
               zoomLabels={{
                 zoomIn: t.zoomIn,
@@ -1431,6 +1553,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
               key={paper.id}
               onClick={() => {
                 setAttempt(null);
+                setIsMaskHidden(false);
                 setSelectedQuestionId(null);
                 void loadPaper(paper.id);
               }}
@@ -1532,6 +1655,84 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
               </div>
               {isLocked ? <p className="mt-3 text-xs text-zinc-500">{t.locked}</p> : null}
             </div>
+
+            {selectedPaper.status === "PUBLISHED" ? (
+              <div className="rounded-md border border-zinc-200 bg-white p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold">{t.attemptHistory}</h3>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {attempts.length} {t.attempts}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void loadAttempts(selectedPaper.id)}
+                    className="inline-flex h-8 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                  >
+                    {t.refreshAttempts}
+                  </button>
+                </div>
+                {attempts.length === 0 ? (
+                  <p className="rounded-md border border-dashed border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-500">
+                    {t.noAttempts}
+                  </p>
+                ) : (
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {attempts.map((attemptItem) => (
+                      <button
+                        type="button"
+                        key={attemptItem.id}
+                        onClick={() =>
+                          void loadAttempt(attemptItem.id).catch((loadError) =>
+                            setNoticeDialog({
+                              title: t.errorTitle,
+                              message:
+                                loadError instanceof Error
+                                  ? localizedErrorMessage(loadError.message, t)
+                                  : t.loadFailed,
+                              items: [],
+                            }),
+                          )
+                        }
+                        className="rounded-md border border-zinc-200 bg-white p-3 text-left transition hover:border-zinc-950 hover:bg-zinc-50"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate text-sm font-semibold">
+                            {attemptItem.status === "SUBMITTED"
+                              ? formatDateTime(attemptItem.submittedAt, locale)
+                              : t.attemptInProgress}
+                          </span>
+                          <span
+                            className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-medium ${
+                              attemptItem.status === "SUBMITTED"
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : "border-amber-200 bg-amber-50 text-amber-700"
+                            }`}
+                          >
+                            {attemptItem.status === "SUBMITTED" ? percent(attemptItem.accuracy) : t.attemptInProgress}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
+                          <span>
+                            {attemptItem.correctCount}/{attemptItem.totalCount}
+                          </span>
+                          <span>
+                            {t.duration}: {formatDuration(attemptItem.durationSeconds)}
+                          </span>
+                          <span>
+                            {t.submittedAt}: {formatDateTime(attemptItem.submittedAt ?? attemptItem.startedAt, locale)}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-xs font-medium text-zinc-700">
+                          {attemptItem.status === "SUBMITTED" ? t.viewAttempt : t.continueExam}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
 
             <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
               <div className="rounded-md border border-zinc-200 bg-white p-2">

@@ -237,7 +237,8 @@ npm run db:init
 - 开始考试时后端随机题目顺序，选项顺序固定。
 - 考试和结果复盘使用紧凑的左右翻页单题视图，支持按钮和键盘 `ArrowLeft` / `ArrowRight` 切换题目；作答图片支持缩放，放大后可拖拽查看局部，底部把手可调整看图窗口高度。
 - 提交后保存本次考试记录，包含每题答案、是否正确、作答耗时、正确数、总题数和正确率。
-- 结果页展示正确率、用户答案、正确答案、解析，并支持只看错题。
+- 已发布试卷详情会展示最近考试记录，点击记录可进入历史结果复盘。
+- 结果页展示正确率、用户答案、正确答案、解析，并支持只看错题；考试提交后可隐藏/显示遮罩以查看原图。
 
 ## 9. 索引树管理
 
@@ -398,6 +399,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - `PATCH /api/exam/papers/[id]`：更新草稿试卷。
 - `DELETE /api/exam/papers/[id]`：删除草稿或已发布试卷；已发布试卷会一并删除相关考试记录和答案。
 - `POST /api/exam/papers/[id]/questions`：把现有图片加入草稿试卷。
+- `GET /api/exam/papers/[id]/attempts`：列出该试卷最近考试记录。
 - `PATCH /api/exam/questions/[id]`：保存题目草稿、选项、答案、可选解析和遮罩。
 - `DELETE /api/exam/questions/[id]`：从草稿试卷移除题目。
 - `POST /api/exam/papers/[id]/publish`：发布全部题目已就绪的试卷。

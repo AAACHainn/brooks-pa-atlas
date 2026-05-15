@@ -235,6 +235,7 @@ npm run db:init
 - 试卷级默认选项模板会用于新题；单题可以自定义选项。
 - 发布前所有题目必须处于 `READY`；题干、选项、正确答案和遮罩必填，解析可不填；发布后试卷和题目内容锁定。
 - 开始考试时后端随机题目顺序，选项顺序固定。
+- 考试和结果复盘使用紧凑的左右翻页单题视图，支持按钮和键盘 `ArrowLeft` / `ArrowRight` 切换题目；作答图片支持缩放，放大后可拖拽查看局部，底部把手可调整看图窗口高度。
 - 提交后保存本次考试记录，包含每题答案、是否正确、作答耗时、正确数、总题数和正确率。
 - 结果页展示正确率、用户答案、正确答案、解析，并支持只看错题。
 
@@ -493,6 +494,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - `brooks-pa-atlas.viewMode`：`browse`、`manage` 或 `exam`。
 - `brooks-pa-atlas.imageGridPageSize`：管理模式图片网格每页数量。
 - `brooks-pa-atlas.viewerHeight`：浏览模式大图查看器高度。
+- `brooks-pa-atlas.examViewerHeight`：考试模式作答/结果看图窗口高度。
 - `brooks-pa-atlas.browseThumbnails`：浏览模式缩略图显隐。
 - `brooks-pa-atlas.importTableHeight`：导入表格高度。
 

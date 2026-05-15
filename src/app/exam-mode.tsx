@@ -11,10 +11,13 @@ import {
   Eye,
   Loader2,
   Plus,
+  RotateCcw,
   Search,
   Send,
   Trash2,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -33,6 +36,13 @@ type MaskDragState =
   | { kind: "draw"; start: { x: number; y: number } }
   | { kind: "move"; index: number; start: { x: number; y: number }; original: MaskRect }
   | { kind: "resize"; index: number; handle: MaskResizeHandle; original: MaskRect };
+type ImagePanState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  scrollLeft: number;
+  scrollTop: number;
+};
 
 type ExamImage = {
   id: string;
@@ -125,6 +135,10 @@ const copy = {
     allIndexes: "全部索引",
     previousPage: "上一页",
     nextPage: "下一页",
+    previousQuestion: "上一题",
+    nextQuestion: "下一题",
+    previousQuestionShortcut: "上一题（快捷键 ←）",
+    nextQuestionShortcut: "下一题（快捷键 →）",
     prompt: "题干",
     options: "选项",
     correct: "正确答案",
@@ -172,6 +186,10 @@ const copy = {
     deleteDraftPaperConfirmMessage: "此操作会删除试卷草稿和其中所有题目，无法撤销。",
     deletePublishedPaperConfirmMessage: "此操作会删除已发布试卷、题目和相关考试记录，无法撤销。",
     confirmDelete: "确认删除",
+    zoomIn: "放大",
+    zoomOut: "缩小",
+    resetZoom: "重置缩放",
+    resizeImageWindow: "拖动调整看图窗口高度",
   },
   en: {
     title: "Exam Mode",
@@ -194,6 +212,10 @@ const copy = {
     allIndexes: "All indexes",
     previousPage: "Previous",
     nextPage: "Next",
+    previousQuestion: "Previous question",
+    nextQuestion: "Next question",
+    previousQuestionShortcut: "Previous question (shortcut ←)",
+    nextQuestionShortcut: "Next question (shortcut →)",
     prompt: "Prompt",
     options: "Options",
     correct: "Correct answer",
@@ -242,15 +264,24 @@ const copy = {
     deletePublishedPaperConfirmMessage:
       "This will delete the published paper, questions, and related exam records. It cannot be undone.",
     confirmDelete: "Delete",
+    zoomIn: "Zoom in",
+    zoomOut: "Zoom out",
+    resetZoom: "Reset zoom",
+    resizeImageWindow: "Drag to resize image window",
   },
 };
 
 const defaultOptions = ["上涨延续", "下跌延续", "震荡整理", "反转失败"];
 const defaultMaskColor = "#000000";
 const minMaskSize = 0.015;
+const defaultExamViewerHeight = 520;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function clampExamViewerHeight(value: number) {
+  return clamp(value, 320, 1000);
 }
 
 function maskStyle(rect: MaskRect) {
@@ -461,22 +492,88 @@ function MaskedImage({
   image,
   rects,
   editable,
+  zoomable,
   color = defaultMaskColor,
   selectedIndex = -1,
+  zoomLabels,
   onSelect,
   onChange,
 }: {
   image: ExamImage;
   rects: MaskRect[];
   editable?: boolean;
+  zoomable?: boolean;
   color?: string;
   selectedIndex?: number;
+  zoomLabels?: { zoomIn: string; zoomOut: string; resetZoom: string; resizeImageWindow: string };
   onSelect?: (index: number) => void;
   onChange?: (rects: MaskRect[]) => void;
 }) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const panStateRef = useRef<ImagePanState | null>(null);
+  const resizeStartRef = useRef({ height: defaultExamViewerHeight, y: 0 });
+  const viewerHeightRef = useRef(defaultExamViewerHeight);
   const [dragState, setDragState] = useState<MaskDragState | null>(null);
   const [draftRect, setDraftRect] = useState<MaskRect | null>(null);
+  const [zoom, setZoom] = useState(100);
+  const [isPanning, setIsPanning] = useState(false);
+  const [viewerHeight, setViewerHeight] = useState(defaultExamViewerHeight);
+  const [isResizingViewer, setIsResizingViewer] = useState(false);
+  const canPanImage = Boolean(zoomable && !editable && zoom > 100);
+
+  useEffect(() => {
+    if (!zoomable) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      try {
+        const savedHeight = Number(window.localStorage.getItem("brooks-pa-atlas.examViewerHeight"));
+        const nextHeight =
+          Number.isFinite(savedHeight) && savedHeight > 0
+            ? clampExamViewerHeight(savedHeight)
+            : defaultExamViewerHeight;
+        viewerHeightRef.current = nextHeight;
+        setViewerHeight(nextHeight);
+      } catch {
+        // localStorage can be unavailable in restricted browser contexts.
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [zoomable]);
+
+  useEffect(() => {
+    if (!isResizingViewer) {
+      return;
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const nextHeight = clampExamViewerHeight(
+        resizeStartRef.current.height + event.clientY - resizeStartRef.current.y,
+      );
+      viewerHeightRef.current = nextHeight;
+      setViewerHeight(nextHeight);
+    }
+
+    function handlePointerUp() {
+      setIsResizingViewer(false);
+      try {
+        window.localStorage.setItem("brooks-pa-atlas.examViewerHeight", String(viewerHeightRef.current));
+      } catch {
+        // localStorage can be unavailable in restricted browser contexts.
+      }
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isResizingViewer, zoomable]);
 
   function pointInCanvas(event: React.PointerEvent<HTMLElement>) {
     return canvasRef.current ? pointInElement(canvasRef.current, event) : { x: 0, y: 0 };
@@ -550,57 +647,175 @@ function MaskedImage({
     setDraftRect(null);
   }
 
+  function updateZoom(delta: number) {
+    setZoom((current) => clamp(current + delta, 80, 240));
+  }
+
+  function startPan(event: React.PointerEvent<HTMLDivElement>) {
+    if (!canPanImage || event.button !== 0 || !scrollRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    panStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: scrollRef.current.scrollLeft,
+      scrollTop: scrollRef.current.scrollTop,
+    };
+    setIsPanning(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function updatePan(event: React.PointerEvent<HTMLDivElement>) {
+    const panState = panStateRef.current;
+    if (!panState || panState.pointerId !== event.pointerId || !scrollRef.current) {
+      return;
+    }
+
+    scrollRef.current.scrollLeft = panState.scrollLeft - (event.clientX - panState.startX);
+    scrollRef.current.scrollTop = panState.scrollTop - (event.clientY - panState.startY);
+  }
+
+  function endPan(event: React.PointerEvent<HTMLDivElement>) {
+    if (panStateRef.current?.pointerId !== event.pointerId) {
+      return;
+    }
+
+    panStateRef.current = null;
+    setIsPanning(false);
+  }
+
+  function startViewerResize(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!zoomable) {
+      return;
+    }
+
+    event.preventDefault();
+    resizeStartRef.current = { height: viewerHeight, y: event.clientY };
+    viewerHeightRef.current = viewerHeight;
+    setIsResizingViewer(true);
+  }
+
   return (
-    <div className="overflow-auto rounded-md border border-zinc-200 bg-zinc-100 p-2">
+    <div className={`group relative rounded-md border border-zinc-200 bg-zinc-100 ${isResizingViewer ? "select-none" : ""}`}>
+      {zoomable ? (
+        <div
+          className="absolute right-3 top-3 z-20 flex items-center gap-1 rounded-md border border-white/70 bg-white/90 p-1 shadow-sm backdrop-blur"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => updateZoom(-20)}
+            disabled={zoom <= 80}
+            className="grid h-7 w-7 place-items-center rounded text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
+            title={zoomLabels?.zoomOut}
+            aria-label={zoomLabels?.zoomOut}
+          >
+            <ZoomOut className="h-3.5 w-3.5" />
+          </button>
+          <span className="w-11 text-center text-xs font-medium text-zinc-600">{zoom}%</span>
+          <button
+            type="button"
+            onClick={() => updateZoom(20)}
+            disabled={zoom >= 240}
+            className="grid h-7 w-7 place-items-center rounded text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
+            title={zoomLabels?.zoomIn}
+            aria-label={zoomLabels?.zoomIn}
+          >
+            <ZoomIn className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setZoom(100)}
+            className="grid h-7 w-7 place-items-center rounded text-zinc-700 hover:bg-zinc-100"
+            title={zoomLabels?.resetZoom}
+            aria-label={zoomLabels?.resetZoom}
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ) : null}
       <div
-        ref={canvasRef}
-        className={`relative mx-auto w-fit max-w-full ${editable ? "cursor-crosshair" : ""}`}
-        onPointerDown={startDraw}
-        onPointerMove={updateDrag}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
+        ref={scrollRef}
+        className={`overflow-auto p-2 ${
+          zoomable ? "select-none pb-5" : ""
+        } ${canPanImage ? (isPanning ? "cursor-grabbing" : "cursor-grab") : ""}`}
+        style={zoomable ? { height: viewerHeight } : undefined}
+        onPointerDown={startPan}
+        onPointerMove={updatePan}
+        onPointerUp={endPan}
+        onPointerCancel={endPan}
       >
-        <img
-          src={`/api/images/${image.id}/file`}
-          alt={image.title ?? image.originalName}
-          className="block max-h-[520px] max-w-full select-none"
-          draggable={false}
-        />
-        {rects.map((rect, index) => (
-          <div
-            key={`${rect.x}-${rect.y}-${index}`}
-            className={`absolute border ${
-              editable ? "cursor-move" : ""
-            } ${selectedIndex === index ? "border-cyan-300 ring-2 ring-cyan-300/80" : "border-white/40"}`}
-            style={maskStyle(rect)}
-            onPointerDown={(event) => startMove(index, event)}
+        <div
+          ref={canvasRef}
+          className={`relative mx-auto ${zoomable ? "w-full max-w-none" : "w-fit max-w-full"} ${
+            editable ? "cursor-crosshair" : ""
+          }`}
+          style={zoomable ? { width: `${zoom}%` } : undefined}
+          onPointerDown={startDraw}
+          onPointerMove={updateDrag}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        >
+          <img
+            src={`/api/images/${image.id}/file`}
+            alt={image.title ?? image.originalName}
+            className={
+              zoomable
+                ? "block h-auto w-full max-w-none select-none"
+                : "block max-h-[520px] max-w-full select-none"
+            }
+            draggable={false}
           />
-        ))}
-        {draftRect ? (
-          <div
-            className="absolute border border-cyan-300 ring-2 ring-cyan-300/80"
-            style={maskStyle(draftRect)}
-          />
-        ) : null}
-        {editable && selectedIndex >= 0 && rects[selectedIndex] ? (
-          <>
-            {(["nw", "ne", "sw", "se"] as MaskResizeHandle[]).map((handle) => (
-              <div
-                key={handle}
-                className={`absolute h-3 w-3 rounded-sm border border-zinc-950 bg-white shadow ${
-                  handle === "nw" || handle === "se" ? "cursor-nwse-resize" : "cursor-nesw-resize"
-                }`}
-                style={{
-                  left: `${(handle.includes("w") ? rects[selectedIndex].x : rects[selectedIndex].x + rects[selectedIndex].width) * 100}%`,
-                  top: `${(handle.includes("n") ? rects[selectedIndex].y : rects[selectedIndex].y + rects[selectedIndex].height) * 100}%`,
-                  transform: "translate(-50%, -50%)",
-                }}
-                onPointerDown={(event) => startResize(selectedIndex, handle, event)}
-              />
-            ))}
-          </>
-        ) : null}
+          {rects.map((rect, index) => (
+            <div
+              key={`${rect.x}-${rect.y}-${index}`}
+              className={`absolute border ${
+                editable ? "cursor-move" : ""
+              } ${selectedIndex === index ? "border-cyan-300 ring-2 ring-cyan-300/80" : "border-white/40"}`}
+              style={maskStyle(rect)}
+              onPointerDown={(event) => startMove(index, event)}
+            />
+          ))}
+          {draftRect ? (
+            <div
+              className="absolute border border-cyan-300 ring-2 ring-cyan-300/80"
+              style={maskStyle(draftRect)}
+            />
+          ) : null}
+          {editable && selectedIndex >= 0 && rects[selectedIndex] ? (
+            <>
+              {(["nw", "ne", "sw", "se"] as MaskResizeHandle[]).map((handle) => (
+                <div
+                  key={handle}
+                  className={`absolute h-3 w-3 rounded-sm border border-zinc-950 bg-white shadow ${
+                    handle === "nw" || handle === "se" ? "cursor-nwse-resize" : "cursor-nesw-resize"
+                  }`}
+                  style={{
+                    left: `${(handle.includes("w") ? rects[selectedIndex].x : rects[selectedIndex].x + rects[selectedIndex].width) * 100}%`,
+                    top: `${(handle.includes("n") ? rects[selectedIndex].y : rects[selectedIndex].y + rects[selectedIndex].height) * 100}%`,
+                    transform: "translate(-50%, -50%)",
+                  }}
+                  onPointerDown={(event) => startResize(selectedIndex, handle, event)}
+                />
+              ))}
+            </>
+          ) : null}
+        </div>
       </div>
+      {zoomable ? (
+        <button
+          type="button"
+          onPointerDown={startViewerResize}
+          className="absolute bottom-0 left-1/2 z-20 flex h-5 w-28 -translate-x-1/2 cursor-row-resize items-center justify-center rounded-t-md border border-zinc-300 bg-white/90 shadow-sm backdrop-blur transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 group-hover:bg-white"
+          title={zoomLabels?.resizeImageWindow}
+          aria-label={zoomLabels?.resizeImageWindow}
+        >
+          <span className="h-1 w-12 rounded-full bg-zinc-400" />
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -622,6 +837,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
   const [images, setImages] = useState<ExamImage[]>([]);
   const [loading, setLoading] = useState(false);
   const [attempt, setAttempt] = useState<ExamAttempt | null>(null);
+  const [attemptPageIndex, setAttemptPageIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [wrongOnly, setWrongOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -635,6 +851,9 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     () => attempt?.answers.filter((answer) => !wrongOnly || !answer.isCorrect) ?? [],
     [attempt?.answers, wrongOnly],
   );
+  const attemptTotalPages = Math.max(1, visibleResultAnswers.length);
+  const attemptCurrentPageIndex = Math.min(attemptPageIndex, attemptTotalPages - 1);
+  const currentAttemptAnswer = visibleResultAnswers[attemptCurrentPageIndex] ?? null;
 
   const loadPapers = useCallback(async () => {
     const response = await fetch("/api/exam/papers", { cache: "no-store" });
@@ -700,6 +919,45 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
 
     return () => window.clearTimeout(timer);
   }, [loadImages]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setAttemptPageIndex((index) => Math.min(index, Math.max(0, visibleResultAnswers.length - 1)));
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [visibleResultAnswers.length]);
+
+  useEffect(() => {
+    if (!attempt || visibleResultAnswers.length < 2) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+
+      const target = event.target;
+      const isEditing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+      if (isEditing || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) {
+        return;
+      }
+
+      event.preventDefault();
+      setAttemptPageIndex((index) => {
+        const direction = event.key === "ArrowLeft" ? -1 : 1;
+        return (index + direction + visibleResultAnswers.length) % visibleResultAnswers.length;
+      });
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [attempt, visibleResultAnswers.length]);
 
   async function createPaper() {
     setLoading(true);
@@ -925,6 +1183,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     }
 
     setAttempt(result.attempt);
+    setAttemptPageIndex(0);
     setAnswers({});
     setWrongOnly(false);
   }
@@ -953,6 +1212,16 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     await loadPapers();
   }
 
+  function selectAdjacentAttemptAnswer(direction: -1 | 1) {
+    if (visibleResultAnswers.length < 2) {
+      return;
+    }
+
+    setAttemptPageIndex(
+      (index) => (index + direction + visibleResultAnswers.length) % visibleResultAnswers.length,
+    );
+  }
+
   function patchQuestion(questionId: string, patch: Partial<ExamQuestion>) {
     setSelectedPaper((current) =>
       current
@@ -968,109 +1237,145 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
 
   if (attempt) {
     return (
-      <div className="space-y-5">
-        <div className="rounded-md border border-zinc-200 bg-white p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-sm font-semibold">{attempt.paper?.title ?? t.title}</p>
-              <p className="mt-1 text-xs text-zinc-500">
-                {attempt.status === "SUBMITTED"
-                  ? `${t.correctCount} ${attempt.correctCount}/${attempt.totalCount} / ${t.accuracy} ${percent(attempt.accuracy)}`
-                  : `${attempt.totalCount} ${t.questions}`}
-              </p>
-            </div>
-            <div className="flex gap-2">
-              {attempt.status === "SUBMITTED" ? (
-                <label className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700">
-                  <input
-                    type="checkbox"
-                    checked={wrongOnly}
-                    onChange={(event) => setWrongOnly(event.target.checked)}
-                    className="h-4 w-4 accent-zinc-950"
-                  />
-                  {t.wrongOnly}
-                </label>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => setAttempt(null)}
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-              >
-                <ChevronLeft className="h-4 w-4" />
-                {t.backToPapers}
-              </button>
-              {attempt.status === "IN_PROGRESS" ? (
+      <div className="space-y-3">
+        {currentAttemptAnswer ? (
+          <div key={currentAttemptAnswer.id} className="rounded-md border border-zinc-200 bg-white p-3">
+            <div className="mb-2 flex items-center justify-between gap-2 border-b border-zinc-100 pb-2">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <span
+                  className="max-w-48 shrink-0 truncate text-sm font-semibold"
+                  title={attempt.paper?.title ?? t.title}
+                >
+                  {attempt.paper?.title ?? t.title}
+                </span>
+                <span className="shrink-0 rounded border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-xs text-zinc-600">
+                  {attemptCurrentPageIndex + 1}/{visibleResultAnswers.length}
+                </span>
+                {attempt.status === "SUBMITTED" ? (
+                  <span
+                    className={`inline-flex h-6 shrink-0 items-center rounded border px-2 text-xs font-medium ${
+                      currentAttemptAnswer.isCorrect
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border-rose-200 bg-rose-50 text-rose-700"
+                    }`}
+                  >
+                    {currentAttemptAnswer.isCorrect ? "OK" : "Wrong"}
+                  </span>
+                ) : null}
+                <span className="min-w-0 truncate text-sm text-zinc-700" title={currentAttemptAnswer.question.prompt}>
+                  {currentAttemptAnswer.question.prompt}
+                </span>
+                <span className="shrink-0 text-xs text-zinc-300">/</span>
+                <span
+                  className="max-w-40 shrink-0 truncate text-xs text-zinc-500"
+                  title={currentAttemptAnswer.question.image.originalName}
+                >
+                  {currentAttemptAnswer.question.image.originalName}
+                </span>
+              </div>
+              <div className="flex shrink-0 items-center justify-end gap-2">
+                {attempt.status === "SUBMITTED" ? (
+                  <label className="inline-flex h-8 items-center gap-2 rounded-md border border-zinc-200 bg-white px-2 text-xs font-medium text-zinc-700">
+                    <input
+                      type="checkbox"
+                      checked={wrongOnly}
+                      onChange={(event) => {
+                        setWrongOnly(event.target.checked);
+                        setAttemptPageIndex(0);
+                      }}
+                      className="h-4 w-4 accent-zinc-950"
+                    />
+                    {t.wrongOnly}
+                  </label>
+                ) : null}
                 <button
                   type="button"
-                  onClick={() => void submitExam()}
-                  className="inline-flex h-9 items-center gap-2 rounded-md bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800"
+                  onClick={() => selectAdjacentAttemptAnswer(-1)}
+                  disabled={visibleResultAnswers.length < 2}
+                  className="grid h-8 w-8 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+                  title={t.previousQuestionShortcut}
+                  aria-label={t.previousQuestion}
                 >
-                  <Send className="h-4 w-4" />
-                  {t.submitExam}
+                  <ChevronLeft className="h-4 w-4" />
                 </button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-
-        {attempt.status === "SUBMITTED" ? (
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <div className="rounded-md border border-zinc-200 bg-white p-4">
-              <p className="text-xs text-zinc-500">{t.accuracy}</p>
-              <p className="mt-1 text-2xl font-semibold">{percent(attempt.accuracy)}</p>
-            </div>
-            <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4">
-              <p className="text-xs text-emerald-700">{t.correctCount}</p>
-              <p className="mt-1 text-2xl font-semibold">
-                {attempt.correctCount}/{attempt.totalCount}
-              </p>
-            </div>
-          </div>
-        ) : null}
-
-        {visibleResultAnswers.map((answer, index) => (
-          <div key={answer.id} className="rounded-md border border-zinc-200 bg-white p-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold">
-                  {index + 1}. {answer.question.prompt}
-                </p>
-                <p className="mt-1 text-xs text-zinc-500">{answer.question.image.originalName}</p>
-              </div>
-              {attempt.status === "SUBMITTED" ? (
-                <span
-                  className={`inline-flex h-7 items-center rounded border px-2 text-xs font-medium ${
-                    answer.isCorrect
-                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                      : "border-rose-200 bg-rose-50 text-rose-700"
-                  }`}
+                <button
+                  type="button"
+                  onClick={() => selectAdjacentAttemptAnswer(1)}
+                  disabled={visibleResultAnswers.length < 2}
+                  className="grid h-8 w-8 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+                  title={t.nextQuestionShortcut}
+                  aria-label={t.nextQuestion}
                 >
-                  {answer.isCorrect ? "OK" : "Wrong"}
-                </span>
-              ) : null}
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAttempt(null)}
+                  className="inline-flex h-8 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  {t.backToPapers}
+                </button>
+                {attempt.status === "IN_PROGRESS" ? (
+                  <button
+                    type="button"
+                    onClick={() => void submitExam()}
+                    className="inline-flex h-8 items-center gap-2 rounded-md bg-zinc-950 px-3 text-xs font-medium text-white hover:bg-zinc-800"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    {t.submitExam}
+                  </button>
+                ) : null}
+              </div>
             </div>
-            <MaskedImage image={answer.question.image} rects={answer.question.maskRects} />
+            <MaskedImage
+              image={currentAttemptAnswer.question.image}
+              rects={currentAttemptAnswer.question.maskRects}
+              zoomable
+              zoomLabels={{
+                zoomIn: t.zoomIn,
+                zoomOut: t.zoomOut,
+                resetZoom: t.resetZoom,
+                resizeImageWindow: t.resizeImageWindow,
+              }}
+            />
+            {attempt.status === "SUBMITTED" ? (
+              <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+                <div className="rounded-md border border-zinc-200 bg-white p-3">
+                  <p className="text-xs text-zinc-500">{t.accuracy}</p>
+                  <p className="mt-1 text-xl font-semibold">{percent(attempt.accuracy)}</p>
+                </div>
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                  <p className="text-xs text-emerald-700">{t.correctCount}</p>
+                  <p className="mt-1 text-xl font-semibold">
+                    {attempt.correctCount}/{attempt.totalCount}
+                  </p>
+                </div>
+              </div>
+            ) : null}
             <div className="mt-3 grid gap-2 md:grid-cols-2">
-              {answer.question.options.map((option) => (
+              {currentAttemptAnswer.question.options.map((option) => (
                 <label
                   key={option}
                   className={`flex min-h-10 items-center gap-2 rounded-md border px-3 text-sm ${
-                    answers[answer.questionId] === option
+                    answers[currentAttemptAnswer.questionId] === option
                       ? "border-zinc-950 bg-zinc-50"
                       : "border-zinc-200 bg-white"
                   } ${attempt.status === "SUBMITTED" ? "cursor-default" : "cursor-pointer hover:bg-zinc-50"}`}
                 >
                   <input
                     type="radio"
-                    name={answer.questionId}
+                    name={currentAttemptAnswer.questionId}
                     value={option}
                     disabled={attempt.status === "SUBMITTED"}
                     checked={
                       attempt.status === "SUBMITTED"
-                        ? answer.userAnswer === option
-                        : answers[answer.questionId] === option
+                        ? currentAttemptAnswer.userAnswer === option
+                        : answers[currentAttemptAnswer.questionId] === option
                     }
-                    onChange={() => setAnswers((current) => ({ ...current, [answer.questionId]: option }))}
+                    onChange={() =>
+                      setAnswers((current) => ({ ...current, [currentAttemptAnswer.questionId]: option }))
+                    }
                     className="h-4 w-4 accent-zinc-950"
                   />
                   <span>{option}</span>
@@ -1080,16 +1385,16 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
             {attempt.status === "SUBMITTED" ? (
               <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm leading-6">
                 <p>
-                  {t.yourAnswer}: <strong>{answer.userAnswer ?? "-"}</strong> / {t.correctAnswer}:{" "}
-                  <strong>{answer.question.correctOption}</strong>
+                  {t.yourAnswer}: <strong>{currentAttemptAnswer.userAnswer ?? "-"}</strong> / {t.correctAnswer}:{" "}
+                  <strong>{currentAttemptAnswer.question.correctOption}</strong>
                 </p>
-                {answer.question.explanation ? (
-                  <p className="mt-1 text-zinc-600">{answer.question.explanation}</p>
+                {currentAttemptAnswer.question.explanation ? (
+                  <p className="mt-1 text-zinc-600">{currentAttemptAnswer.question.explanation}</p>
                 ) : null}
               </div>
             ) : null}
           </div>
-        ))}
+        ) : null}
       </div>
     );
   }

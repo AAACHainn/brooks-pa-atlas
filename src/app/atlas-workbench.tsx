@@ -2067,18 +2067,8 @@ export default function AtlasWorkbench() {
         </aside>
 
         <section className="min-w-0">
-          <div className="flex h-16 items-center gap-3 border-b border-zinc-200 bg-white px-5">
-            {isExamMode ? (
-              <div className="flex min-w-0 flex-1 items-center gap-3">
-                <div className="grid h-10 w-10 place-items-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-700">
-                  <ClipboardList className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold">{t.examMode}</p>
-                  <p className="truncate text-xs text-zinc-500">Brooks PA Atlas</p>
-                </div>
-              </div>
-            ) : (
+          {!isExamMode ? (
+            <div className="flex h-16 items-center gap-3 border-b border-zinc-200 bg-white px-5">
               <div className="relative min-w-0 flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
                 <input
@@ -2091,87 +2081,91 @@ export default function AtlasWorkbench() {
                   placeholder={t.searchPlaceholder}
                 />
               </div>
-            )}
-            {isManageMode ? (
-              <>
-                <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800">
-                  <ImageIcon className="h-4 w-4" />
-                  <span>{t.chooseImages}</span>
+              {isManageMode ? (
+                <>
+                  <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800">
+                    <ImageIcon className="h-4 w-4" />
+                    <span>{t.chooseImages}</span>
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(event) => {
+                        handleFiles(event.target.files);
+                        event.target.value = "";
+                      }}
+                    />
+                  </label>
+                  <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50">
+                    <FolderPlus className="h-4 w-4" />
+                    <span>{t.chooseFolder}</span>
+                    <input
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(event) => {
+                        handleFiles(event.target.files);
+                        event.target.value = "";
+                      }}
+                      {...({ webkitdirectory: "true", directory: "true" } as Record<string, string>)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => documentInputRef.current?.click()}
+                    disabled={documentImporting || uploading}
+                    className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {documentImporting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <FileText className="h-4 w-4" />
+                    )}
+                    <span>{documentImportButtonLabel}</span>
+                  </button>
                   <input
+                    ref={documentInputRef}
                     type="file"
-                    multiple
-                    accept="image/*"
+                    accept=".pdf,application/pdf"
                     className="hidden"
                     onChange={(event) => {
-                      handleFiles(event.target.files);
+                      void uploadDocument(event.target.files?.[0] ?? null);
                       event.target.value = "";
                     }}
                   />
-                </label>
-                <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50">
-                  <FolderPlus className="h-4 w-4" />
-                  <span>{t.chooseFolder}</span>
+                  <button
+                    type="button"
+                    onClick={() => void downloadBackup()}
+                    disabled={backingUp || restoring || documentImporting}
+                    className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {backingUp ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    <span>{backingUp ? t.backingUp : t.backupData}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => restoreInputRef.current?.click()}
+                    disabled={backingUp || restoring || documentImporting}
+                    className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {restoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                    <span>{restoring ? t.restoring : t.restoreData}</span>
+                  </button>
                   <input
+                    ref={restoreInputRef}
                     type="file"
-                    multiple
+                    accept=".zip,application/zip"
                     className="hidden"
                     onChange={(event) => {
-                      handleFiles(event.target.files);
+                      void restoreBackup(event.target.files?.[0] ?? null);
                       event.target.value = "";
                     }}
-                    {...({ webkitdirectory: "true", directory: "true" } as Record<string, string>)}
                   />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => documentInputRef.current?.click()}
-                  disabled={documentImporting || uploading}
-                  className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {documentImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-                  <span>{documentImportButtonLabel}</span>
-                </button>
-                <input
-                  ref={documentInputRef}
-                  type="file"
-                  accept=".pdf,application/pdf"
-                  className="hidden"
-                  onChange={(event) => {
-                    void uploadDocument(event.target.files?.[0] ?? null);
-                    event.target.value = "";
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => void downloadBackup()}
-                  disabled={backingUp || restoring || documentImporting}
-                  className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {backingUp ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                  <span>{backingUp ? t.backingUp : t.backupData}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => restoreInputRef.current?.click()}
-                  disabled={backingUp || restoring || documentImporting}
-                  className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {restoring ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                  <span>{restoring ? t.restoring : t.restoreData}</span>
-                </button>
-                <input
-                  ref={restoreInputRef}
-                  type="file"
-                  accept=".zip,application/zip"
-                  className="hidden"
-                  onChange={(event) => {
-                    void restoreBackup(event.target.files?.[0] ?? null);
-                    event.target.value = "";
-                  }}
-                />
-              </>
-            ) : null}
-          </div>
+                </>
+              ) : null}
+            </div>
+          ) : null}
 
           {isManageMode && files.length > 0 ? (
             <div className="border-b border-zinc-200 bg-white px-5 py-4">
@@ -2322,7 +2316,7 @@ export default function AtlasWorkbench() {
             </div>
           ) : null}
 
-          <div className="overflow-auto p-5 xl:h-[calc(100vh-65px)]">
+          <div className={`overflow-auto ${isExamMode ? "p-3 xl:h-screen" : "p-5 xl:h-[calc(100vh-65px)]"}`}>
             {dataError ? (
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                 <div className="min-w-0">

@@ -345,7 +345,7 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function clampExamViewerHeight(value: number) {
-  return clamp(value, 320, 1000);
+  return clamp(value, 320, 2000);
 }
 
 function maskStyle(rect: MaskRect) {
@@ -642,9 +642,11 @@ function MaskedImage({
   zoomable,
   color = defaultMaskColor,
   selectedIndex = -1,
+  zoom = 100,
   zoomLabels,
   onSelect,
   onChange,
+  onZoomChange,
 }: {
   image: ExamImage;
   rects: MaskRect[];
@@ -652,9 +654,11 @@ function MaskedImage({
   zoomable?: boolean;
   color?: string;
   selectedIndex?: number;
+  zoom?: number;
   zoomLabels?: { zoomIn: string; zoomOut: string; resetZoom: string; resizeImageWindow: string };
   onSelect?: (index: number) => void;
   onChange?: (rects: MaskRect[]) => void;
+  onZoomChange?: (zoom: number) => void;
 }) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -663,7 +667,6 @@ function MaskedImage({
   const viewerHeightRef = useRef(defaultExamViewerHeight);
   const [dragState, setDragState] = useState<MaskDragState | null>(null);
   const [draftRect, setDraftRect] = useState<MaskRect | null>(null);
-  const [zoom, setZoom] = useState(100);
   const [isPanning, setIsPanning] = useState(false);
   const [viewerHeight, setViewerHeight] = useState(defaultExamViewerHeight);
   const [isResizingViewer, setIsResizingViewer] = useState(false);
@@ -795,7 +798,7 @@ function MaskedImage({
   }
 
   function updateZoom(delta: number) {
-    setZoom((current) => clamp(current + delta, 80, 240));
+    onZoomChange?.(clamp(zoom + delta, 80, 240));
   }
 
   function startPan(event: React.PointerEvent<HTMLDivElement>) {
@@ -875,7 +878,7 @@ function MaskedImage({
           </button>
           <button
             type="button"
-            onClick={() => setZoom(100)}
+            onClick={() => onZoomChange?.(100)}
             className="grid h-7 w-7 place-items-center rounded text-zinc-700 hover:bg-zinc-100"
             title={zoomLabels?.resetZoom}
             aria-label={zoomLabels?.resetZoom}
@@ -989,6 +992,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [wrongOnly, setWrongOnly] = useState(false);
   const [isMaskHidden, setIsMaskHidden] = useState(false);
+  const [attemptImageZoom, setAttemptImageZoom] = useState(100);
   const [error, setError] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [noticeDialog, setNoticeDialog] = useState<NoticeDialogState | null>(null);
@@ -1734,6 +1738,8 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
               image={currentAttemptAnswer.question.image}
               rects={attempt.status === "SUBMITTED" && isMaskHidden ? [] : currentAttemptAnswer.question.maskRects}
               zoomable
+              zoom={attemptImageZoom}
+              onZoomChange={setAttemptImageZoom}
               zoomLabels={{
                 zoomIn: t.zoomIn,
                 zoomOut: t.zoomOut,

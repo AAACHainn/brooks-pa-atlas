@@ -23,6 +23,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Locale = "zh" | "en";
+type ExamQuestionType = "SINGLE" | "MULTIPLE";
 
 export type ExamIndexOption = {
   id: string;
@@ -59,9 +60,11 @@ type ExamQuestion = {
   id: string;
   paperId: string;
   chartImageId: string;
+  questionType: ExamQuestionType;
   prompt: string;
   options: string[];
   correctOption: string | null;
+  correctOptions: string[];
   explanation: string;
   maskRects: MaskRect[];
   status: "DRAFT" | "READY";
@@ -86,6 +89,7 @@ type AttemptAnswer = {
   questionId: string;
   order: number;
   userAnswer: string | null;
+  userAnswers: string[];
   isCorrect: boolean;
   question: ExamQuestion;
 };
@@ -146,6 +150,9 @@ const copy = {
     nextQuestionShortcut: "下一题（快捷键 →）",
     prompt: "题干",
     options: "选项",
+    questionType: "题型",
+    singleChoice: "单选题",
+    multipleChoice: "多选题",
     correct: "正确答案",
     explanation: "解析",
     explanationOptional: "解析（可选）",
@@ -233,6 +240,9 @@ const copy = {
     nextQuestionShortcut: "Next question (shortcut →)",
     prompt: "Prompt",
     options: "Options",
+    questionType: "Type",
+    singleChoice: "Single choice",
+    multipleChoice: "Multiple choice",
     correct: "Correct answer",
     explanation: "Explanation",
     explanationOptional: "Explanation (optional)",
@@ -381,11 +391,22 @@ function normalizeOptions(options: string[]) {
   return normalized.length >= 2 ? normalized.slice(0, 8) : defaultOptions;
 }
 
+function normalizeSelectedOptions(options: string[], selected: string[], questionType: ExamQuestionType) {
+  const selectedSet = new Set(selected.map((option) => option.trim()).filter(Boolean));
+  const values = options.filter((option) => selectedSet.has(option));
+  return questionType === "SINGLE" ? values.slice(0, 1) : values;
+}
+
+function formatSelectedOptions(options: string[]) {
+  return options.length > 0 ? options.join(" / ") : "-";
+}
+
 function missingQuestionFields(
-  question: Pick<ExamQuestion, "correctOption" | "maskRects" | "options" | "prompt">,
+  question: Pick<ExamQuestion, "correctOptions" | "maskRects" | "options" | "prompt" | "questionType">,
   labels: (typeof copy)["zh"],
 ) {
   const options = normalizeOptions(question.options);
+  const correctOptions = normalizeSelectedOptions(options, question.correctOptions, question.questionType);
   const missing: string[] = [];
 
   if (!question.prompt.trim()) {
@@ -396,7 +417,10 @@ function missingQuestionFields(
     missing.push(labels.missingOptions);
   }
 
-  if (!question.correctOption || !options.includes(question.correctOption)) {
+  if (
+    (question.questionType === "SINGLE" && correctOptions.length !== 1) ||
+    (question.questionType === "MULTIPLE" && correctOptions.length < 2)
+  ) {
     missing.push(labels.missingCorrect);
   }
 
@@ -419,6 +443,19 @@ function localizedErrorMessage(message: string | undefined, labels: (typeof copy
       return labels.publishFailed;
     default:
       return message || labels.loadFailed;
+  }
+}
+
+async function readJsonResult<T>(response: Response): Promise<T & { error?: string }> {
+  const text = await response.text();
+  if (!text) {
+    return {} as T & { error?: string };
+  }
+
+  try {
+    return JSON.parse(text) as T & { error?: string };
+  } catch {
+    return { error: response.ok ? undefined : text } as T & { error?: string };
   }
 }
 
@@ -887,7 +924,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
   const [attempt, setAttempt] = useState<ExamAttempt | null>(null);
   const [attempts, setAttempts] = useState<ExamAttemptSummary[]>([]);
   const [attemptPageIndex, setAttemptPageIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [wrongOnly, setWrongOnly] = useState(false);
   const [isMaskHidden, setIsMaskHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -963,8 +1000,8 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
       setAnswers(
         Object.fromEntries(
           result.attempt.answers
-            .filter((answer) => answer.userAnswer)
-            .map((answer) => [answer.questionId, answer.userAnswer as string]),
+            .filter((answer) => answer.userAnswers.length > 0)
+            .map((answer) => [answer.questionId, answer.userAnswers]),
         ),
       );
     },
@@ -1134,17 +1171,23 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     }
 
     const options = normalizeOptions(question.options);
-    const missing = missingQuestionFields({ ...question, options }, t);
+    const correctOptions = normalizeSelectedOptions(options, question.correctOptions, question.questionType);
+    const missing = missingQuestionFields({ ...question, options, correctOptions }, t);
     const response = await fetch(`/api/exam/questions/${question.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...question,
         options,
-        correctOption: options.includes(question.correctOption ?? "") ? question.correctOption : options[0],
+        correctOptions:
+          correctOptions.length > 0
+            ? correctOptions
+            : question.questionType === "SINGLE" && options.length > 0
+              ? [options[0]]
+              : [],
       }),
     });
-    const result = (await response.json()) as { error?: string };
+    const result = await readJsonResult<{ error?: string }>(response);
     if (!response.ok) {
       setNoticeDialog({
         title: t.errorTitle,
@@ -1340,6 +1383,26 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     );
   }
 
+  function patchAttemptAnswer(question: ExamQuestion, option: string, checked: boolean) {
+    setAnswers((current) => {
+      const currentAnswer = current[question.id] ?? [];
+      const nextAnswer =
+        question.questionType === "SINGLE"
+          ? [option]
+          : checked
+            ? normalizeSelectedOptions(question.options, [...currentAnswer, option], "MULTIPLE")
+            : currentAnswer.filter((item) => item !== option);
+
+      if (nextAnswer.length === 0) {
+        const rest = { ...current };
+        delete rest[question.id];
+        return rest;
+      }
+
+      return { ...current, [question.id]: nextAnswer };
+    });
+  }
+
   if (attempt) {
     return (
       <div className="space-y-3">
@@ -1476,39 +1539,42 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
               </div>
             ) : null}
             <div className="mt-3 grid gap-2 md:grid-cols-2">
-              {currentAttemptAnswer.question.options.map((option) => (
-                <label
-                  key={option}
-                  className={`flex min-h-10 items-center gap-2 rounded-md border px-3 text-sm ${
-                    answers[currentAttemptAnswer.questionId] === option
-                      ? "border-zinc-950 bg-zinc-50"
-                      : "border-zinc-200 bg-white"
-                  } ${attempt.status === "SUBMITTED" ? "cursor-default" : "cursor-pointer hover:bg-zinc-50"}`}
-                >
-                  <input
-                    type="radio"
-                    name={currentAttemptAnswer.questionId}
-                    value={option}
-                    disabled={attempt.status === "SUBMITTED"}
-                    checked={
-                      attempt.status === "SUBMITTED"
-                        ? currentAttemptAnswer.userAnswer === option
-                        : answers[currentAttemptAnswer.questionId] === option
-                    }
-                    onChange={() =>
-                      setAnswers((current) => ({ ...current, [currentAttemptAnswer.questionId]: option }))
-                    }
-                    className="h-4 w-4 accent-zinc-950"
-                  />
-                  <span>{option}</span>
-                </label>
-              ))}
+              {currentAttemptAnswer.question.options.map((option) => {
+                const selectedOptions =
+                  attempt.status === "SUBMITTED"
+                    ? currentAttemptAnswer.userAnswers
+                    : answers[currentAttemptAnswer.questionId] ?? [];
+                const checked = selectedOptions.includes(option);
+
+                return (
+                  <label
+                    key={option}
+                    className={`flex min-h-10 items-center gap-2 rounded-md border px-3 text-sm ${
+                      checked ? "border-zinc-950 bg-zinc-50" : "border-zinc-200 bg-white"
+                    } ${attempt.status === "SUBMITTED" ? "cursor-default" : "cursor-pointer hover:bg-zinc-50"}`}
+                  >
+                    <input
+                      type={currentAttemptAnswer.question.questionType === "MULTIPLE" ? "checkbox" : "radio"}
+                      name={currentAttemptAnswer.questionId}
+                      value={option}
+                      disabled={attempt.status === "SUBMITTED"}
+                      checked={checked}
+                      onChange={(event) =>
+                        patchAttemptAnswer(currentAttemptAnswer.question, option, event.target.checked)
+                      }
+                      className="h-4 w-4 accent-zinc-950"
+                    />
+                    <span>{option}</span>
+                  </label>
+                );
+              })}
             </div>
             {attempt.status === "SUBMITTED" ? (
               <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm leading-6">
                 <p>
-                  {t.yourAnswer}: <strong>{currentAttemptAnswer.userAnswer ?? "-"}</strong> / {t.correctAnswer}:{" "}
-                  <strong>{currentAttemptAnswer.question.correctOption}</strong>
+                  {t.yourAnswer}: <strong>{formatSelectedOptions(currentAttemptAnswer.userAnswers)}</strong> /{" "}
+                  {t.correctAnswer}:{" "}
+                  <strong>{formatSelectedOptions(currentAttemptAnswer.question.correctOptions)}</strong>
                 </p>
                 {currentAttemptAnswer.question.explanation ? (
                   <p className="mt-1 text-zinc-600">{currentAttemptAnswer.question.explanation}</p>
@@ -1635,7 +1701,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
                   </button>
                 </div>
               </div>
-              <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(360px,1.1fr)]">
+              <div className="mt-3 grid gap-3 2xl:grid-cols-[minmax(0,0.9fr)_minmax(360px,1.1fr)]">
                 <label>
                   <span className="mb-1 block text-xs font-medium text-zinc-500">{t.description}</span>
                   <textarea
@@ -1734,7 +1800,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
               </div>
             ) : null}
 
-            <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
+            <div className="grid gap-4 2xl:grid-cols-[220px_minmax(0,1fr)]">
               <div className="rounded-md border border-zinc-200 bg-white p-2">
                 {selectedPaper.questions?.length ? null : (
                   <p className="p-3 text-sm text-zinc-500">{t.noQuestions}</p>
@@ -2087,8 +2153,8 @@ function QuestionEditor({
           </button>
         </div>
       ) : null}
-      <div className="mt-4 grid gap-3 lg:grid-cols-2">
-        <label className="lg:col-span-2">
+      <div className="mt-4 grid gap-3 2xl:grid-cols-2">
+        <label className="2xl:col-span-2">
           <span className="mb-1 block text-xs font-medium text-zinc-500">{t.prompt}</span>
           <input
             value={question.prompt}
@@ -2102,29 +2168,103 @@ function QuestionEditor({
           options={question.options}
           locked={locked}
           t={t}
-          onChange={(options) =>
+          onChange={(options) => {
+            const normalizedCorrectOptions = normalizeSelectedOptions(
+              options,
+              question.correctOptions,
+              question.questionType,
+            );
             onPatch({
               options,
-              correctOption: options.includes(question.correctOption ?? "") ? question.correctOption : options[0],
-            })
-          }
+              correctOption: question.questionType === "SINGLE" ? (normalizedCorrectOptions[0] ?? null) : null,
+              correctOptions: normalizedCorrectOptions,
+            });
+          }}
         />
         <div className="space-y-3">
+          <div>
+            <span className="mb-1 block text-xs font-medium text-zinc-500">{t.questionType}</span>
+            <div className="grid grid-cols-2 gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-1">
+              {(["SINGLE", "MULTIPLE"] as const).map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  disabled={locked}
+                  onClick={() => {
+                    const correctOptions = normalizeSelectedOptions(
+                      question.options,
+                      question.correctOptions,
+                      type,
+                    );
+                    onPatch({
+                      questionType: type,
+                      correctOptions,
+                      correctOption: type === "SINGLE" ? (correctOptions[0] ?? null) : null,
+                    });
+                  }}
+                  className={`h-9 rounded text-xs font-medium transition disabled:cursor-not-allowed ${
+                    question.questionType === type
+                      ? "bg-zinc-950 text-white"
+                      : "text-zinc-600 hover:bg-white disabled:hover:bg-transparent"
+                  }`}
+                >
+                  {type === "SINGLE" ? t.singleChoice : t.multipleChoice}
+                </button>
+              ))}
+            </div>
+          </div>
           <label>
             <span className="mb-1 block text-xs font-medium text-zinc-500">{t.correct}</span>
-            <select
-              value={question.correctOption ?? ""}
-              disabled={locked}
-              onChange={(event) => onPatch({ correctOption: event.target.value })}
-              className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-zinc-500 disabled:bg-zinc-50"
-            >
-              <option value="">-</option>
-              {question.options.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
+            {question.questionType === "SINGLE" ? (
+              <select
+                value={question.correctOptions[0] ?? question.correctOption ?? ""}
+                disabled={locked}
+                onChange={(event) =>
+                  onPatch({
+                    correctOption: event.target.value || null,
+                    correctOptions: event.target.value ? [event.target.value] : [],
+                  })
+                }
+                className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-zinc-500 disabled:bg-zinc-50"
+              >
+                <option value="">-</option>
+                {question.options.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="space-y-2 rounded-md border border-zinc-200 bg-zinc-50 p-2">
+                {question.options.map((option) => {
+                  const checked = question.correctOptions.includes(option);
+                  return (
+                    <label
+                      key={option}
+                      className="flex min-h-9 items-center gap-2 rounded-md bg-white px-2 text-sm text-zinc-700"
+                    >
+                      <input
+                        type="checkbox"
+                        disabled={locked}
+                        checked={checked}
+                        onChange={(event) => {
+                          const correctOptions = event.target.checked
+                            ? normalizeSelectedOptions(
+                                question.options,
+                                [...question.correctOptions, option],
+                                "MULTIPLE",
+                              )
+                            : question.correctOptions.filter((item) => item !== option);
+                          onPatch({ correctOption: null, correctOptions });
+                        }}
+                        className="h-4 w-4 accent-zinc-950"
+                      />
+                      <span>{option}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
           </label>
           <label>
             <span className="mb-1 block text-xs font-medium text-zinc-500">{t.explanationOptional}</span>

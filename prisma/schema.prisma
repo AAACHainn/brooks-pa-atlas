@@ -46,6 +46,11 @@ enum ExamQuestionStatus {
   READY
 }
 
+enum ExamQuestionType {
+  SINGLE
+  MULTIPLE
+}
+
 enum ExamAttemptStatus {
   IN_PROGRESS
   SUBMITTED
@@ -178,6 +183,7 @@ model ExamQuestion {
   id            String             @id @default(cuid())
   paperId       String
   chartImageId  String
+  questionType  ExamQuestionType   @default(SINGLE)
   prompt        String             @default("")
   optionsJson   String             @default("[]")
   correctOption String?
@@ -194,6 +200,7 @@ model ExamQuestion {
 
   @@index([paperId])
   @@index([chartImageId])
+  @@index([questionType])
   @@index([status])
   @@unique([paperId, chartImageId])
 }

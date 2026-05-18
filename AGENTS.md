@@ -164,7 +164,7 @@ npm run db:init
 - `ImportItem`：导入批次中的单张图片记录，保存原始文件名、相对路径、保存路径、分组、状态、错误和映射索引。
 - `AppSetting`：本地设置，目前用于 OCR 并发数等键值配置。
 - `ExamPaper`：试卷，支持草稿和发布状态，保存标题、描述、默认选项模板和发布时间。
-- `ExamQuestion`：试题，关联已有 `ChartImage`，保存题干、选项、正确答案、解析和遮罩坐标 JSON。
+- `ExamQuestion`：试题，关联已有 `ChartImage`，保存题型、题干、选项、正确答案、解析和遮罩坐标 JSON。
 - `ExamAttempt`：一次考试记录，保存开始/提交时间、耗时、正确数、总题数和正确率。
 - `ExamAttemptAnswer`：单题作答记录，保存随机题序、用户答案和是否正确。
 
@@ -175,6 +175,7 @@ npm run db:init
 - `OcrStatus`：`PENDING`、`RUNNING`、`COMPLETED`、`FAILED`、`SKIPPED`
 - `ExamPaperStatus`：`DRAFT`、`PUBLISHED`
 - `ExamQuestionStatus`：`DRAFT`、`READY`
+- `ExamQuestionType`：`SINGLE`、`MULTIPLE`
 - `ExamAttemptStatus`：`IN_PROGRESS`、`SUBMITTED`
 
 重要约束：
@@ -230,13 +231,13 @@ npm run db:init
 考试模式特性：
 
 - 用户可以创建试卷草稿，并从现有图库分页搜索图片加入试卷。
-- 每张图片对应一道选择题；题目保存题干、选项、正确答案、可选解析和遮罩坐标。
+- 每张图片对应一道选择题；题目可设为单选题或多选题，并保存题干、选项、正确答案、可选解析和遮罩坐标。
 - 遮罩支持多个不透明矩形，保存为相对图片显示区域的 `0..1` 坐标和颜色 JSON，不生成新图片；默认颜色为黑色，已绘制矩形可选中、拖动和拉角缩放。
 - 试卷级默认选项模板会用于新题；单题可以自定义选项。
-- 发布前所有题目必须处于 `READY`；题干、选项、正确答案和遮罩必填，解析可不填；发布后试卷和题目内容锁定。
+- 发布前所有题目必须处于 `READY`；题干、选项、正确答案和遮罩必填，解析可不填；单选题需要 1 个正确答案，多选题需要至少 2 个正确答案；发布后试卷和题目内容锁定。
 - 开始考试时后端随机题目顺序，选项顺序固定。
 - 考试和结果复盘使用紧凑的左右翻页单题视图，支持按钮和键盘 `ArrowLeft` / `ArrowRight` 切换题目；作答图片支持缩放，放大后可拖拽查看局部，底部把手可调整看图窗口高度。
-- 提交后保存本次考试记录，包含每题答案、是否正确、作答耗时、正确数、总题数和正确率。
+- 提交后保存本次考试记录，包含每题答案、是否正确、作答耗时、正确数、总题数和正确率；多选题按选项顺序规范化后评分，点击顺序不影响判分。
 - 已发布试卷详情会展示最近考试记录，点击记录可进入历史结果复盘。
 - 结果页展示正确率、用户答案、正确答案、解析，并支持只看错题；考试提交后可隐藏/显示遮罩以查看原图。
 
@@ -400,12 +401,12 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - `DELETE /api/exam/papers/[id]`：删除草稿或已发布试卷；已发布试卷会一并删除相关考试记录和答案。
 - `POST /api/exam/papers/[id]/questions`：把现有图片加入草稿试卷。
 - `GET /api/exam/papers/[id]/attempts`：列出该试卷最近考试记录。
-- `PATCH /api/exam/questions/[id]`：保存题目草稿、选项、答案、可选解析和遮罩。
+- `PATCH /api/exam/questions/[id]`：保存题目草稿、题型、选项、答案、可选解析和遮罩；`questionType` 支持 `SINGLE` 和 `MULTIPLE`。
 - `DELETE /api/exam/questions/[id]`：从草稿试卷移除题目。
 - `POST /api/exam/papers/[id]/publish`：发布全部题目已就绪的试卷。
 - `POST /api/exam/attempts`：为已发布试卷创建一次考试，后端随机题序。
 - `GET /api/exam/attempts/[id]`：读取考试或结果。
-- `POST /api/exam/attempts/[id]/submit`：提交答案并保存评分。
+- `POST /api/exam/attempts/[id]/submit`：提交答案并保存评分；多选答案可传字符串数组，后端会按选项顺序规范化后比较。
 
 `POST /api/import`
 

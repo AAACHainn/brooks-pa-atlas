@@ -16,8 +16,10 @@ export const examOptionsSchema = z
   .max(8);
 
 export const maskRectsSchema = z.array(maskRectSchema).max(20);
+export const examQuestionTypeSchema = z.enum(["SINGLE", "MULTIPLE"]);
 
 export type ExamMaskRect = z.infer<typeof maskRectSchema>;
+export type ExamQuestionType = z.infer<typeof examQuestionTypeSchema>;
 
 function parseJson<T>(value: string | null | undefined, schema: z.ZodType<T>, fallback: T) {
   if (!value) {
@@ -47,7 +49,55 @@ export function normalizeMaskRects(value: unknown) {
   return maskRectsSchema.parse(value);
 }
 
+export function normalizeQuestionType(value: unknown): ExamQuestionType {
+  return examQuestionTypeSchema.catch("SINGLE").parse(value);
+}
+
+function uniqueOptionsInOrder(values: string[], options: string[]) {
+  const selected = new Set(values.map((value) => value.trim()).filter(Boolean));
+  return options.filter((option) => selected.has(option));
+}
+
+export function parseAnswerOptions(value: string | null | undefined, options: string[]) {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return uniqueOptionsInOrder(
+        parsed.filter((item): item is string => typeof item === "string"),
+        options,
+      );
+    }
+  } catch {
+    // Legacy single-answer records are stored as plain strings.
+  }
+
+  return options.includes(value) ? [value] : [];
+}
+
+export function normalizeAnswerOptions(value: unknown, options: string[], questionType: ExamQuestionType) {
+  const values = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : typeof value === "string"
+      ? [value]
+      : [];
+  const selected = uniqueOptionsInOrder(values, options);
+  return questionType === "SINGLE" ? selected.slice(0, 1) : selected;
+}
+
+export function stringifyAnswerOptions(values: string[], questionType: ExamQuestionType) {
+  return questionType === "SINGLE" ? (values[0] ?? null) : JSON.stringify(values);
+}
+
+export function answersMatch(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export function questionStatus(input: {
+  questionType?: string | null | undefined;
   prompt: string | null | undefined;
   options: string[];
   correctOption: string | null | undefined;
@@ -55,12 +105,14 @@ export function questionStatus(input: {
   maskRects: ExamMaskRect[];
 }) {
   const prompt = input.prompt?.trim() ?? "";
-  const correctOption = input.correctOption?.trim() ?? "";
+  const questionType = normalizeQuestionType(input.questionType);
+  const correctOptions = parseAnswerOptions(input.correctOption, input.options);
+  const correctAnswerReady =
+    questionType === "MULTIPLE" ? correctOptions.length >= 2 : correctOptions.length === 1;
 
   return prompt &&
     input.options.length >= 2 &&
-    correctOption &&
-    input.options.includes(correctOption) &&
+    correctAnswerReady &&
     input.maskRects.length > 0
     ? "READY"
     : "DRAFT";
@@ -81,6 +133,7 @@ export function serializeExamQuestion(question: {
   id: string;
   paperId: string;
   chartImageId: string;
+  questionType: string;
   prompt: string;
   optionsJson: string;
   correctOption: string | null;
@@ -102,7 +155,10 @@ export function serializeExamQuestion(question: {
 }) {
   const options = parseExamOptions(question.optionsJson);
   const maskRects = parseMaskRects(question.maskRectsJson);
+  const questionType = normalizeQuestionType(question.questionType);
+  const correctOptions = parseAnswerOptions(question.correctOption, options);
   const status = questionStatus({
+    questionType,
     prompt: question.prompt,
     options,
     correctOption: question.correctOption,
@@ -114,9 +170,11 @@ export function serializeExamQuestion(question: {
     id: question.id,
     paperId: question.paperId,
     chartImageId: question.chartImageId,
+    questionType,
     prompt: question.prompt,
     options,
-    correctOption: question.correctOption,
+    correctOption: questionType === "SINGLE" ? (correctOptions[0] ?? null) : null,
+    correctOptions,
     explanation: question.explanation,
     maskRects,
     status,
@@ -217,18 +275,21 @@ export function serializeExamAttempt(
       : null,
     answers: attempt.answers?.map((answer) => {
       const question = serializeExamQuestion(answer.question);
+      const userAnswers = parseAnswerOptions(answer.userAnswer, question.options);
 
       return {
         id: answer.id,
         questionId: answer.questionId,
         order: answer.order,
         userAnswer: answer.userAnswer,
+        userAnswers,
         isCorrect: options.revealAnswers ? answer.isCorrect : false,
         question: options.revealAnswers
           ? question
           : {
               ...question,
               correctOption: null,
+              correctOptions: [],
               explanation: "",
             },
       };

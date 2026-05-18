@@ -33,6 +33,7 @@ export async function POST(
     .filter(
       (question) =>
         questionStatus({
+          questionType: question.questionType,
           prompt: question.prompt,
           options: parseExamOptions(question.optionsJson),
           correctOption: question.correctOption,

@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
-import { serializeExamAttempt } from "@/lib/exam";
+import {
+  answersMatch,
+  normalizeAnswerOptions,
+  normalizeQuestionType,
+  parseAnswerOptions,
+  parseExamOptions,
+  serializeExamAttempt,
+  stringifyAnswerOptions,
+} from "@/lib/exam";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +20,7 @@ export async function POST(
 ) {
   const { id } = await context.params;
   const body = (await request.json().catch(() => ({}))) as {
-    answers?: Record<string, string | null | undefined>;
+    answers?: Record<string, string | string[] | null | undefined>;
   };
   const submittedAnswers = body.answers ?? {};
 
@@ -38,8 +46,16 @@ export async function POST(
 
   const attempt = await prisma.$transaction(async (tx) => {
     for (const answer of current.answers) {
-      const userAnswer = submittedAnswers[answer.questionId]?.trim() || null;
-      const isCorrect = Boolean(userAnswer && userAnswer === answer.question.correctOption);
+      const options = parseExamOptions(answer.question.optionsJson);
+      const questionType = normalizeQuestionType(answer.question.questionType);
+      const userOptions = normalizeAnswerOptions(
+        submittedAnswers[answer.questionId],
+        options,
+        questionType,
+      );
+      const correctOptions = parseAnswerOptions(answer.question.correctOption, options);
+      const userAnswer = userOptions.length > 0 ? stringifyAnswerOptions(userOptions, questionType) : null;
+      const isCorrect = userOptions.length > 0 && answersMatch(userOptions, correctOptions);
       if (isCorrect) {
         correctCount += 1;
       }

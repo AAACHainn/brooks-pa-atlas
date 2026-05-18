@@ -2,12 +2,16 @@ import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
 import {
+  normalizeAnswerOptions,
   normalizeExamOptions,
   normalizeMaskRects,
+  normalizeQuestionType,
   parseExamOptions,
+  parseAnswerOptions,
   parseMaskRects,
   questionStatus,
   serializeExamQuestion,
+  stringifyAnswerOptions,
 } from "@/lib/exam";
 
 export const runtime = "nodejs";
@@ -33,26 +37,34 @@ export async function PATCH(
   const body = (await request.json().catch(() => ({}))) as {
     prompt?: string;
     options?: unknown;
+    questionType?: unknown;
     correctOption?: string | null;
+    correctOptions?: unknown;
     explanation?: string;
     maskRects?: unknown;
     sortOrder?: number;
   };
   const options = body.options ? normalizeExamOptions(body.options) : parseExamOptions(current.optionsJson);
   const maskRects = body.maskRects ? normalizeMaskRects(body.maskRects) : parseMaskRects(current.maskRectsJson);
+  const questionType = normalizeQuestionType(body.questionType ?? current.questionType);
   const prompt = body.prompt ?? current.prompt;
-  const correctOption = body.correctOption === undefined ? current.correctOption : body.correctOption;
+  const correctOptions =
+    body.correctOptions !== undefined || body.correctOption !== undefined
+      ? normalizeAnswerOptions(body.correctOptions ?? body.correctOption, options, questionType)
+      : normalizeAnswerOptions(parseAnswerOptions(current.correctOption, options), options, questionType);
+  const correctOption = stringifyAnswerOptions(correctOptions, questionType);
   const explanation = body.explanation ?? current.explanation;
 
   const question = await prisma.examQuestion.update({
     where: { id },
     data: {
+      questionType,
       prompt,
       optionsJson: JSON.stringify(options),
-      correctOption: correctOption?.trim() || null,
+      correctOption,
       explanation,
       maskRectsJson: JSON.stringify(maskRects),
-      status: questionStatus({ prompt, options, correctOption, explanation, maskRects }),
+      status: questionStatus({ questionType, prompt, options, correctOption, explanation, maskRects }),
       sortOrder: Number.isFinite(body.sortOrder) ? Number(body.sortOrder) : current.sortOrder,
     },
     include: { image: { include: { indexNode: true } } },

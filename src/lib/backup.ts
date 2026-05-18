@@ -11,6 +11,7 @@ import { prisma } from "@/lib/db";
 import {
   maskRectsSchema,
   normalizeExamOptions,
+  normalizeQuestionType,
   parseExamOptions,
   parseMaskRects,
 } from "@/lib/exam";
@@ -23,6 +24,7 @@ const imageZipPrefix = "images/";
 const ocrStatusSchema = z.enum(["PENDING", "RUNNING", "COMPLETED", "FAILED", "SKIPPED"]);
 const examPaperStatusSchema = z.enum(["DRAFT", "PUBLISHED"]);
 const examQuestionStatusSchema = z.enum(["DRAFT", "READY"]);
+const examQuestionTypeSchema = z.enum(["SINGLE", "MULTIPLE"]);
 const examAttemptStatusSchema = z.enum(["IN_PROGRESS", "SUBMITTED"]);
 
 const backupIndexSchema = z.object({
@@ -58,6 +60,7 @@ const backupImageSchema = z.object({
 const backupExamQuestionSchema = z.object({
   id: z.string().optional(),
   imageHash: z.string().regex(/^[a-f0-9]{64}$/),
+  questionType: examQuestionTypeSchema.optional().default("SINGLE"),
   prompt: z.string(),
   options: z.array(z.string()),
   correctOption: z.string().nullable(),
@@ -541,6 +544,7 @@ export async function createBackupZip(options: BackupOptions = {}) {
           questions: paper.questions.map((question) => ({
             id: question.id,
             imageHash: question.image.hash,
+            questionType: question.questionType,
             prompt: question.prompt,
             options: parseExamOptions(question.optionsJson),
             correctOption: question.correctOption,
@@ -839,6 +843,7 @@ async function restoreBackupSource(
         const questionData = {
           paperId: restoredPaper.id,
           chartImageId,
+          questionType: normalizeQuestionType(question.questionType),
           prompt: question.prompt,
           optionsJson: JSON.stringify(normalizeExamOptions(question.options)),
           correctOption: question.correctOption,
@@ -852,6 +857,7 @@ async function restoreBackupSource(
           ? await prisma.examQuestion.update({
               where: { id: existingQuestion.id },
               data: {
+                questionType: questionData.questionType,
                 prompt: questionData.prompt,
                 optionsJson: questionData.optionsJson,
                 correctOption: questionData.correctOption,

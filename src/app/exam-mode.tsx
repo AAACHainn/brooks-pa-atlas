@@ -5,9 +5,12 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Copy,
+  Download,
   Eye,
   EyeOff,
   Loader2,
@@ -16,6 +19,7 @@ import {
   Search,
   Send,
   Trash2,
+  Upload,
   X,
   ZoomIn,
   ZoomOut,
@@ -120,6 +124,13 @@ type NoticeDialogState = {
   title: string;
   message: string;
   items: string[];
+  tone?: "success" | "warning";
+};
+
+type PaperMenuState = {
+  paper: ExamPaper;
+  x: number;
+  y: number;
 };
 
 const copy = {
@@ -134,6 +145,10 @@ const copy = {
     removeOption: "删除选项",
     savePaper: "保存试卷",
     deletePaper: "删除试卷",
+    copyPaper: "拷贝试卷",
+    createPaper: "创建新试卷",
+    importPaper: "导入试卷",
+    exportPaper: "导出试卷",
     publish: "发布",
     published: "已发布",
     draft: "草稿",
@@ -194,8 +209,13 @@ const copy = {
     duplicateImage: "这张图片已经在当前试卷中。",
     paperAlreadyPublished: "这套试卷已经发布。",
     attemptAlreadySubmitted: "这次考试已经提交。",
+    exportPublishedOnly: "只有已发布试卷可以导出。",
+    importMissingImages: "导入失败：当前图库缺少试卷引用的图片。",
+    importInvalid: "导入失败：试卷文件格式不正确。",
     questionDraftTitle: "题目仍是草稿",
     questionDraftMessage: "已保存，但发布前还需要补充：",
+    questionSavedTitle: "修改成功",
+    questionSavedMessage: "题目已保存。",
     missingPrompt: "题干",
     missingOptions: "至少 2 个选项",
     missingCorrect: "正确答案",
@@ -224,6 +244,10 @@ const copy = {
     removeOption: "Remove option",
     savePaper: "Save paper",
     deletePaper: "Delete paper",
+    copyPaper: "Copy paper",
+    createPaper: "Create paper",
+    importPaper: "Import paper",
+    exportPaper: "Export paper",
     publish: "Publish",
     published: "Published",
     draft: "Draft",
@@ -284,8 +308,13 @@ const copy = {
     duplicateImage: "This image is already in the paper.",
     paperAlreadyPublished: "This paper is already published.",
     attemptAlreadySubmitted: "This attempt has already been submitted.",
+    exportPublishedOnly: "Only published papers can be exported.",
+    importMissingImages: "Import failed: the current library is missing images referenced by this paper.",
+    importInvalid: "Import failed: invalid paper file.",
     questionDraftTitle: "Question is still a draft",
     questionDraftMessage: "Saved, but add these before publishing:",
+    questionSavedTitle: "Saved",
+    questionSavedMessage: "Question changes were saved.",
     missingPrompt: "Prompt",
     missingOptions: "At least 2 options",
     missingCorrect: "Correct answer",
@@ -401,6 +430,22 @@ function formatSelectedOptions(options: string[]) {
   return options.length > 0 ? options.join(" / ") : "-";
 }
 
+function questionFingerprint(question: ExamQuestion) {
+  return JSON.stringify({
+    questionType: question.questionType,
+    prompt: question.prompt,
+    options: normalizeOptions(question.options),
+    correctOptions: normalizeSelectedOptions(
+      normalizeOptions(question.options),
+      question.correctOptions,
+      question.questionType,
+    ),
+    explanation: question.explanation,
+    maskRects: question.maskRects,
+    sortOrder: question.sortOrder,
+  });
+}
+
 function missingQuestionFields(
   question: Pick<ExamQuestion, "correctOptions" | "maskRects" | "options" | "prompt" | "questionType">,
   labels: (typeof copy)["zh"],
@@ -441,6 +486,13 @@ function localizedErrorMessage(message: string | undefined, labels: (typeof copy
       return labels.attemptAlreadySubmitted;
     case "All questions must be ready before publishing.":
       return labels.publishFailed;
+    case "Only published papers can be exported.":
+      return labels.exportPublishedOnly;
+    case "Imported exam paper references missing images.":
+      return labels.importMissingImages;
+    case "Invalid exam paper file.":
+    case "Exam paper file is required.":
+      return labels.importInvalid;
     default:
       return message || labels.loadFailed;
   }
@@ -465,6 +517,16 @@ function optionLabel(index: number) {
 
 function percent(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+function fileNameFromContentDisposition(value: string | null) {
+  const encodedMatch = value?.match(/filename\*=UTF-8''([^;]+)/);
+  if (encodedMatch?.[1]) {
+    return decodeURIComponent(encodedMatch[1]);
+  }
+
+  const match = value?.match(/filename="([^"]+)"/);
+  return match?.[1] ?? null;
 }
 
 function formatDateTime(value: string | null, locale: Locale) {
@@ -930,6 +992,10 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
   const [error, setError] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [noticeDialog, setNoticeDialog] = useState<NoticeDialogState | null>(null);
+  const [paperMenu, setPaperMenu] = useState<PaperMenuState | null>(null);
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [savedQuestionFingerprints, setSavedQuestionFingerprints] = useState<Record<string, string>>({});
+  const importPaperInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedPaperId = selectedPaper?.id ?? null;
   const selectedQuestion = selectedPaper?.questions?.find((question) => question.id === selectedQuestionId) ?? null;
@@ -968,6 +1034,11 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
         description: result.paper.description ?? "",
         defaultOptions: result.paper.defaultOptions,
       });
+      setSavedQuestionFingerprints(
+        Object.fromEntries(
+          result.paper.questions?.map((question) => [question.id, questionFingerprint(question)]) ?? [],
+        ),
+      );
     },
     [t.loadFailed],
   );
@@ -1067,6 +1138,56 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
   }, [visibleResultAnswers.length]);
 
   useEffect(() => {
+    if (!paperMenu) {
+      return;
+    }
+
+    function closeMenu() {
+      setPaperMenu(null);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeMenu();
+      }
+    }
+
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [paperMenu]);
+
+  useEffect(() => {
+    if (!createMenuOpen) {
+      return;
+    }
+
+    function closeMenu() {
+      setCreateMenuOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeMenu();
+      }
+    }
+
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [createMenuOpen]);
+
+  useEffect(() => {
     if (!attempt || visibleResultAnswers.length < 2) {
       return;
     }
@@ -1141,6 +1262,93 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     }
   }
 
+  async function copyPaper(paper: ExamPaper) {
+    setPaperMenu(null);
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/exam/papers/${paper.id}/copy`, {
+        method: "POST",
+      });
+      const result = await readJsonResult<{ paper?: ExamPaper }>(response);
+      if (!response.ok || !result.paper) {
+        setNoticeDialog({
+          title: t.errorTitle,
+          message: localizedErrorMessage(result.error, t),
+          items: [],
+        });
+        return;
+      }
+
+      await loadPapers();
+      await loadPaper(result.paper.id);
+      setSelectedQuestionId(result.paper.questions?.[0]?.id ?? null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function exportPaper(paper: ExamPaper) {
+    setPaperMenu(null);
+    const response = await fetch(`/api/exam/papers/${paper.id}/export`, { cache: "no-store" });
+    if (!response.ok) {
+      const result = await readJsonResult<{ error?: string }>(response);
+      setNoticeDialog({
+        title: t.errorTitle,
+        message: localizedErrorMessage(result.error, t),
+        items: [],
+      });
+      return;
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download =
+      fileNameFromContentDisposition(response.headers.get("Content-Disposition")) ||
+      `${paper.title}.exam-paper.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importPaper(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+    setLoading(true);
+    try {
+      const response = await fetch("/api/exam/papers/import", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await readJsonResult<{
+        paper?: ExamPaper;
+        missingImages?: Array<{ imageHash: string; imageOriginalName: string; indexPath: string | null }>;
+      }>(response);
+      if (!response.ok || !result.paper) {
+        setNoticeDialog({
+          title: t.errorTitle,
+          message: localizedErrorMessage(result.error, t),
+          items:
+            result.missingImages
+              ?.slice(0, 12)
+              .map(
+                (image) =>
+                  `${image.imageOriginalName} / ${image.indexPath ?? image.imageHash.slice(0, 12)}`,
+              ) ?? [],
+        });
+        return;
+      }
+
+      await loadPapers();
+      await loadPaper(result.paper.id);
+      setSelectedQuestionId(result.paper.questions?.[0]?.id ?? null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function addImage(image: ExamImage) {
     if (!selectedPaper || isLocked) {
       return;
@@ -1173,6 +1381,8 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     const options = normalizeOptions(question.options);
     const correctOptions = normalizeSelectedOptions(options, question.correctOptions, question.questionType);
     const missing = missingQuestionFields({ ...question, options, correctOptions }, t);
+    const hadChanges = savedQuestionFingerprints[question.id] !== questionFingerprint(question);
+    const wasReady = question.status === "READY";
     const response = await fetch(`/api/exam/questions/${question.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -1206,6 +1416,13 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
         title: t.questionDraftTitle,
         message: t.questionDraftMessage,
         items: missing,
+      });
+    } else if (wasReady && hadChanges) {
+      setNoticeDialog({
+        title: t.questionSavedTitle,
+        message: t.questionSavedMessage,
+        items: [],
+        tone: "success",
       });
     }
   }
@@ -1597,15 +1814,57 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
               <h2 className="text-base font-semibold">{t.title}</h2>
               <p className="mt-1 text-xs leading-5 text-zinc-500">{t.subtitle}</p>
             </div>
-            <button
-              type="button"
-              onClick={() => void createPaper()}
-              disabled={loading}
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-zinc-950 text-white hover:bg-zinc-800 disabled:opacity-60"
-              title={t.newPaper}
-            >
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            </button>
+            <div className="relative shrink-0" onClick={(event) => event.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setCreateMenuOpen((open) => !open)}
+                disabled={loading}
+                className="inline-flex h-9 items-center gap-1 rounded-md bg-zinc-950 px-2.5 text-white hover:bg-zinc-800 disabled:opacity-60"
+                title={t.newPaper}
+              >
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                <ChevronDown className="h-3.5 w-3.5" />
+              </button>
+              {createMenuOpen ? (
+                <div className="absolute right-0 top-11 z-40 w-44 rounded-md border border-zinc-200 bg-white p-1 shadow-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreateMenuOpen(false);
+                      void createPaper();
+                    }}
+                    className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-sm text-zinc-700 hover:bg-zinc-50"
+                  >
+                    <Plus className="h-4 w-4" />
+                    {t.createPaper}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreateMenuOpen(false);
+                      importPaperInputRef.current?.click();
+                    }}
+                    className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-sm text-zinc-700 hover:bg-zinc-50"
+                  >
+                    <Upload className="h-4 w-4" />
+                    {t.importPaper}
+                  </button>
+                </div>
+              ) : null}
+              <input
+                ref={importPaperInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (file) {
+                    void importPaper(file);
+                  }
+                }}
+              />
+            </div>
           </div>
         </div>
         <div className="max-h-[calc(100vh-190px)] overflow-auto p-2">
@@ -1617,7 +1876,12 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
             <button
               type="button"
               key={paper.id}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setPaperMenu({ paper, x: event.clientX, y: event.clientY });
+              }}
               onClick={() => {
+                setPaperMenu(null);
                 setAttempt(null);
                 setIsMaskHidden(false);
                 setSelectedQuestionId(null);
@@ -1937,6 +2201,33 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
         </div>
       </aside>
     </div>
+    {paperMenu ? (
+      <div
+        className="fixed z-50 w-44 rounded-md border border-zinc-200 bg-white p-1 shadow-xl"
+        style={{ left: paperMenu.x, top: paperMenu.y }}
+        onClick={(event) => event.stopPropagation()}
+        onContextMenu={(event) => event.preventDefault()}
+      >
+        <button
+          type="button"
+          onClick={() => void copyPaper(paperMenu.paper)}
+          className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-sm text-zinc-700 hover:bg-zinc-50"
+        >
+          <Copy className="h-4 w-4" />
+          {t.copyPaper}
+        </button>
+        {paperMenu.paper.status === "PUBLISHED" ? (
+          <button
+            type="button"
+            onClick={() => void exportPaper(paperMenu.paper)}
+            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-sm text-zinc-700 hover:bg-zinc-50"
+          >
+            <Download className="h-4 w-4" />
+            {t.exportPaper}
+          </button>
+        ) : null}
+      </div>
+    ) : null}
     {confirmDialog ? (
       <div
         className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
@@ -2012,22 +2303,38 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
           onClick={(event) => event.stopPropagation()}
         >
           <div className="flex items-start gap-3">
-            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-amber-200 bg-amber-50 text-amber-700">
-              <AlertTriangle className="h-5 w-5" />
+            <div
+              className={`grid h-10 w-10 shrink-0 place-items-center rounded-md border ${
+                noticeDialog.tone === "success"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : "border-amber-200 bg-amber-50 text-amber-700"
+              }`}
+            >
+              {noticeDialog.tone === "success" ? (
+                <CheckCircle2 className="h-5 w-5" />
+              ) : (
+                <AlertTriangle className="h-5 w-5" />
+              )}
             </div>
             <div className="min-w-0 flex-1">
               <h3 className="text-base font-semibold text-zinc-950">{noticeDialog.title}</h3>
               <p className="mt-2 text-sm leading-6 text-zinc-600">{noticeDialog.message}</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {noticeDialog.items.map((item) => (
-                  <span
-                    key={item}
-                    className="inline-flex h-7 items-center rounded-md border border-amber-200 bg-amber-50 px-2 text-xs font-medium text-amber-800"
-                  >
-                    {item}
-                  </span>
-                ))}
-              </div>
+              {noticeDialog.items.length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {noticeDialog.items.map((item) => (
+                    <span
+                      key={item}
+                      className={`inline-flex h-7 items-center rounded-md border px-2 text-xs font-medium ${
+                        noticeDialog.tone === "success"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                          : "border-amber-200 bg-amber-50 text-amber-800"
+                      }`}
+                    >
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="mt-5 flex justify-end">

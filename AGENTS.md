@@ -108,6 +108,10 @@ npm run db:init
 - `src/app/exam-mode.tsx`：考试模式客户端组件，包含试卷管理、制题、遮罩、考试和结果复盘。
 - `src/app/api/atlas/route.ts`：工作台聚合查询接口。
 - `src/app/api/exam/**/route.ts`：考试模式 API，负责试卷、题目、发布、考试记录和提交评分。
+- `src/app/api/exam/papers/[id]/copy/route.ts`：拷贝试卷为新草稿，只复制试题，不复制考试记录。
+- `src/app/api/exam/papers/[id]/export/route.ts`：导出已发布试卷为轻量 JSON，只保存图片 hash 等索引，不包含图片文件。
+- `src/app/api/exam/papers/import/route.ts`：从轻量 JSON 导入试卷为草稿，按图片 hash 映射当前图库图片。
+- `src/lib/exam-paper-transfer.ts`：试卷导出/导入 JSON manifest schema 和序列化逻辑。
 - `src/app/api/backups/export/route.ts`：导出跨平台备份 zip。
 - `src/app/api/backups/restore/route.ts`：导入备份 zip 并以合并覆盖模式恢复。
 - `src/app/api/import/route.ts`：分块批量导入接口。
@@ -231,10 +235,14 @@ npm run db:init
 考试模式特性：
 
 - 用户可以创建试卷草稿，并从现有图库分页搜索图片加入试卷。
+- 新建试卷按钮是下拉菜单，可选择创建新试卷或导入试卷 JSON。
+- 试卷列表支持右键菜单拷贝试卷；拷贝结果是可继续编辑的草稿，只复制试题，不复制历史考试记录。
+- 已发布试卷右键菜单支持导出试卷；导出的 JSON 不包含图片文件，只包含每题引用的图片 hash、原文件名和索引路径。导入时当前图库必须已有对应 hash 的图片。
 - 每张图片对应一道选择题；题目可设为单选题或多选题，并保存题干、选项、正确答案、可选解析和遮罩坐标。
 - 遮罩支持多个不透明矩形，保存为相对图片显示区域的 `0..1` 坐标和颜色 JSON，不生成新图片；默认颜色为黑色，已绘制矩形可选中、拖动和拉角缩放。
 - 试卷级默认选项模板会用于新题；单题可以自定义选项。
 - 发布前所有题目必须处于 `READY`；题干、选项、正确答案和遮罩必填，解析可不填；单选题需要 1 个正确答案，多选题需要至少 2 个正确答案；发布后试卷和题目内容锁定。
+- 已就绪题目修改后保存，如果内容确有变动且保存成功，会弹出“修改成功”提示；保存后变成草稿时仍提示缺失字段。
 - 开始考试时后端随机题目顺序，选项顺序固定。
 - 考试和结果复盘使用紧凑的左右翻页单题视图，支持按钮和键盘 `ArrowLeft` / `ArrowRight` 切换题目；作答图片支持缩放，放大后可拖拽查看局部，底部把手可调整看图窗口高度。
 - 提交后保存本次考试记录，包含每题答案、是否正确、作答耗时、正确数、总题数和正确率；多选题按选项顺序规范化后评分，点击顺序不影响判分。
@@ -396,9 +404,12 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 - `GET /api/exam/papers`：列出试卷。
 - `POST /api/exam/papers`：创建试卷草稿。
+- `POST /api/exam/papers/import`：从导出的轻量 JSON 创建草稿试卷；只按图片 hash 复用当前图库图片，不导入图片文件。
 - `GET /api/exam/papers/[id]`：读取试卷详情和题目。
 - `PATCH /api/exam/papers/[id]`：更新草稿试卷。
 - `DELETE /api/exam/papers/[id]`：删除草稿或已发布试卷；已发布试卷会一并删除相关考试记录和答案。
+- `POST /api/exam/papers/[id]/copy`：把试卷拷贝为新草稿，复制题目、题型、选项、正确答案、解析和遮罩，不复制考试记录。
+- `GET /api/exam/papers/[id]/export`：导出已发布试卷 JSON；只保存图片索引，不包含图片文件或考试记录。
 - `POST /api/exam/papers/[id]/questions`：把现有图片加入草稿试卷。
 - `GET /api/exam/papers/[id]/attempts`：列出该试卷最近考试记录。
 - `PATCH /api/exam/questions/[id]`：保存题目草稿、题型、选项、答案、可选解析和遮罩；`questionType` 支持 `SINGLE` 和 `MULTIPLE`。

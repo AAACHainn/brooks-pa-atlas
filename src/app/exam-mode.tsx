@@ -24,6 +24,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
+import type { DragEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Locale = "zh" | "en";
@@ -147,7 +148,9 @@ const copy = {
     draft: "草稿",
     questions: "题目",
     attempts: "考试记录",
-    addImage: "加入试卷",
+    addImage: "拖入试卷",
+    dragImageToPaper: "拖到左侧加入试卷",
+    dropImageToPaper: "松开后加入试卷",
     imageSearch: "搜索图片",
     allIndexes: "全部索引",
     previousPage: "上一页",
@@ -194,7 +197,7 @@ const copy = {
     viewAttempt: "查看",
     duration: "用时",
     submittedAt: "提交时间",
-    noQuestions: "先从右侧图片库选择图片加入试卷。",
+    noQuestions: "把右侧图片拖到左侧区域加入试卷。",
     locked: "发布后内容已锁定。",
     loadFailed: "加载失败，请稍后重试。",
     publishFailed: "发布失败：请确认每道题都有题干、选项、正确答案和遮罩。",
@@ -246,7 +249,9 @@ const copy = {
     draft: "Draft",
     questions: "Questions",
     attempts: "Attempts",
-    addImage: "Add to paper",
+    addImage: "Drag to paper",
+    dragImageToPaper: "Drag to the left area to add",
+    dropImageToPaper: "Release to add to paper",
     imageSearch: "Search images",
     allIndexes: "All indexes",
     previousPage: "Previous",
@@ -293,7 +298,7 @@ const copy = {
     viewAttempt: "View",
     duration: "Duration",
     submittedAt: "Submitted",
-    noQuestions: "Choose images from the library on the right.",
+    noQuestions: "Drag images from the right library into the left area.",
     locked: "Published content is locked.",
     loadFailed: "Load failed. Please try again.",
     publishFailed: "Publish failed. Make every question ready first.",
@@ -332,6 +337,7 @@ const defaultOptions = ["上涨延续", "下跌延续", "震荡整理", "反转�
 const defaultMaskColor = "#000000";
 const minMaskSize = 0.015;
 const defaultExamViewerHeight = 520;
+const examImageDragType = "application/x-brooks-exam-image";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -999,12 +1005,15 @@ export default function ExamMode({
   const [noticeDialog, setNoticeDialog] = useState<NoticeDialogState | null>(null);
   const [paperMenu, setPaperMenu] = useState<PaperMenuState | null>(null);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [draggedImageId, setDraggedImageId] = useState<string | null>(null);
+  const [isDropTargetActive, setIsDropTargetActive] = useState(false);
   const [savedQuestionFingerprints, setSavedQuestionFingerprints] = useState<Record<string, string>>({});
   const importPaperInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedPaperId = selectedPaper?.id ?? null;
   const selectedQuestion = selectedPaper?.questions?.find((question) => question.id === selectedQuestionId) ?? null;
   const isLocked = selectedPaper?.status === "PUBLISHED";
+  const canDropImage = Boolean(selectedPaper && !isLocked);
   const imagePage = imagePageState.indexId === selectedIndexId ? imagePageState.page : 1;
   const imageTotalPages = Math.max(1, Math.ceil(imageTotal / 24));
   const visibleResultAnswers = useMemo(
@@ -1391,6 +1400,72 @@ export default function ExamMode({
     setSelectedQuestionId(result.question.id);
   }
 
+  function hasExamImageDrag(event: DragEvent<HTMLElement>) {
+    return Array.from(event.dataTransfer.types).includes(examImageDragType);
+  }
+
+  function startImageDrag(event: DragEvent<HTMLElement>, image: ExamImage) {
+    if (!canDropImage) {
+      event.preventDefault();
+      return;
+    }
+
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(examImageDragType, image.id);
+    event.dataTransfer.setData("text/plain", image.id);
+    setDraggedImageId(image.id);
+  }
+
+  function finishImageDrag() {
+    setDraggedImageId(null);
+    setIsDropTargetActive(false);
+  }
+
+  function handleImageDropTargetDragEnter(event: DragEvent<HTMLElement>) {
+    if (!canDropImage || !hasExamImageDrag(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    setIsDropTargetActive(true);
+  }
+
+  function handleImageDropTargetDragOver(event: DragEvent<HTMLElement>) {
+    if (!canDropImage || !hasExamImageDrag(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsDropTargetActive(true);
+  }
+
+  function handleImageDropTargetDragLeave(event: DragEvent<HTMLElement>) {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+
+    setIsDropTargetActive(false);
+  }
+
+  async function handleImageDrop(event: DragEvent<HTMLElement>) {
+    if (!canDropImage || !hasExamImageDrag(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    setIsDropTargetActive(false);
+    const imageId = event.dataTransfer.getData(examImageDragType);
+    const image = images.find((candidate) => candidate.id === imageId);
+    if (!image) {
+      return;
+    }
+
+    await addImage(image);
+    setDraggedImageId(null);
+  }
+
   async function saveQuestion(question: ExamQuestion) {
     if (isLocked) {
       return;
@@ -1638,6 +1713,15 @@ export default function ExamMode({
     });
   }
 
+  const imageDropTargetHandlers = {
+    onDragEnter: handleImageDropTargetDragEnter,
+    onDragOver: handleImageDropTargetDragOver,
+    onDragLeave: handleImageDropTargetDragLeave,
+    onDrop: (event: DragEvent<HTMLElement>) => void handleImageDrop(event),
+  };
+  const imageDropTargetClass =
+    canDropImage && isDropTargetActive ? "ring-2 ring-cyan-500 ring-offset-2 ring-offset-zinc-50" : "";
+
   if (attempt) {
     return (
       <div className="space-y-3">
@@ -1827,7 +1911,10 @@ export default function ExamMode({
   return (
     <>
     <div className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
-      <aside className="rounded-md border border-zinc-200 bg-white">
+      <aside
+        {...imageDropTargetHandlers}
+        className={`rounded-md border border-zinc-200 bg-white transition ${imageDropTargetClass}`}
+      >
         <div className="border-b border-zinc-200 p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -1931,7 +2018,10 @@ export default function ExamMode({
         </div>
       </aside>
 
-      <section className="min-w-0 space-y-4">
+      <section
+        {...imageDropTargetHandlers}
+        className={`min-w-0 space-y-4 rounded-md transition ${imageDropTargetClass}`}
+      >
         {selectedPaper ? (
           <>
             <div className="rounded-md border border-zinc-200 bg-white p-4">
@@ -2157,12 +2247,19 @@ export default function ExamMode({
         <div className="max-h-[calc(100vh-250px)] overflow-auto p-3">
           <div className="grid grid-cols-2 gap-3">
             {images.map((image) => (
-              <button
-                type="button"
+              <div
+                role="listitem"
                 key={image.id}
-                onClick={() => void addImage(image)}
-                disabled={!selectedPaper || isLocked}
-                className="overflow-hidden rounded-md border border-zinc-200 bg-white text-left transition hover:border-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                draggable={canDropImage}
+                onDragStart={(event) => startImageDrag(event, image)}
+                onDragEnd={finishImageDrag}
+                aria-label={`${t.dragImageToPaper}: ${image.title ?? image.originalName}`}
+                title={t.dragImageToPaper}
+                className={`overflow-hidden rounded-md border bg-white text-left transition ${
+                  canDropImage
+                    ? "cursor-grab border-zinc-200 hover:border-zinc-950 active:cursor-grabbing"
+                    : "cursor-not-allowed border-zinc-200 opacity-50"
+                } ${draggedImageId === image.id ? "border-cyan-500 ring-2 ring-cyan-200" : ""}`}
               >
                 <div className="aspect-[4/3] bg-zinc-100">
                   <img
@@ -2170,13 +2267,16 @@ export default function ExamMode({
                     alt={image.title ?? image.originalName}
                     className="h-full w-full object-contain"
                     loading="lazy"
+                    draggable={false}
                   />
                 </div>
                 <div className="p-2">
                   <p className="truncate text-xs font-semibold">{image.title ?? image.originalName}</p>
-                  <p className="mt-1 truncate text-[11px] text-zinc-500">{t.addImage}</p>
+                  <p className="mt-1 truncate text-[11px] text-zinc-500">
+                    {isDropTargetActive && draggedImageId === image.id ? t.dropImageToPaper : t.addImage}
+                  </p>
                 </div>
-              </button>
+              </div>
             ))}
           </div>
         </div>

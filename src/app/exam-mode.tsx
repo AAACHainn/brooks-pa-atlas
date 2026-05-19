@@ -152,6 +152,7 @@ const copy = {
     dragImageToPaper: "拖到左侧加入试卷",
     dropImageToPaper: "松开后加入试卷",
     imageSearch: "搜索图片",
+    examImage: "考试图片",
     allIndexes: "全部索引",
     previousPage: "上一页",
     nextPage: "下一页",
@@ -253,6 +254,7 @@ const copy = {
     dragImageToPaper: "Drag to the left area to add",
     dropImageToPaper: "Release to add to paper",
     imageSearch: "Search images",
+    examImage: "Exam image",
     allIndexes: "All indexes",
     previousPage: "Previous",
     nextPage: "Next",
@@ -645,6 +647,7 @@ function MaskedImage({
   selectedIndex = -1,
   zoom = 100,
   zoomLabels,
+  altText,
   onSelect,
   onChange,
   onZoomChange,
@@ -657,6 +660,7 @@ function MaskedImage({
   selectedIndex?: number;
   zoom?: number;
   zoomLabels?: { zoomIn: string; zoomOut: string; resetZoom: string; resizeImageWindow: string };
+  altText?: string;
   onSelect?: (index: number) => void;
   onChange?: (rects: MaskRect[]) => void;
   onZoomChange?: (zoom: number) => void;
@@ -912,7 +916,7 @@ function MaskedImage({
         >
           <img
             src={`/api/images/${image.id}/file`}
-            alt={image.title ?? image.originalName}
+            alt={altText ?? image.title ?? image.originalName}
             className={
               zoomable
                 ? "block h-auto w-full max-w-none select-none"
@@ -1002,6 +1006,7 @@ export default function ExamMode({
   const [wrongOnly, setWrongOnly] = useState(false);
   const [isMaskHidden, setIsMaskHidden] = useState(false);
   const [attemptImageZoom, setAttemptImageZoom] = useState(100);
+  const [editorImageZoom, setEditorImageZoom] = useState(100);
   const [error, setError] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [noticeDialog, setNoticeDialog] = useState<NoticeDialogState | null>(null);
@@ -1754,13 +1759,17 @@ export default function ExamMode({
                 <span className="min-w-0 truncate text-sm text-zinc-700" title={currentAttemptAnswer.question.prompt}>
                   {currentAttemptAnswer.question.prompt}
                 </span>
-                <span className="shrink-0 text-xs text-zinc-300">/</span>
-                <span
-                  className="max-w-40 shrink-0 truncate text-xs text-zinc-500"
-                  title={currentAttemptAnswer.question.image.originalName}
-                >
-                  {currentAttemptAnswer.question.image.originalName}
-                </span>
+                {attempt.status === "SUBMITTED" ? (
+                  <>
+                    <span className="shrink-0 text-xs text-zinc-300">/</span>
+                    <span
+                      className="max-w-40 shrink-0 truncate text-xs text-zinc-500"
+                      title={currentAttemptAnswer.question.image.originalName}
+                    >
+                      {currentAttemptAnswer.question.image.originalName}
+                    </span>
+                  </>
+                ) : null}
               </div>
               <div className="flex shrink-0 items-center justify-end gap-2">
                 {attempt.status === "SUBMITTED" ? (
@@ -1839,6 +1848,7 @@ export default function ExamMode({
               rects={attempt.status === "SUBMITTED" && isMaskHidden ? [] : currentAttemptAnswer.question.maskRects}
               zoomable
               zoom={attemptImageZoom}
+              altText={attempt.status === "IN_PROGRESS" ? t.examImage : undefined}
               onZoomChange={setAttemptImageZoom}
               zoomLabels={{
                 zoomIn: t.zoomIn,
@@ -2213,9 +2223,11 @@ export default function ExamMode({
                   question={selectedQuestion}
                   locked={isLocked}
                   t={t}
+                  imageZoom={editorImageZoom}
                   onPatch={(patch) => patchQuestion(selectedQuestion.id, patch)}
                   onSave={() => void saveQuestion(selectedQuestion)}
                   onRemove={() => void removeQuestion(selectedQuestion.id)}
+                  onImageZoomChange={setEditorImageZoom}
                 />
               ) : (
                 <div className="grid min-h-80 place-items-center rounded-md border border-dashed border-zinc-300 bg-white text-sm text-zinc-500">
@@ -2463,16 +2475,20 @@ function QuestionEditor({
   question,
   locked,
   t,
+  imageZoom,
   onPatch,
   onSave,
   onRemove,
+  onImageZoomChange,
 }: {
   question: ExamQuestion;
   locked: boolean;
   t: (typeof copy)["zh"];
+  imageZoom: number;
   onPatch: (patch: Partial<ExamQuestion>) => void;
   onSave: () => void;
   onRemove: () => void;
+  onImageZoomChange: (zoom: number) => void;
 }) {
   const [selectedMaskIndex, setSelectedMaskIndex] = useState(Math.max(0, question.maskRects.length - 1));
   const activeMaskIndex =
@@ -2512,9 +2528,18 @@ function QuestionEditor({
         image={question.image}
         rects={question.maskRects}
         editable={!locked}
+        zoomable
+        zoom={imageZoom}
+        zoomLabels={{
+          zoomIn: t.zoomIn,
+          zoomOut: t.zoomOut,
+          resetZoom: t.resetZoom,
+          resizeImageWindow: t.resizeImageWindow,
+        }}
         color={activeMaskColor}
         selectedIndex={activeMaskIndex}
         onSelect={setSelectedMaskIndex}
+        onZoomChange={onImageZoomChange}
         onChange={(maskRects) => onPatch({ maskRects })}
       />
       {!locked ? (

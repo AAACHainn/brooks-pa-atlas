@@ -112,7 +112,8 @@ type ExamAttemptSummary = Omit<ExamAttempt, "answers"> & {
 
 type ConfirmDialogState =
   | { kind: "publish"; title: string; message: string; confirmLabel: string }
-  | { kind: "delete-paper"; title: string; message: string; confirmLabel: string };
+  | { kind: "delete-paper"; title: string; message: string; confirmLabel: string }
+  | { kind: "submit-exam"; title: string; message: string; confirmLabel: string };
 
 type NoticeDialogState = {
   title: string;
@@ -181,6 +182,9 @@ const copy = {
     startExam: "开始测试",
     continueExam: "继续",
     submitExam: "提交答案",
+    submitExamConfirmTitle: "提交这次考试？",
+    submitExamConfirmMessage: "提交后会保存答案并进入结果复盘。",
+    submitExamWithUnansweredMessage: "还有 {count} 题没有作答。仍然可以提交，提交后未作答题会按空答案保存。",
     result: "考试结果",
     accuracy: "正确率",
     correctCount: "正确题数",
@@ -283,6 +287,10 @@ const copy = {
     startExam: "Start exam",
     continueExam: "Continue",
     submitExam: "Submit",
+    submitExamConfirmTitle: "Submit this exam?",
+    submitExamConfirmMessage: "After submitting, your answers are saved and the review view opens.",
+    submitExamWithUnansweredMessage:
+      "{count} questions are still unanswered. You can submit anyway; unanswered questions will be saved as blank answers.",
     result: "Result",
     accuracy: "Accuracy",
     correctCount: "Correct",
@@ -1232,8 +1240,10 @@ export default function ExamMode({
       }
 
       const target = event.target;
+      const isChoiceInput =
+        target instanceof HTMLInputElement && (target.type === "radio" || target.type === "checkbox");
       const isEditing =
-        target instanceof HTMLInputElement ||
+        (target instanceof HTMLInputElement && !isChoiceInput) ||
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement ||
         (target instanceof HTMLElement && target.isContentEditable);
@@ -1624,6 +1634,11 @@ export default function ExamMode({
 
     if (action === "delete-paper") {
       await deletePaper();
+      return;
+    }
+
+    if (action === "submit-exam") {
+      await submitExam();
     }
   }
 
@@ -1675,6 +1690,26 @@ export default function ExamMode({
     setAttempt(result.attempt);
     await loadPapers();
     await loadAttempts(result.attempt.paperId);
+  }
+
+  function requestSubmitExam() {
+    if (!attempt || attempt.status !== "IN_PROGRESS") {
+      return;
+    }
+
+    const unansweredCount = attempt.answers.filter(
+      (answer) => (answers[answer.questionId] ?? []).length === 0,
+    ).length;
+
+    setConfirmDialog({
+      kind: "submit-exam",
+      title: t.submitExamConfirmTitle,
+      message:
+        unansweredCount > 0
+          ? t.submitExamWithUnansweredMessage.replace("{count}", String(unansweredCount))
+          : t.submitExamConfirmMessage,
+      confirmLabel: t.submitExam,
+    });
   }
 
   function selectAdjacentAttemptAnswer(direction: -1 | 1) {
@@ -1729,11 +1764,139 @@ export default function ExamMode({
   const imageDropTargetClass =
     canDropImage && isDropTargetActive ? "ring-2 ring-cyan-500 ring-offset-2 ring-offset-zinc-50" : "";
 
+  const dialogPaperTitle = selectedPaper?.title ?? attempt?.paper?.title ?? null;
+  const dialogOverlays = (
+    <>
+      {confirmDialog ? (
+          <div
+            className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => setConfirmDialog(null)}
+          >
+            <div
+              className="w-full max-w-md rounded-md border border-zinc-200 bg-white p-5 shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start gap-3">
+                <div
+                  className={`grid h-10 w-10 shrink-0 place-items-center rounded-md border ${
+                    confirmDialog.kind === "delete-paper"
+                      ? "border-rose-200 bg-rose-50 text-rose-700"
+                      : "border-cyan-200 bg-cyan-50 text-cyan-700"
+                  }`}
+                >
+                  {confirmDialog.kind === "delete-paper" ? (
+                    <Trash2 className="h-5 w-5" />
+                  ) : (
+                    <Send className="h-5 w-5" />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-base font-semibold text-zinc-950">{confirmDialog.title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-zinc-600">{confirmDialog.message}</p>
+                  {dialogPaperTitle ? (
+                    <p className="mt-3 truncate rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+                      {dialogPaperTitle}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDialog(null)}
+                  className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+                >
+                  {t.cancel}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmDialogAction()}
+                  className={`inline-flex h-9 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium text-white ${
+                    confirmDialog.kind === "delete-paper"
+                      ? "bg-rose-700 hover:bg-rose-800"
+                      : "bg-zinc-950 hover:bg-zinc-800"
+                  }`}
+                >
+                  {confirmDialog.kind === "delete-paper" ? (
+                    <Trash2 className="h-4 w-4" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
+                  {confirmDialog.confirmLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+      ) : null}
+      {noticeDialog ? (
+          <div
+            className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => setNoticeDialog(null)}
+          >
+            <div
+              className="w-full max-w-md rounded-md border border-zinc-200 bg-white p-5 shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start gap-3">
+                <div
+                  className={`grid h-10 w-10 shrink-0 place-items-center rounded-md border ${
+                    noticeDialog.tone === "success"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-amber-200 bg-amber-50 text-amber-700"
+                  }`}
+                >
+                  {noticeDialog.tone === "success" ? (
+                    <CheckCircle2 className="h-5 w-5" />
+                  ) : (
+                    <AlertTriangle className="h-5 w-5" />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-base font-semibold text-zinc-950">{noticeDialog.title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-zinc-600">{noticeDialog.message}</p>
+                  {noticeDialog.items.length ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {noticeDialog.items.map((item) => (
+                        <span
+                          key={item}
+                          className={`inline-flex h-7 items-center rounded-md border px-2 text-xs font-medium ${
+                            noticeDialog.tone === "success"
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                              : "border-amber-200 bg-amber-50 text-amber-800"
+                          }`}
+                        >
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="mt-5 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setNoticeDialog(null)}
+                  className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800"
+                >
+                  {t.gotIt}
+                </button>
+              </div>
+            </div>
+          </div>
+      ) : null}
+    </>
+  );
+
   if (attempt) {
     return (
-      <div className="space-y-3">
-        {currentAttemptAnswer ? (
-          <div key={currentAttemptAnswer.id} className="rounded-md border border-zinc-200 bg-white p-3">
+      <>
+        <div className="space-y-3">
+          {currentAttemptAnswer ? (
+            <div key={currentAttemptAnswer.id} className="rounded-md border border-zinc-200 bg-white p-3">
             <div className="mb-2 flex items-center justify-between gap-2 border-b border-zinc-100 pb-2">
               <div className="flex min-w-0 flex-1 items-center gap-2">
                 <span
@@ -1834,7 +1997,7 @@ export default function ExamMode({
                 {attempt.status === "IN_PROGRESS" ? (
                   <button
                     type="button"
-                    onClick={() => void submitExam()}
+                    onClick={requestSubmitExam}
                     className="inline-flex h-8 items-center gap-2 rounded-md bg-zinc-950 px-3 text-xs font-medium text-white hover:bg-zinc-800"
                   >
                     <Send className="h-3.5 w-3.5" />
@@ -1914,9 +2077,11 @@ export default function ExamMode({
                 ) : null}
               </div>
             ) : null}
-          </div>
-        ) : null}
-      </div>
+            </div>
+          ) : null}
+        </div>
+        {dialogOverlays}
+      </>
     );
   }
 
@@ -2346,127 +2511,7 @@ export default function ExamMode({
         ) : null}
       </div>
     ) : null}
-    {confirmDialog ? (
-      <div
-        className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
-        role="dialog"
-        aria-modal="true"
-        onClick={() => setConfirmDialog(null)}
-      >
-        <div
-          className="w-full max-w-md rounded-md border border-zinc-200 bg-white p-5 shadow-2xl"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="flex items-start gap-3">
-            <div
-              className={`grid h-10 w-10 shrink-0 place-items-center rounded-md border ${
-                confirmDialog.kind === "delete-paper"
-                  ? "border-rose-200 bg-rose-50 text-rose-700"
-                  : "border-cyan-200 bg-cyan-50 text-cyan-700"
-              }`}
-            >
-              {confirmDialog.kind === "delete-paper" ? (
-                <Trash2 className="h-5 w-5" />
-              ) : (
-                <Send className="h-5 w-5" />
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <h3 className="text-base font-semibold text-zinc-950">{confirmDialog.title}</h3>
-              <p className="mt-2 text-sm leading-6 text-zinc-600">{confirmDialog.message}</p>
-              {selectedPaper ? (
-                <p className="mt-3 truncate rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
-                  {selectedPaper.title}
-                </p>
-              ) : null}
-            </div>
-          </div>
-          <div className="mt-5 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setConfirmDialog(null)}
-              className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-            >
-              {t.cancel}
-            </button>
-            <button
-              type="button"
-              onClick={() => void confirmDialogAction()}
-              className={`inline-flex h-9 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium text-white ${
-                confirmDialog.kind === "delete-paper"
-                  ? "bg-rose-700 hover:bg-rose-800"
-                  : "bg-zinc-950 hover:bg-zinc-800"
-              }`}
-            >
-              {confirmDialog.kind === "delete-paper" ? (
-                <Trash2 className="h-4 w-4" />
-              ) : (
-                <Send className="h-4 w-4" />
-              )}
-              {confirmDialog.confirmLabel}
-            </button>
-          </div>
-        </div>
-      </div>
-    ) : null}
-    {noticeDialog ? (
-      <div
-        className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
-        role="dialog"
-        aria-modal="true"
-        onClick={() => setNoticeDialog(null)}
-      >
-        <div
-          className="w-full max-w-md rounded-md border border-zinc-200 bg-white p-5 shadow-2xl"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="flex items-start gap-3">
-            <div
-              className={`grid h-10 w-10 shrink-0 place-items-center rounded-md border ${
-                noticeDialog.tone === "success"
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-amber-200 bg-amber-50 text-amber-700"
-              }`}
-            >
-              {noticeDialog.tone === "success" ? (
-                <CheckCircle2 className="h-5 w-5" />
-              ) : (
-                <AlertTriangle className="h-5 w-5" />
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <h3 className="text-base font-semibold text-zinc-950">{noticeDialog.title}</h3>
-              <p className="mt-2 text-sm leading-6 text-zinc-600">{noticeDialog.message}</p>
-              {noticeDialog.items.length > 0 ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {noticeDialog.items.map((item) => (
-                    <span
-                      key={item}
-                      className={`inline-flex h-7 items-center rounded-md border px-2 text-xs font-medium ${
-                        noticeDialog.tone === "success"
-                          ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                          : "border-amber-200 bg-amber-50 text-amber-800"
-                      }`}
-                    >
-                      {item}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          </div>
-          <div className="mt-5 flex justify-end">
-            <button
-              type="button"
-              onClick={() => setNoticeDialog(null)}
-              className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800"
-            >
-              {t.gotIt}
-            </button>
-          </div>
-        </div>
-      </div>
-    ) : null}
+    {dialogOverlays}
     </>
   );
 }

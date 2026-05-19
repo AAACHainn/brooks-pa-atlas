@@ -338,6 +338,8 @@ const defaultMaskColor = "#000000";
 const minMaskSize = 0.015;
 const defaultExamViewerHeight = 520;
 const examImageDragType = "application/x-brooks-exam-image";
+const minExamImageZoom = 20;
+const maxExamImageZoom = 240;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -797,7 +799,7 @@ function MaskedImage({
   }
 
   function updateZoom(delta: number) {
-    onZoomChange?.(clamp(zoom + delta, 80, 240));
+    onZoomChange?.(clamp(zoom + delta, minExamImageZoom, maxExamImageZoom));
   }
 
   function startPan(event: React.PointerEvent<HTMLDivElement>) {
@@ -857,7 +859,7 @@ function MaskedImage({
           <button
             type="button"
             onClick={() => updateZoom(-10)}
-            disabled={zoom <= 80}
+            disabled={zoom <= minExamImageZoom}
             className="grid h-7 w-7 place-items-center rounded text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
             title={zoomLabels?.zoomOut}
             aria-label={zoomLabels?.zoomOut}
@@ -868,7 +870,7 @@ function MaskedImage({
           <button
             type="button"
             onClick={() => updateZoom(10)}
-            disabled={zoom >= 240}
+            disabled={zoom >= maxExamImageZoom}
             className="grid h-7 w-7 place-items-center rounded text-zinc-700 hover:bg-zinc-100 disabled:opacity-40"
             title={zoomLabels?.zoomIn}
             aria-label={zoomLabels?.zoomIn}

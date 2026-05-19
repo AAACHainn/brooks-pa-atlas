@@ -138,6 +138,7 @@ type IndexAction =
 
 const chunkSize = 80;
 const destructiveConfirmPhrase = "确认删除";
+const collapsedIndexesStorageKey = "brooks-pa-atlas.collapsedIndexes";
 
 const copy = {
   zh: {
@@ -580,6 +581,23 @@ function clampImportTableHeight(value: number) {
   return Math.min(760, Math.max(180, value));
 }
 
+function parseCollapsedIndexIds(value: string | null) {
+  if (!value) {
+    return new Set<string>();
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return new Set<string>();
+    }
+
+    return new Set(parsed.filter((id): id is string => typeof id === "string" && id.length > 0));
+  } catch {
+    return new Set<string>();
+  }
+}
+
 function IndexBranch({
   nodes,
   selectedId,
@@ -924,6 +942,7 @@ export default function AtlasWorkbench() {
         const savedViewMode = window.localStorage.getItem("brooks-pa-atlas.viewMode");
         setViewMode(savedViewMode === "browse" || savedViewMode === "exam" ? savedViewMode : "manage");
         setShowBrowseThumbnails(window.localStorage.getItem("brooks-pa-atlas.browseThumbnails") !== "hidden");
+        setCollapsedIndexIds(parseCollapsedIndexIds(window.localStorage.getItem(collapsedIndexesStorageKey)));
 
         const savedGridPageSize = Number(window.localStorage.getItem("brooks-pa-atlas.imageGridPageSize"));
         setImageGridPageSize([25, 50, 100, 200].includes(savedGridPageSize) ? savedGridPageSize : 50);
@@ -1802,6 +1821,12 @@ export default function AtlasWorkbench() {
         next.delete(id);
       } else {
         next.add(id);
+      }
+
+      try {
+        window.localStorage.setItem(collapsedIndexesStorageKey, JSON.stringify([...next]));
+      } catch {
+        // localStorage can be unavailable in restricted browser contexts.
       }
 
       return next;

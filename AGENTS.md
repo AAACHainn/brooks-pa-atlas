@@ -258,7 +258,7 @@ npm run db:init
 - 默认全部展开。
 - 有子节点的索引前方有箭头，点击箭头可展开或收起子索引。
 - 点击索引名称区域会选中索引并筛选图片。
-- 目前展开/收起状态只保存在组件状态中，没有写入 `localStorage`。
+- 展开/收起状态会写入 `localStorage`，刷新页面后继续沿用上次折叠的节点。
 - 左侧树上显示的数量是当前节点及其所有后代节点的图片汇总数；后端用直接图片数 groupBy 后在内存树上后序汇总，避免逐节点数据库查询。
 
 管理模式下，索引树节点支持右键菜单：
@@ -506,13 +506,12 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - `brooks-pa-atlas.sidebar`：侧栏折叠状态。
 - `brooks-pa-atlas.overview`：概览折叠状态。
 - `brooks-pa-atlas.viewMode`：`browse`、`manage` 或 `exam`。
+- `brooks-pa-atlas.collapsedIndexes`：左侧索引树已折叠节点 id 列表。
 - `brooks-pa-atlas.imageGridPageSize`：管理模式图片网格每页数量。
 - `brooks-pa-atlas.viewerHeight`：浏览模式大图查看器高度。
 - `brooks-pa-atlas.examViewerHeight`：考试模式作答/结果看图窗口高度。
 - `brooks-pa-atlas.browseThumbnails`：浏览模式缩略图显隐。
 - `brooks-pa-atlas.importTableHeight`：导入表格高度。
-
-注意：索引树节点展开/收起状态当前没有持久化。
 
 ## 16. 实现注意事项
 

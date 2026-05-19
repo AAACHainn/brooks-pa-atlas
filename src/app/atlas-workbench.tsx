@@ -29,7 +29,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import ExamMode from "@/app/exam-mode";
-import type { ExamIndexOption } from "@/app/exam-mode";
 
 type IndexTreeNode = {
   id: string;
@@ -2337,14 +2336,7 @@ export default function AtlasWorkbench() {
             {isExamMode ? (
               <ExamMode
                 locale={locale}
-                indexes={flatIndexes.map(
-                  (node): ExamIndexOption => ({
-                    id: node.id,
-                    name: node.name,
-                    path: node.path,
-                    depth: node.depth,
-                  }),
-                )}
+                selectedIndexId={selectedIndexId}
               />
             ) : null}
 

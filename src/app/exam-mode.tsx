@@ -29,13 +29,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 type Locale = "zh" | "en";
 type ExamQuestionType = "SINGLE" | "MULTIPLE";
 
-export type ExamIndexOption = {
-  id: string;
-  name: string;
-  path: string;
-  depth: number;
-};
-
 type MaskRect = { x: number; y: number; width: number; height: number; color?: string };
 type MaskResizeHandle = "nw" | "ne" | "sw" | "se";
 type MaskDragState =
@@ -970,7 +963,13 @@ function MaskedImage({
   );
 }
 
-export default function ExamMode({ locale, indexes }: { locale: Locale; indexes: ExamIndexOption[] }) {
+export default function ExamMode({
+  locale,
+  selectedIndexId,
+}: {
+  locale: Locale;
+  selectedIndexId: string | null;
+}) {
   const t = copy[locale];
   const [papers, setPapers] = useState<ExamPaper[]>([]);
   const [selectedPaper, setSelectedPaper] = useState<ExamPaper | null>(null);
@@ -981,8 +980,10 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     defaultOptions,
   });
   const [imageQuery, setImageQuery] = useState("");
-  const [imageIndexId, setImageIndexId] = useState("");
-  const [imagePage, setImagePage] = useState(1);
+  const [imagePageState, setImagePageState] = useState<{ indexId: string | null; page: number }>({
+    indexId: selectedIndexId,
+    page: 1,
+  });
   const [imageTotal, setImageTotal] = useState(0);
   const [images, setImages] = useState<ExamImage[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1004,6 +1005,7 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
   const selectedPaperId = selectedPaper?.id ?? null;
   const selectedQuestion = selectedPaper?.questions?.find((question) => question.id === selectedQuestionId) ?? null;
   const isLocked = selectedPaper?.status === "PUBLISHED";
+  const imagePage = imagePageState.indexId === selectedIndexId ? imagePageState.page : 1;
   const imageTotalPages = Math.max(1, Math.ceil(imageTotal / 24));
   const visibleResultAnswers = useMemo(
     () => attempt?.answers.filter((answer) => !wrongOnly || !answer.isCorrect) ?? [],
@@ -1012,6 +1014,18 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
   const attemptTotalPages = Math.max(1, visibleResultAnswers.length);
   const attemptCurrentPageIndex = Math.min(attemptPageIndex, attemptTotalPages - 1);
   const currentAttemptAnswer = visibleResultAnswers[attemptCurrentPageIndex] ?? null;
+  const setImagePage = useCallback(
+    (nextPage: number | ((page: number) => number)) => {
+      setImagePageState((current) => {
+        const currentPage = current.indexId === selectedIndexId ? current.page : 1;
+        return {
+          indexId: selectedIndexId,
+          page: typeof nextPage === "function" ? nextPage(currentPage) : nextPage,
+        };
+      });
+    },
+    [selectedIndexId],
+  );
 
   const loadPapers = useCallback(async () => {
     const response = await fetch("/api/exam/papers", { cache: "no-store" });
@@ -1091,15 +1105,15 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
     if (imageQuery.trim()) {
       params.set("q", imageQuery.trim());
     }
-    if (imageIndexId) {
-      params.set("indexId", imageIndexId);
+    if (selectedIndexId) {
+      params.set("indexId", selectedIndexId);
     }
 
     const response = await fetch(`/api/images?${params.toString()}`, { cache: "no-store" });
     const result = (await response.json()) as { images?: ExamImage[]; total?: number };
     setImages(result.images ?? []);
     setImageTotal(result.total ?? 0);
-  }, [imageIndexId, imagePage, imageQuery]);
+  }, [imagePage, imageQuery, selectedIndexId]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2139,22 +2153,6 @@ export default function ExamMode({ locale, indexes }: { locale: Locale; indexes:
               placeholder={t.imageSearch}
             />
           </div>
-          <select
-            value={imageIndexId}
-            onChange={(event) => {
-              setImageIndexId(event.target.value);
-              setImagePage(1);
-            }}
-            className="mt-2 h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm outline-none focus:border-zinc-500"
-          >
-            <option value="">{t.allIndexes}</option>
-            {indexes.map((node) => (
-              <option key={node.id} value={node.id}>
-                {"- ".repeat(node.depth)}
-                {node.name}
-              </option>
-            ))}
-          </select>
         </div>
         <div className="max-h-[calc(100vh-250px)] overflow-auto p-3">
           <div className="grid grid-cols-2 gap-3">

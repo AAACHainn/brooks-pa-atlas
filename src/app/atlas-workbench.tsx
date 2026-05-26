@@ -135,6 +135,11 @@ type IndexAction =
   | { mode: "rename"; node: IndexTreeNode }
   | { mode: "delete"; node: IndexTreeNode }
   | { mode: "clear"; node: IndexTreeNode };
+type NoticeDialog = {
+  title: string;
+  message: string;
+  tone: "warning" | "error";
+};
 
 const chunkSize = 80;
 const destructiveConfirmPhrase = "确认删除";
@@ -157,6 +162,11 @@ const copy = {
     clearIndexImagesMessage: "此操作会删除当前索引及其所有子索引下的图片文件和记录，无法撤销。",
     clearIndexImagesTyping: "请输入“确认删除”以继续。",
     clearIndexImagesDisabled: "当前索引和子索引下没有图片可清空。",
+    clearIndexImagesBlockedTitle: "无法清空索引图片",
+    clearIndexImagesBlockedByExam:
+      "该索引或其子索引中的图片已被考试题目引用，不能清空。请先从相关试卷中移除题目，或删除对应试卷后再试。",
+    clearIndexImagesFailedTitle: "清空索引图片失败",
+    indexActionFailedTitle: "索引操作失败",
     indexActionFailed: "索引操作失败，请稍后重试。",
     reorderIndex: "拖动调整顺序",
     reorderIndexMode: "索引排序",
@@ -237,6 +247,9 @@ const copy = {
     deleteImage: "删除图片",
     deleteImageConfirmTitle: "删除这张图片？",
     deleteImageConfirmMessage: "此操作会删除该图片文件和记录，且无法撤销。请确认是否继续。",
+    deleteImageBlockedTitle: "无法删除图片",
+    deleteImageBlockedByExam: "这张图片已被考试题目引用，不能删除。请先从相关试卷中移除题目，或删除对应试卷后再试。",
+    deleteImageFailedTitle: "删除图片失败",
     deleteImageFailed: "删除图片失败，请稍后重试。",
     title: "标题",
     index: "索引",
@@ -287,6 +300,11 @@ const copy = {
       "This will delete image files and records in this index and all child indexes. This cannot be undone.",
     clearIndexImagesTyping: "Type “确认删除” to continue.",
     clearIndexImagesDisabled: "This index and its child indexes have no images to clear.",
+    clearIndexImagesBlockedTitle: "Index images cannot be cleared",
+    clearIndexImagesBlockedByExam:
+      "This index or its child indexes contain images used by exam questions. Remove those questions from the related paper, or delete that paper, then try again.",
+    clearIndexImagesFailedTitle: "Clear index images failed",
+    indexActionFailedTitle: "Index action failed",
     indexActionFailed: "Index action failed. Please try again.",
     reorderIndex: "Drag to reorder",
     reorderIndexMode: "Reorder",
@@ -369,6 +387,10 @@ const copy = {
     deleteImageConfirmTitle: "Delete this image?",
     deleteImageConfirmMessage:
       "This will delete the image file and record, and cannot be undone. Please confirm before continuing.",
+    deleteImageBlockedTitle: "Image cannot be deleted",
+    deleteImageBlockedByExam:
+      "This image is used by exam questions and cannot be deleted. Remove it from the related paper, or delete that paper, then try again.",
+    deleteImageFailedTitle: "Image deletion failed",
     deleteImageFailed: "Image deletion failed. Please try again.",
     title: "Title",
     index: "Index",
@@ -849,6 +871,7 @@ export default function AtlasWorkbench() {
   const [undoingBatchId, setUndoingBatchId] = useState<string | null>(null);
   const [pendingDeleteImage, setPendingDeleteImage] = useState<ChartImage | null>(null);
   const [deletingImageId, setDeletingImageId] = useState<string | null>(null);
+  const [noticeDialog, setNoticeDialog] = useState<NoticeDialog | null>(null);
   const [indexContextMenu, setIndexContextMenu] = useState<IndexContextMenu | null>(null);
   const [indexAction, setIndexAction] = useState<IndexAction | null>(null);
   const [indexActionBusy, setIndexActionBusy] = useState(false);
@@ -1492,7 +1515,12 @@ export default function AtlasWorkbench() {
         body: JSON.stringify({ id: indexAction.node.id, name: renameIndexName }),
       });
       if (!response.ok) {
-        window.alert(t.indexActionFailed);
+        closeIndexAction(true);
+        setNoticeDialog({
+          title: t.indexActionFailedTitle,
+          message: t.indexActionFailed,
+          tone: "error",
+        });
         return;
       }
 
@@ -1516,7 +1544,12 @@ export default function AtlasWorkbench() {
         body: JSON.stringify({ id: indexAction.node.id }),
       });
       if (!response.ok) {
-        window.alert(t.indexActionFailed);
+        closeIndexAction(true);
+        setNoticeDialog({
+          title: t.indexActionFailedTitle,
+          message: t.indexActionFailed,
+          tone: "error",
+        });
         return;
       }
 
@@ -1547,7 +1580,13 @@ export default function AtlasWorkbench() {
         body: JSON.stringify({ confirmation: clearIndexConfirmText }),
       });
       if (!response.ok) {
-        window.alert(t.indexActionFailed);
+        closeIndexAction(true);
+        setNoticeDialog({
+          title:
+            response.status === 409 ? t.clearIndexImagesBlockedTitle : t.clearIndexImagesFailedTitle,
+          message: response.status === 409 ? t.clearIndexImagesBlockedByExam : t.indexActionFailed,
+          tone: response.status === 409 ? "warning" : "error",
+        });
         return;
       }
 
@@ -1775,7 +1814,12 @@ export default function AtlasWorkbench() {
         method: "DELETE",
       });
       if (!response.ok) {
-        window.alert(t.deleteImageFailed);
+        setPendingDeleteImage(null);
+        setNoticeDialog({
+          title: response.status === 409 ? t.deleteImageBlockedTitle : t.deleteImageFailedTitle,
+          message: response.status === 409 ? t.deleteImageBlockedByExam : t.deleteImageFailed,
+          tone: response.status === 409 ? "warning" : "error",
+        });
         return;
       }
 
@@ -3160,6 +3204,51 @@ export default function AtlasWorkbench() {
                   <Trash2 className="h-4 w-4" />
                 )}
                 <span>{deletingImageId === pendingDeleteImage.id ? t.deleting : t.deleteImage}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {noticeDialog ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="notice-dialog-title"
+          aria-describedby="notice-dialog-message"
+          onClick={() => setNoticeDialog(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-md bg-white p-5 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div
+                className={`grid h-10 w-10 shrink-0 place-items-center rounded-md border ${
+                  noticeDialog.tone === "warning"
+                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                    : "border-rose-200 bg-rose-50 text-rose-700"
+                }`}
+              >
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 id="notice-dialog-title" className="text-base font-semibold text-zinc-950">
+                  {noticeDialog.title}
+                </h2>
+                <p id="notice-dialog-message" className="mt-2 text-sm leading-6 text-zinc-600">
+                  {noticeDialog.message}
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setNoticeDialog(null)}
+                className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-950 bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800"
+              >
+                {t.confirm}
               </button>
             </div>
           </div>

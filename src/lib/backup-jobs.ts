@@ -118,6 +118,7 @@ export function startBackupJob(options: BackupJobOptions = {}) {
     updatedAt: now(),
   };
   jobs.set(id, job);
+  console.info(`[backup-export:${id}] job started`, { indexId: options.indexId ?? null });
 
   void (async () => {
     try {
@@ -133,6 +134,11 @@ export function startBackupJob(options: BackupJobOptions = {}) {
 
       job.phase = "packing";
       touch(job);
+      console.info(`[backup-export:${id}] packing started`, {
+        processedImages: job.processedImages,
+        totalImages: job.totalImages,
+        fileName: backup.fileName,
+      });
 
       const buffer = await streamToBuffer(backup.stream);
       job.status = "completed";
@@ -142,11 +148,24 @@ export function startBackupJob(options: BackupJobOptions = {}) {
         buffer,
       };
       touch(job);
+      console.info(`[backup-export:${id}] job completed`, {
+        processedImages: job.processedImages,
+        totalImages: job.totalImages,
+        fileName: backup.fileName,
+        bytes: buffer.length,
+      });
     } catch (error) {
       job.status = "failed";
       job.phase = "failed";
       job.error = errorMessage(error);
       touch(job);
+      console.error(`[backup-export:${id}] job failed`, {
+        error: job.error,
+        stack: error instanceof Error ? error.stack : undefined,
+        processedImages: job.processedImages,
+        totalImages: job.totalImages,
+        indexId: options.indexId ?? null,
+      });
     }
   })();
 

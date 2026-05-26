@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { createBackupZip } from "@/lib/backup";
+import { attachmentContentDisposition } from "@/lib/download-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ export async function GET(request: Request) {
     return new Response(backup.stream, {
       headers: {
         "Content-Type": "application/zip",
-        "Content-Disposition": `attachment; filename="${backup.fileName}"`,
+        "Content-Disposition": attachmentContentDisposition(backup.fileName),
         "Cache-Control": "no-store",
       },
     });

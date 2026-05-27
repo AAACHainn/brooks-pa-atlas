@@ -149,7 +149,13 @@ const copy = {
     draft: "草稿",
     questions: "题目",
     attempts: "考试记录",
+    paperList: "试卷列表",
+    paperSettings: "试卷设置",
+    expand: "展开",
+    collapse: "收起",
     addImage: "拖入试卷",
+    addedToPaper: "已添加",
+    alreadyAddedToPaper: "这张图片已经添加到当前试卷",
     dragImageToPaper: "拖到左侧加入试卷",
     dropImageToPaper: "松开后加入试卷",
     imageSearch: "搜索图片",
@@ -254,7 +260,13 @@ const copy = {
     draft: "Draft",
     questions: "Questions",
     attempts: "Attempts",
+    paperList: "Paper list",
+    paperSettings: "Paper settings",
+    expand: "Expand",
+    collapse: "Collapse",
     addImage: "Drag to paper",
+    addedToPaper: "Added",
+    alreadyAddedToPaper: "This image is already in the current paper",
     dragImageToPaper: "Drag to the left area to add",
     dropImageToPaper: "Release to add to paper",
     imageSearch: "Search images",
@@ -347,6 +359,7 @@ const defaultOptions = ["上涨延续", "下跌延续", "震荡整理", "反转�
 const defaultMaskColor = "#000000";
 const minMaskSize = 0.015;
 const defaultExamViewerHeight = 520;
+const questionListPageSize = 10;
 const examImageDragType = "application/x-brooks-exam-image";
 const minExamImageZoom = 20;
 const maxExamImageZoom = 240;
@@ -999,6 +1012,10 @@ export default function ExamMode({
     description: "",
     defaultOptions,
   });
+  const [questionPageState, setQuestionPageState] = useState<{ paperId: string | null; page: number }>({
+    paperId: null,
+    page: 1,
+  });
   const [imageQuery, setImageQuery] = useState("");
   const [imagePageState, setImagePageState] = useState<{ indexId: string | null; page: number }>({
     indexId: selectedIndexId,
@@ -1020,6 +1037,8 @@ export default function ExamMode({
   const [noticeDialog, setNoticeDialog] = useState<NoticeDialogState | null>(null);
   const [paperMenu, setPaperMenu] = useState<PaperMenuState | null>(null);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [isPaperListCollapsed, setIsPaperListCollapsed] = useState(false);
+  const [isPaperSettingsCollapsed, setIsPaperSettingsCollapsed] = useState(false);
   const [draggedImageId, setDraggedImageId] = useState<string | null>(null);
   const [isDropTargetActive, setIsDropTargetActive] = useState(false);
   const [savedQuestionFingerprints, setSavedQuestionFingerprints] = useState<Record<string, string>>({});
@@ -1027,6 +1046,16 @@ export default function ExamMode({
 
   const selectedPaperId = selectedPaper?.id ?? null;
   const selectedQuestion = selectedPaper?.questions?.find((question) => question.id === selectedQuestionId) ?? null;
+  const paperQuestions = useMemo(() => selectedPaper?.questions ?? [], [selectedPaper?.questions]);
+  const questionTotalPages = Math.max(1, Math.ceil(paperQuestions.length / questionListPageSize));
+  const requestedQuestionPage = questionPageState.paperId === selectedPaperId ? questionPageState.page : 1;
+  const currentQuestionPage = Math.min(requestedQuestionPage, questionTotalPages);
+  const questionStartIndex = paperQuestions.length ? (currentQuestionPage - 1) * questionListPageSize : 0;
+  const visibleQuestions = paperQuestions.slice(questionStartIndex, questionStartIndex + questionListPageSize);
+  const usedImageIds = useMemo(
+    () => new Set(paperQuestions.map((question) => question.chartImageId)),
+    [paperQuestions],
+  );
   const isLocked = selectedPaper?.status === "PUBLISHED";
   const canDropImage = Boolean(selectedPaper && !isLocked);
   const imagePage = imagePageState.indexId === selectedIndexId ? imagePageState.page : 1;
@@ -1049,6 +1078,19 @@ export default function ExamMode({
       });
     },
     [selectedIndexId],
+  );
+
+  const setQuestionPage = useCallback(
+    (nextPage: number | ((page: number) => number)) => {
+      setQuestionPageState((current) => {
+        const currentPage = current.paperId === selectedPaperId ? current.page : 1;
+        return {
+          paperId: selectedPaperId,
+          page: typeof nextPage === "function" ? nextPage(currentPage) : nextPage,
+        };
+      });
+    },
+    [selectedPaperId],
   );
 
   const loadPapers = useCallback(async () => {
@@ -1393,6 +1435,14 @@ export default function ExamMode({
     }
   }
 
+  function selectQuestion(questionId: string) {
+    setSelectedQuestionId(questionId);
+    const questionIndex = paperQuestions.findIndex((question) => question.id === questionId);
+    if (questionIndex >= 0) {
+      setQuestionPage(Math.floor(questionIndex / questionListPageSize) + 1);
+    }
+  }
+
   async function addImage(image: ExamImage) {
     if (!selectedPaper || isLocked) {
       return;
@@ -1415,6 +1465,7 @@ export default function ExamMode({
 
     await loadPaper(selectedPaper.id);
     setSelectedQuestionId(result.question.id);
+    setQuestionPage(Math.max(1, Math.ceil((paperQuestions.length + 1) / questionListPageSize)));
   }
 
   function hasExamImageDrag(event: DragEvent<HTMLElement>) {
@@ -1422,7 +1473,7 @@ export default function ExamMode({
   }
 
   function startImageDrag(event: DragEvent<HTMLElement>, image: ExamImage) {
-    if (!canDropImage) {
+    if (!canDropImage || usedImageIds.has(image.id)) {
       event.preventDefault();
       return;
     }
@@ -2087,18 +2138,54 @@ export default function ExamMode({
 
   return (
     <>
-    <div className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
+    <div
+      className={`grid gap-5 ${
+        isPaperListCollapsed
+          ? "xl:grid-cols-[48px_minmax(0,1fr)_320px]"
+          : "xl:grid-cols-[280px_minmax(0,1fr)_320px]"
+      }`}
+    >
       <aside
         {...imageDropTargetHandlers}
         className={`rounded-md border border-zinc-200 bg-white transition ${imageDropTargetClass}`}
       >
+        {isPaperListCollapsed ? (
+          <div className="flex min-h-[calc(100vh-120px)] flex-col items-center gap-2 p-2">
+            <button
+              type="button"
+              onClick={() => setIsPaperListCollapsed(false)}
+              className="grid h-9 w-9 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50"
+              title={`${t.expand} ${t.paperList}`}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <div className="mt-2 flex min-h-0 flex-1 items-center justify-center">
+              <span className="[writing-mode:vertical-rl] text-xs font-medium tracking-normal text-zinc-500">
+                {t.paperList}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <>
         <div className="border-b border-zinc-200 p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold">{t.title}</h2>
               <p className="mt-1 text-xs leading-5 text-zinc-500">{t.subtitle}</p>
             </div>
-            <div className="relative shrink-0" onClick={(event) => event.stopPropagation()}>
+            <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                setCreateMenuOpen(false);
+                setIsPaperListCollapsed(true);
+              }}
+              className="grid h-9 w-9 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50"
+              title={`${t.collapse} ${t.paperList}`}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <div className="relative" onClick={(event) => event.stopPropagation()}>
               <button
                 type="button"
                 onClick={() => setCreateMenuOpen((open) => !open)}
@@ -2149,6 +2236,7 @@ export default function ExamMode({
                 }}
               />
             </div>
+            </div>
           </div>
         </div>
         <div className="max-h-[calc(100vh-190px)] overflow-auto p-2">
@@ -2193,6 +2281,8 @@ export default function ExamMode({
             </button>
           ))}
         </div>
+          </>
+        )}
       </aside>
 
       <section
@@ -2202,7 +2292,27 @@ export default function ExamMode({
         {selectedPaper ? (
           <>
             <div className="rounded-md border border-zinc-200 bg-white p-4">
-              <div className="grid gap-3 lg:grid-cols-[1fr_280px]">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold">{t.paperSettings}</h3>
+                  {isPaperSettingsCollapsed ? (
+                    <p className="mt-1 truncate text-xs text-zinc-500">{paperDraft.title || t.untitled}</p>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsPaperSettingsCollapsed((collapsed) => !collapsed)}
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50"
+                  title={`${isPaperSettingsCollapsed ? t.expand : t.collapse} ${t.paperSettings}`}
+                >
+                  <ChevronDown
+                    className={`h-4 w-4 transition-transform ${isPaperSettingsCollapsed ? "-rotate-90" : ""}`}
+                  />
+                </button>
+              </div>
+              {isPaperSettingsCollapsed ? null : (
+                <>
+              <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_280px]">
                 <label>
                   <span className="mb-1 block text-xs font-medium text-zinc-500">{t.title}</span>
                   <input
@@ -2271,6 +2381,8 @@ export default function ExamMode({
                 />
               </div>
               {isLocked ? <p className="mt-3 text-xs text-zinc-500">{t.locked}</p> : null}
+                </>
+              )}
             </div>
 
             {selectedPaper.status === "PUBLISHED" ? (
@@ -2353,20 +2465,20 @@ export default function ExamMode({
 
             <div className="grid gap-4 2xl:grid-cols-[220px_minmax(0,1fr)]">
               <div className="rounded-md border border-zinc-200 bg-white p-2">
-                {selectedPaper.questions?.length ? null : (
+                {paperQuestions.length ? null : (
                   <p className="p-3 text-sm text-zinc-500">{t.noQuestions}</p>
                 )}
-                {selectedPaper.questions?.map((question, index) => (
+                {visibleQuestions.map((question, index) => (
                   <button
                     type="button"
                     key={question.id}
-                    onClick={() => setSelectedQuestionId(question.id)}
+                    onClick={() => selectQuestion(question.id)}
                     className={`mb-2 w-full rounded-md border p-3 text-left text-sm hover:bg-zinc-50 ${
                       selectedQuestionId === question.id ? "border-zinc-950" : "border-zinc-200"
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold">#{index + 1}</span>
+                      <span className="font-semibold">#{questionStartIndex + index + 1}</span>
                       <span
                         className={`rounded border px-1.5 py-0.5 text-[11px] ${
                           question.status === "READY"
@@ -2380,6 +2492,32 @@ export default function ExamMode({
                     <p className="mt-2 truncate text-xs text-zinc-500">{question.image.originalName}</p>
                   </button>
                 ))}
+                {paperQuestions.length > questionListPageSize ? (
+                  <div className="flex items-center justify-between gap-2 border-t border-zinc-200 pt-2 text-xs text-zinc-500">
+                    <button
+                      type="button"
+                      onClick={() => setQuestionPage((page) => Math.max(1, page - 1))}
+                      disabled={currentQuestionPage <= 1}
+                      className="grid h-7 w-7 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+                      title={t.previousPage}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </button>
+                    <span className="text-center">
+                      {questionStartIndex + 1}-{Math.min(questionStartIndex + questionListPageSize, paperQuestions.length)}
+                      /{paperQuestions.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setQuestionPage((page) => Math.min(questionTotalPages, page + 1))}
+                      disabled={currentQuestionPage >= questionTotalPages}
+                      className="grid h-7 w-7 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+                      title={t.nextPage}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  </div>
+                ) : null}
               </div>
 
               {selectedQuestion ? (
@@ -2425,38 +2563,58 @@ export default function ExamMode({
         </div>
         <div className="max-h-[calc(100vh-250px)] overflow-auto p-3">
           <div className="grid grid-cols-2 gap-3">
-            {images.map((image) => (
-              <div
-                role="listitem"
-                key={image.id}
-                draggable={canDropImage}
-                onDragStart={(event) => startImageDrag(event, image)}
-                onDragEnd={finishImageDrag}
-                aria-label={`${t.dragImageToPaper}: ${image.title ?? image.originalName}`}
-                title={t.dragImageToPaper}
-                className={`overflow-hidden rounded-md border bg-white text-left transition ${
-                  canDropImage
-                    ? "cursor-grab border-zinc-200 hover:border-zinc-950 active:cursor-grabbing"
-                    : "cursor-not-allowed border-zinc-200 opacity-50"
-                } ${draggedImageId === image.id ? "border-cyan-500 ring-2 ring-cyan-200" : ""}`}
-              >
-                <div className="aspect-[4/3] bg-zinc-100">
-                  <img
-                    src={`/api/images/${image.id}/file`}
-                    alt={image.title ?? image.originalName}
-                    className="h-full w-full object-contain"
-                    loading="lazy"
-                    draggable={false}
-                  />
+            {images.map((image) => {
+              const isAddedToPaper = usedImageIds.has(image.id);
+              const isImageDraggable = canDropImage && !isAddedToPaper;
+              return (
+                <div
+                  role="listitem"
+                  key={image.id}
+                  draggable={isImageDraggable}
+                  onDragStart={(event) => startImageDrag(event, image)}
+                  onDragEnd={finishImageDrag}
+                  aria-label={`${
+                    isAddedToPaper ? t.alreadyAddedToPaper : t.dragImageToPaper
+                  }: ${image.title ?? image.originalName}`}
+                  title={isAddedToPaper ? t.alreadyAddedToPaper : t.dragImageToPaper}
+                  className={`overflow-hidden rounded-md border bg-white text-left transition ${
+                    isImageDraggable
+                      ? "cursor-grab border-zinc-200 hover:border-zinc-950 active:cursor-grabbing"
+                      : "cursor-not-allowed border-zinc-200 opacity-70"
+                  } ${
+                    isAddedToPaper
+                      ? "border-emerald-300 bg-emerald-50/40 ring-1 ring-emerald-100"
+                      : ""
+                  } ${draggedImageId === image.id ? "border-cyan-500 ring-2 ring-cyan-200" : ""}`}
+                >
+                  <div className="relative aspect-[4/3] bg-zinc-100">
+                    <img
+                      src={`/api/images/${image.id}/file`}
+                      alt={image.title ?? image.originalName}
+                      className="h-full w-full object-contain"
+                      loading="lazy"
+                      draggable={false}
+                    />
+                    {isAddedToPaper ? (
+                      <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded bg-emerald-600 px-1.5 py-0.5 text-[11px] font-semibold text-white shadow-sm">
+                        <CheckCircle2 className="h-3 w-3" />
+                        {t.addedToPaper}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="p-2">
+                    <p className="truncate text-xs font-semibold">{image.title ?? image.originalName}</p>
+                    <p className={`mt-1 truncate text-[11px] ${isAddedToPaper ? "font-medium text-emerald-700" : "text-zinc-500"}`}>
+                      {isAddedToPaper
+                        ? t.addedToPaper
+                        : isDropTargetActive && draggedImageId === image.id
+                          ? t.dropImageToPaper
+                          : t.addImage}
+                    </p>
+                  </div>
                 </div>
-                <div className="p-2">
-                  <p className="truncate text-xs font-semibold">{image.title ?? image.originalName}</p>
-                  <p className="mt-1 truncate text-[11px] text-zinc-500">
-                    {isDropTargetActive && draggedImageId === image.id ? t.dropImageToPaper : t.addImage}
-                  </p>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
         <div className="flex items-center justify-between gap-2 border-t border-zinc-200 p-3 text-xs text-zinc-500">

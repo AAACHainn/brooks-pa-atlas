@@ -948,16 +948,14 @@ function MaskedImage({
           {rects.map((rect, index) => (
             <div
               key={`${rect.x}-${rect.y}-${index}`}
-              className={`absolute border ${
-                editable ? "cursor-move" : ""
-              } ${selectedIndex === index ? "border-cyan-300 ring-2 ring-cyan-300/80" : "border-white/40"}`}
+              className={`absolute ${editable ? "cursor-move" : ""}`}
               style={maskStyle(rect)}
               onPointerDown={(event) => startMove(index, event)}
             />
           ))}
           {draftRect ? (
             <div
-              className="absolute border border-cyan-300 ring-2 ring-cyan-300/80"
+              className="absolute"
               style={maskStyle(draftRect)}
             />
           ) : null}

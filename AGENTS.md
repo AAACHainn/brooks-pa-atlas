@@ -325,8 +325,8 @@ npm run db:init
 - PDF importer 使用 PDF 内置 outline/bookmarks 作为目录来源，不做正文目录页 OCR 识别。
 - 未选中索引时在根节点创建 PDF 文件名容器；选中索引时在该索引子树下创建 PDF 文件名容器。
 - 有书签时按书签层级创建子索引；没有书签或页面未命中书签时，页图片挂到 PDF 容器节点。
-- 每页默认最多以 1.5 倍渲染，最长边限制为 1800px，并用 JPEG 质量 82 直接输出图片；之后复用 `importImageBuffer()` 入库，继续使用同一套图库保存、SHA-256 去重、`ImportBatch`、`ImportItem`、OCR、备份和撤销逻辑。
-- PDF 转图片和导入并发参数可通过环境变量调整：`BROOKS_PDF_RENDER_SCALE`、`BROOKS_PDF_MAX_IMAGE_EDGE`、`BROOKS_PDF_JPEG_QUALITY`、`BROOKS_PDF_IMPORT_CONCURRENCY`。并发默认 `2`，范围 `1-4`。
+- 每页默认最多以 1.8 倍渲染，最长边限制为 1920px，并用 JPEG 初始质量 84 输出；编码会先降质量、必要时再缩放，默认以 500KB 作为单页图片上限，常规页面保持长边约 1080px 以上，极复杂页面会继续压缩以满足体积上限。之后复用 `importImageBuffer()` 入库，继续使用同一套图库保存、SHA-256 去重、`ImportBatch`、`ImportItem`、OCR、备份和撤销逻辑。
+- PDF 转图片和导入并发参数可通过环境变量调整：`BROOKS_PDF_RENDER_SCALE`、`BROOKS_PDF_MAX_IMAGE_EDGE`、`BROOKS_PDF_JPEG_QUALITY`、`BROOKS_PDF_MAX_IMAGE_BYTES`、`BROOKS_PDF_IMPORT_CONCURRENCY`。并发默认 `2`，范围 `1-4`。
 - 单页渲染失败只创建该页 `FAILED` 导入项，其他页继续处理。
 
 ## 11. 图片列表、分页和排序

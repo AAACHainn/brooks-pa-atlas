@@ -181,15 +181,16 @@ PDF 导入规则：
 - 未选中索引时，会在根节点创建以 PDF 文件名命名的容器索引。
 - 选中某个索引时，会在该索引子树下创建 PDF 文件名容器索引。
 - PDF 有内置书签目录时，页图片会挂到对应书签章节下；没有书签时，所有页图片挂到 PDF 容器索引下。
-- PDF 页面默认以 1.5 倍渲染，压缩为 JPEG，最长边限制为 1800px，质量为 82；转换后的图片会进入同一套图库、SHA-256 去重、导入批次、OCR、备份和撤销流程。
+- PDF 页面默认以 1.8 倍渲染，压缩为 JPEG，最长边限制为 1920px，初始质量为 84，并默认把单页图片控制在 500KB 以内；转换后的图片会进入同一套图库、SHA-256 去重、导入批次、OCR、备份和撤销流程。
 - PDF 页面导入默认使用 2 路并发，避免大文档长时间卡在单个同步请求里。
 
 PDF 转图片参数可以用环境变量调整：
 
 ```powershell
-$env:BROOKS_PDF_RENDER_SCALE="1.5"
-$env:BROOKS_PDF_MAX_IMAGE_EDGE="1800"
-$env:BROOKS_PDF_JPEG_QUALITY="82"
+$env:BROOKS_PDF_RENDER_SCALE="1.8"
+$env:BROOKS_PDF_MAX_IMAGE_EDGE="1920"
+$env:BROOKS_PDF_JPEG_QUALITY="84"
+$env:BROOKS_PDF_MAX_IMAGE_BYTES="512000"
 $env:BROOKS_PDF_IMPORT_CONCURRENCY="2"
 ```
 

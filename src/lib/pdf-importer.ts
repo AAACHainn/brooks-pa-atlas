@@ -2,7 +2,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
-import { createCanvas, Path2D } from "@napi-rs/canvas/node-canvas.js";
+import { createCanvas, Path2D, type Canvas } from "@napi-rs/canvas/node-canvas.js";
 import {
   GlobalWorkerOptions,
   getDocument,
@@ -47,10 +47,15 @@ type RenderedPdfPage = {
 };
 
 const pdfMimeTypes = new Set(["application/pdf", "application/x-pdf"]);
-const defaultPdfRenderScale = 1.5;
-const defaultPdfMaxImageEdge = 1800;
-const defaultPdfJpegQuality = 82;
+const defaultPdfRenderScale = 1.8;
+const defaultPdfMaxImageEdge = 1920;
+const defaultPdfJpegQuality = 84;
+const defaultPdfMaxImageBytes = 500 * 1024;
 const defaultPdfImportConcurrency = 2;
+const pdfReadableJpegQuality = 68;
+const pdfMinimumLongEdge = 1080;
+const pdfCompactJpegQuality = 55;
+const pdfSmallestJpegQuality = 40;
 const requireFromProject = createRequire(`${process.cwd()}${path.sep}`);
 const drawOps = {
   moveTo: 0,
@@ -107,6 +112,12 @@ function getPdfRenderOptions() {
       numberFromEnv("BROOKS_PDF_JPEG_QUALITY", defaultPdfJpegQuality, {
         min: 40,
         max: 95,
+      }),
+    ),
+    maxImageBytes: Math.round(
+      numberFromEnv("BROOKS_PDF_MAX_IMAGE_BYTES", defaultPdfMaxImageBytes, {
+        min: 100 * 1024,
+        max: 5 * 1024 * 1024,
       }),
     ),
   };
@@ -223,6 +234,89 @@ function patchPdfRenderContext(context: CanvasRenderingContext2D) {
   return context;
 }
 
+function jpegBuffer(canvas: Canvas, quality: number) {
+  return canvas.toBuffer("image/jpeg", { quality: quality / 100 });
+}
+
+function resizeCanvas(source: Canvas, width: number, height: number) {
+  const resized = createCanvas(width, height);
+  const context = resized.getContext("2d");
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(source, 0, 0, width, height);
+
+  return resized;
+}
+
+function nextLongEdgeForByteBudget(currentLongEdge: number, currentBytes: number, targetBytes: number) {
+  const byteRatio = targetBytes / currentBytes;
+  const resizeRatio = Math.min(0.94, Math.sqrt(byteRatio));
+  return Math.max(1, Math.min(currentLongEdge - 1, Math.floor(currentLongEdge * resizeRatio)));
+}
+
+function encodePdfPageAsJpeg(canvas: Canvas, options: ReturnType<typeof getPdfRenderOptions>) {
+  let workingCanvas = canvas;
+  let quality = options.jpegQuality;
+  let buffer = jpegBuffer(workingCanvas, quality);
+
+  while (buffer.length > options.maxImageBytes && quality > pdfReadableJpegQuality) {
+    quality = Math.max(pdfReadableJpegQuality, quality - 4);
+    buffer = jpegBuffer(workingCanvas, quality);
+  }
+
+  while (
+    buffer.length > options.maxImageBytes &&
+    Math.max(workingCanvas.width, workingCanvas.height) > pdfMinimumLongEdge
+  ) {
+    const currentLongEdge = Math.max(workingCanvas.width, workingCanvas.height);
+    const targetLongEdge = Math.max(
+      pdfMinimumLongEdge,
+      Math.floor(currentLongEdge * Math.min(0.94, Math.sqrt(options.maxImageBytes / buffer.length))),
+    );
+    const resizeRatio = targetLongEdge / currentLongEdge;
+    const width = Math.max(1, Math.round(workingCanvas.width * resizeRatio));
+    const height = Math.max(1, Math.round(workingCanvas.height * resizeRatio));
+
+    workingCanvas = resizeCanvas(workingCanvas, width, height);
+    buffer = jpegBuffer(workingCanvas, quality);
+  }
+
+  while (buffer.length > options.maxImageBytes && quality > pdfCompactJpegQuality) {
+    quality = Math.max(pdfCompactJpegQuality, quality - 4);
+    buffer = jpegBuffer(workingCanvas, quality);
+  }
+
+  while (buffer.length > options.maxImageBytes && quality > pdfSmallestJpegQuality) {
+    quality = Math.max(pdfSmallestJpegQuality, quality - 5);
+    buffer = jpegBuffer(workingCanvas, quality);
+  }
+
+  while (
+    buffer.length > options.maxImageBytes &&
+    Math.max(workingCanvas.width, workingCanvas.height) > 1
+  ) {
+    const currentLongEdge = Math.max(workingCanvas.width, workingCanvas.height);
+    const targetLongEdge = nextLongEdgeForByteBudget(
+      currentLongEdge,
+      buffer.length,
+      options.maxImageBytes,
+    );
+    const resizeRatio = targetLongEdge / currentLongEdge;
+    const width = Math.max(1, Math.round(workingCanvas.width * resizeRatio));
+    const height = Math.max(1, Math.round(workingCanvas.height * resizeRatio));
+
+    workingCanvas = resizeCanvas(workingCanvas, width, height);
+    buffer = jpegBuffer(workingCanvas, quality);
+  }
+
+  return {
+    buffer,
+    width: workingCanvas.width,
+    height: workingCanvas.height,
+  };
+}
+
 async function pageNumberForDest(pdf: PDFDocumentProxy, dest: string | unknown[] | null) {
   if (!dest) {
     return null;
@@ -318,11 +412,7 @@ async function renderPdfPage(pdf: PDFDocumentProxy, pageNumber: number): Promise
     page.cleanup();
   }
 
-  return {
-    buffer: canvas.toBuffer("image/jpeg", { quality: renderOptions.jpegQuality / 100 }),
-    width: canvas.width,
-    height: canvas.height,
-  };
+  return encodePdfPageAsJpeg(canvas, renderOptions);
 }
 
 export const pdfImporter: DocumentImporter = {

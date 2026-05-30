@@ -163,6 +163,26 @@ type TagSuggestionInputProps = {
   value: string;
 };
 
+type TagRemovalSelectorProps = {
+  ariaLabel: string;
+  className?: string;
+  onChange: (value: string) => void;
+  options: Array<ImageTag & { count: number }>;
+  placeholder: string;
+  totalCount: number;
+  value: string;
+};
+
+type TagFilterSelectorProps = {
+  ariaLabel: string;
+  className?: string;
+  clearLabel: string;
+  onClear: () => void;
+  onToggle: (id: string) => void;
+  options: ImageTag[];
+  selectedIds: Set<string>;
+};
+
 const chunkSize = 80;
 const destructiveConfirmPhrase = "确认删除";
 const collapsedIndexesStorageKey = "brooks-pa-atlas.collapsedIndexes";
@@ -741,6 +761,279 @@ function TagSuggestionInput({
   );
 }
 
+function TagRemovalSelector({
+  ariaLabel,
+  className = "",
+  onChange,
+  options,
+  placeholder,
+  totalCount,
+  value,
+}: TagRemovalSelectorProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = useId();
+  const selectedOption = options.find((tag) => tag.id === value);
+
+  function chooseOption(id: string) {
+    onChange(id);
+    setActiveIndex(-1);
+    setIsOpen(false);
+  }
+
+  function closeWhenFocusLeaves() {
+    window.setTimeout(() => {
+      if (!containerRef.current?.contains(document.activeElement)) {
+        setActiveIndex(-1);
+        setIsOpen(false);
+      }
+    }, 0);
+  }
+
+  return (
+    <div ref={containerRef} className={`relative ${className}`}>
+      <button
+        type="button"
+        onClick={() => {
+          setActiveIndex(-1);
+          setIsOpen((current) => !current);
+        }}
+        onBlur={closeWhenFocusLeaves}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" && options.length > 0) {
+            event.preventDefault();
+            setIsOpen(true);
+            setActiveIndex((current) => (current + 1) % options.length);
+            return;
+          }
+
+          if (event.key === "ArrowUp" && options.length > 0) {
+            event.preventDefault();
+            setIsOpen(true);
+            setActiveIndex((current) => (current <= 0 ? options.length - 1 : current - 1));
+            return;
+          }
+
+          if (event.key === "Escape") {
+            setActiveIndex(-1);
+            setIsOpen(false);
+            return;
+          }
+
+          if (event.key === "Enter" && isOpen && activeIndex >= 0) {
+            event.preventDefault();
+            chooseOption(options[activeIndex].id);
+          }
+        }}
+        className={`flex h-full w-full items-center rounded-md border bg-white text-left transition focus:outline-none focus:ring-2 focus:ring-cyan-100 ${
+          isOpen ? "border-cyan-600 ring-2 ring-cyan-100" : "border-zinc-200 hover:border-cyan-300"
+        }`}
+        aria-controls={listboxId}
+        aria-expanded={isOpen}
+        aria-haspopup="listbox"
+        aria-label={ariaLabel}
+      >
+        <TagIcon className="ml-2.5 h-3.5 w-3.5 shrink-0 text-cyan-700" />
+        <span
+          className={`min-w-0 flex-1 truncate px-2 ${
+            selectedOption ? "text-zinc-700" : "text-zinc-400"
+          }`}
+        >
+          {selectedOption
+            ? `${selectedOption.name} (${selectedOption.count}/${totalCount})`
+            : placeholder}
+        </span>
+        <ChevronDown
+          className={`mr-2.5 h-3.5 w-3.5 shrink-0 text-zinc-400 transition ${
+            isOpen ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+
+      {isOpen && options.length > 0 ? (
+        <div
+          id={listboxId}
+          role="listbox"
+          className="absolute left-0 top-[calc(100%+6px)] z-40 max-h-64 min-w-full overflow-auto rounded-md border border-zinc-200 bg-white p-1 shadow-lg shadow-zinc-950/10"
+        >
+          {options.map((tag, index) => (
+            <button
+              type="button"
+              key={tag.id}
+              role="option"
+              aria-selected={tag.id === value}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => chooseOption(tag.id)}
+              className={`flex h-8 w-full items-center gap-2 rounded px-2 text-left text-xs transition ${
+                activeIndex === index || tag.id === value
+                  ? "bg-cyan-50 text-cyan-900"
+                  : "text-zinc-700 hover:bg-zinc-50"
+              }`}
+            >
+              <TagIcon className="h-3.5 w-3.5 shrink-0 text-cyan-700" />
+              <span className="min-w-0 flex-1 truncate">{tag.name}</span>
+              <span className="shrink-0 rounded-full bg-cyan-50 px-1.5 py-0.5 text-[10px] text-cyan-700">
+                {tag.count}/{totalCount}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TagFilterSelector({
+  ariaLabel,
+  className = "",
+  clearLabel,
+  onClear,
+  onToggle,
+  options,
+  selectedIds,
+}: TagFilterSelectorProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = useId();
+  const selectedOptions = options.filter((tag) => selectedIds.has(tag.id));
+
+  function toggleOption(id: string) {
+    onToggle(id);
+  }
+
+  function closeWhenFocusLeaves() {
+    window.setTimeout(() => {
+      if (!containerRef.current?.contains(document.activeElement)) {
+        setActiveIndex(-1);
+        setIsOpen(false);
+      }
+    }, 0);
+  }
+
+  function handleTriggerKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "ArrowDown" && options.length > 0) {
+      event.preventDefault();
+      setIsOpen(true);
+      setActiveIndex((current) => (current + 1) % options.length);
+      return;
+    }
+
+    if (event.key === "ArrowUp" && options.length > 0) {
+      event.preventDefault();
+      setIsOpen(true);
+      setActiveIndex((current) => (current <= 0 ? options.length - 1 : current - 1));
+      return;
+    }
+
+    if (event.key === "Escape") {
+      setActiveIndex(-1);
+      setIsOpen(false);
+      return;
+    }
+
+    if (event.key === "Enter" && isOpen && activeIndex >= 0) {
+      event.preventDefault();
+      toggleOption(options[activeIndex].id);
+    }
+  }
+
+  return (
+    <div ref={containerRef} className={`relative ${className}`}>
+      <div
+        className={`flex h-full items-center rounded-md border bg-white transition focus-within:ring-2 focus-within:ring-cyan-100 ${
+          isOpen ? "border-cyan-600 ring-2 ring-cyan-100" : "border-zinc-200 hover:border-cyan-300"
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setActiveIndex(-1);
+            setIsOpen((current) => !current);
+          }}
+          onBlur={closeWhenFocusLeaves}
+          onKeyDown={handleTriggerKeyDown}
+          className="flex h-full min-w-0 flex-1 items-center text-left outline-none"
+          aria-controls={listboxId}
+          aria-expanded={isOpen}
+          aria-haspopup="listbox"
+          aria-label={ariaLabel}
+        >
+          <TagIcon className="ml-2.5 h-3.5 w-3.5 shrink-0 text-cyan-700" />
+          <span className={`min-w-0 flex-1 truncate px-2 ${selectedOptions.length > 0 ? "text-zinc-700" : "text-zinc-500"}`}>
+            {selectedOptions.length === 1 ? selectedOptions[0].name : ariaLabel}
+          </span>
+          {selectedOptions.length > 0 ? (
+            <span className="mr-1 shrink-0 rounded-full bg-cyan-50 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700">
+              {selectedOptions.length}
+            </span>
+          ) : null}
+        </button>
+        {selectedOptions.length > 0 ? (
+          <button
+            type="button"
+            onClick={onClear}
+            onBlur={closeWhenFocusLeaves}
+            className="grid h-full w-7 shrink-0 place-items-center text-zinc-400 transition hover:text-cyan-700"
+            aria-label={clearLabel}
+            title={clearLabel}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => {
+            setActiveIndex(-1);
+            setIsOpen((current) => !current);
+          }}
+          onBlur={closeWhenFocusLeaves}
+          onKeyDown={handleTriggerKeyDown}
+          className="grid h-full w-8 shrink-0 place-items-center text-zinc-400 transition hover:text-cyan-700"
+          aria-label={ariaLabel}
+          title={ariaLabel}
+        >
+          <ChevronDown className={`h-3.5 w-3.5 transition ${isOpen ? "rotate-180" : ""}`} />
+        </button>
+      </div>
+
+      {isOpen && options.length > 0 ? (
+        <div
+          id={listboxId}
+          role="listbox"
+          aria-multiselectable="true"
+          className="absolute left-0 top-[calc(100%+6px)] z-40 max-h-72 min-w-full w-60 overflow-auto rounded-md border border-zinc-200 bg-white p-1 shadow-lg shadow-zinc-950/10"
+        >
+          {options.map((tag, index) => {
+            const isSelected = selectedIds.has(tag.id);
+
+            return (
+              <button
+                type="button"
+                key={tag.id}
+                role="option"
+                aria-selected={isSelected}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => toggleOption(tag.id)}
+                className={`flex h-8 w-full items-center gap-2 rounded px-2 text-left text-xs transition ${
+                  activeIndex === index || isSelected
+                    ? "bg-cyan-50 text-cyan-900"
+                    : "text-zinc-700 hover:bg-zinc-50"
+                }`}
+              >
+                <TagIcon className="h-3.5 w-3.5 shrink-0 text-cyan-700" />
+                <span className="min-w-0 flex-1 truncate">{tag.name}</span>
+                {isSelected ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-cyan-700" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function backupFileNameFromHeader(value: string | null) {
   const match = value?.match(/filename="?([^"]+)"?/);
   return match?.[1] ?? `brooks-pa-atlas-backup-${new Date().toISOString().slice(0, 10)}.zip`;
@@ -1055,7 +1348,7 @@ export default function AtlasWorkbench() {
   const [newIndexName, setNewIndexName] = useState("");
   const [detailDraft, setDetailDraft] = useState({ title: "", notes: "", indexNodeId: "", tagNames: [] as string[] });
   const [detailTagInput, setDetailTagInput] = useState("");
-  const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
+  const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(() => new Set());
   const [selectedBulkImageIds, setSelectedBulkImageIds] = useState<Set<string>>(() => new Set());
   const [bulkTagInput, setBulkTagInput] = useState("");
   const [bulkRemoveTagId, setBulkRemoveTagId] = useState("");
@@ -1143,8 +1436,8 @@ export default function AtlasWorkbench() {
     if (selectedIndexId) {
       params.set("indexId", selectedIndexId);
     }
-    if (selectedTagId) {
-      params.set("tagId", selectedTagId);
+    for (const tagId of selectedTagIds) {
+      params.append("tagId", tagId);
     }
 
     try {
@@ -1155,14 +1448,15 @@ export default function AtlasWorkbench() {
 
       const nextData = (await response.json()) as AtlasData;
       setData(nextData);
-      if (selectedTagId && !nextData.tags.some((tag) => tag.id === selectedTagId)) {
-        setSelectedTagId(null);
+      const availableTagIds = new Set(nextData.tags.map((tag) => tag.id));
+      if ([...selectedTagIds].some((tagId) => !availableTagIds.has(tagId))) {
+        setSelectedTagIds(new Set([...selectedTagIds].filter((tagId) => availableTagIds.has(tagId))));
       }
       setDataError(null);
     } catch (error) {
       setDataError(error instanceof Error ? error.message : String(error));
     }
-  }, [query, selectedIndexId, selectedTagId]);
+  }, [query, selectedIndexId, selectedTagIds]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1312,7 +1606,6 @@ export default function AtlasWorkbench() {
   const selectedImage = data?.images.find((image) => image.id === selectedImageId) ?? null;
   const selectedImageIndex =
     data?.images.findIndex((image) => image.id === selectedImageId) ?? -1;
-  const activeTag = data?.tags.find((tag) => tag.id === selectedTagId) ?? null;
   const selectedBulkTagStats = useMemo(() => {
     const counts = new Map<string, { id: string; name: string; count: number }>();
 
@@ -1849,14 +2142,23 @@ export default function AtlasWorkbench() {
     setDetailTagInput("");
   }
 
-  function applyTagFilter(tagId: string) {
-    setSelectedTagId(tagId);
+  function toggleTagFilter(tagId: string) {
+    setSelectedTagIds((current) => {
+      const next = new Set(current);
+      if (next.has(tagId)) {
+        next.delete(tagId);
+      } else {
+        next.add(tagId);
+      }
+
+      return next;
+    });
     setImageGridPage(1);
     setSelectedBulkImageIds(new Set());
   }
 
   function clearTagFilter() {
-    setSelectedTagId(null);
+    setSelectedTagIds(new Set());
     setImageGridPage(1);
     setSelectedBulkImageIds(new Set());
   }
@@ -2464,18 +2766,15 @@ export default function AtlasWorkbench() {
                   placeholder={t.searchPlaceholder}
                 />
               </div>
-              {activeTag ? (
-                <button
-                  type="button"
-                  onClick={clearTagFilter}
-                  className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full border border-cyan-200 bg-cyan-50 px-3 text-xs font-medium text-cyan-800 hover:bg-cyan-100"
-                  title={t.clearTagFilter}
-                >
-                  <TagIcon className="h-3.5 w-3.5" />
-                  <span>{t.activeTag}: {activeTag.name}</span>
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
+              <TagFilterSelector
+                selectedIds={selectedTagIds}
+                onToggle={toggleTagFilter}
+                onClear={clearTagFilter}
+                options={data?.tags ?? []}
+                className="h-10 w-36 shrink-0 text-xs"
+                ariaLabel={t.activeTag}
+                clearLabel={t.clearTagFilter}
+              />
               {isManageMode ? (
                 <>
                   <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800">
@@ -2830,7 +3129,7 @@ export default function AtlasWorkbench() {
                           <button
                             type="button"
                             key={tag.id}
-                            onClick={() => applyTagFilter(tag.id)}
+                            onClick={() => toggleTagFilter(tag.id)}
                             className="inline-flex h-5 items-center rounded-full border border-cyan-200 bg-cyan-50 px-2 text-[11px] font-medium text-cyan-800 hover:bg-cyan-100"
                           >
                             {tag.name}
@@ -3003,18 +3302,15 @@ export default function AtlasWorkbench() {
                       <Plus className="h-3.5 w-3.5" />
                       {t.bulkAddTag}
                     </button>
-                    <select
+                    <TagRemovalSelector
                       value={bulkRemoveTagId}
-                      onChange={(event) => setBulkRemoveTagId(event.target.value)}
-                      className="h-8 min-w-40 rounded-md border border-cyan-200 bg-white px-2 outline-none focus:border-cyan-600"
-                    >
-                      <option value="">{t.removeTag}</option>
-                      {selectedBulkTagStats.map((tag) => (
-                        <option key={tag.id} value={tag.id}>
-                          {tag.name} ({tag.count}/{selectedBulkImageIds.size})
-                        </option>
-                      ))}
-                    </select>
+                      onChange={setBulkRemoveTagId}
+                      options={selectedBulkTagStats}
+                      totalCount={selectedBulkImageIds.size}
+                      className="h-8 min-w-44 text-xs"
+                      placeholder={t.removeTag}
+                      ariaLabel={t.removeTag}
+                    />
                     <button
                       type="button"
                       onClick={removeBulkTag}
@@ -3081,7 +3377,7 @@ export default function AtlasWorkbench() {
                             <button
                               type="button"
                               key={tag.id}
-                              onClick={() => applyTagFilter(tag.id)}
+                              onClick={() => toggleTagFilter(tag.id)}
                               className="inline-flex h-5 max-w-full items-center truncate rounded-full border border-cyan-200 bg-cyan-50 px-2 text-[11px] font-medium text-cyan-800 hover:bg-cyan-100"
                               title={tag.name}
                             >

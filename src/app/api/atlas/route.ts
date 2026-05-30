@@ -23,7 +23,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const query = url.searchParams.get("q")?.trim();
   const indexId = url.searchParams.get("indexId")?.trim();
-  const tagId = url.searchParams.get("tagId")?.trim();
+  const tagIds = [...new Set(url.searchParams.getAll("tagId").map((tagId) => tagId.trim()).filter(Boolean))];
 
   const selectedNode = indexId
     ? await prisma.indexNode.findUnique({ where: { id: indexId } })
@@ -52,7 +52,7 @@ export async function GET(request: Request) {
               ],
             }
           : {},
-        tagId ? { tags: { some: { tagId } } } : {},
+        ...tagIds.map((tagId) => ({ tags: { some: { tagId } } })),
       ],
     },
     orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],

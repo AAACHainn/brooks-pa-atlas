@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
 import { absoluteImagePath } from "@/lib/storage";
+import { cleanupUnusedTags, replaceImageTags } from "@/lib/tags";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,19 +18,37 @@ export async function PATCH(
     title?: string | null;
     notes?: string | null;
     indexNodeId?: string | null;
+    tagNames?: string[];
   };
 
-  const image = await prisma.chartImage.update({
-    where: { id },
-    data: {
-      title: body.title ?? null,
-      notes: body.notes ?? null,
-      indexNodeId: body.indexNodeId || null,
-    },
-    include: { indexNode: true },
+  const image = await prisma.$transaction(async (tx) => {
+    await tx.chartImage.update({
+      where: { id },
+      data: {
+        title: body.title ?? null,
+        notes: body.notes ?? null,
+        indexNodeId: body.indexNodeId || null,
+      },
+    });
+
+    if (Array.isArray(body.tagNames)) {
+      await replaceImageTags(tx, id, body.tagNames);
+    }
+
+    return tx.chartImage.findUniqueOrThrow({
+      where: { id },
+      include: { indexNode: true, tags: { include: { tag: true } } },
+    });
   });
 
-  return NextResponse.json({ image });
+  return NextResponse.json({
+    image: {
+      ...image,
+      tags: image.tags
+        .map((item) => item.tag)
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    },
+  });
 }
 
 export async function DELETE(
@@ -68,7 +87,10 @@ export async function DELETE(
     }
   }
 
-  await prisma.chartImage.delete({ where: { id: image.id } });
+  await prisma.$transaction(async (tx) => {
+    await tx.chartImage.delete({ where: { id: image.id } });
+    await cleanupUnusedTags(tx);
+  });
 
   return NextResponse.json({ ok: true });
 }

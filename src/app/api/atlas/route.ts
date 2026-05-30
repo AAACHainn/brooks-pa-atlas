@@ -23,6 +23,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const query = url.searchParams.get("q")?.trim();
   const indexId = url.searchParams.get("indexId")?.trim();
+  const tagId = url.searchParams.get("tagId")?.trim();
 
   const selectedNode = indexId
     ? await prisma.indexNode.findUnique({ where: { id: indexId } })
@@ -47,14 +48,16 @@ export async function GET(request: Request) {
                 { notes: { contains: query } },
                 { ocrText: { contains: query } },
                 { indexNode: { path: { contains: query } } },
+                { tags: { some: { tag: { name: { contains: query } } } } },
               ],
             }
           : {},
+        tagId ? { tags: { some: { tagId } } } : {},
       ],
     },
     orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],
     take: 200,
-    include: { indexNode: true },
+    include: { indexNode: true, tags: { include: { tag: true } } },
   });
   const sortedImages = [...images].sort((left, right) => {
     const nameComparison = imageNameCollator.compare(left.originalName, right.originalName);
@@ -65,7 +68,7 @@ export async function GET(request: Request) {
     return left.createdAt.getTime() - right.createdAt.getTime();
   });
 
-  const [tree, batches, stats] = await Promise.all([
+  const [tree, batches, stats, tags] = await Promise.all([
     getIndexTree(),
     prisma.importBatch.findMany({
       orderBy: { createdAt: "desc" },
@@ -82,11 +85,16 @@ export async function GET(request: Request) {
       by: ["ocrStatus"],
       _count: { _all: true },
     }),
+    prisma.tag.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
   ]);
 
   return NextResponse.json({
     tree,
     batches,
+    tags,
     images: sortedImages.map((image) => ({
       id: image.id,
       originalName: image.originalName,
@@ -102,6 +110,9 @@ export async function GET(request: Request) {
       ocrText: snippet(image.ocrText),
       ocrError: snippet(image.ocrError, 120),
       createdAt: image.createdAt,
+      tags: image.tags
+        .map((item) => item.tag)
+        .sort((left, right) => left.name.localeCompare(right.name)),
       indexNode: image.indexNode
         ? {
             id: image.indexNode.id,

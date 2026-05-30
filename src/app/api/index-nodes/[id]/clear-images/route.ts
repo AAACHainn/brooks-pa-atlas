@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
 import { absoluteImagePath } from "@/lib/storage";
+import { cleanupUnusedTags } from "@/lib/tags";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -65,8 +66,11 @@ export async function POST(
     }
   }
 
-  await prisma.chartImage.deleteMany({
-    where: { id: { in: images.map((image) => image.id) } },
+  await prisma.$transaction(async (tx) => {
+    await tx.chartImage.deleteMany({
+      where: { id: { in: images.map((image) => image.id) } },
+    });
+    await cleanupUnusedTags(tx);
   });
 
   return NextResponse.json({ ok: true, removedCount: images.length });

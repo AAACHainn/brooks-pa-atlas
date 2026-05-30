@@ -26,3 +26,5 @@ if (existingTables.length === 0) {
 }
 
 db.close();
+
+await import("./migrate-db.mjs");

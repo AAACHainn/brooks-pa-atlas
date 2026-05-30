@@ -38,6 +38,7 @@ export async function GET(request: Request) {
               { notes: { contains: query } },
               { ocrText: { contains: query } },
               { indexNode: { path: { contains: query } } },
+              { tags: { some: { tag: { name: { contains: query } } } } },
             ],
           }
         : {},

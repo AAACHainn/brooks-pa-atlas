@@ -47,7 +47,7 @@ Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart
 - 用无限层级索引树组织图表图片。
 - 导入后图片立刻入库并可浏览，OCR 在后台队列异步执行。
 - 首页直接进入 Atlas 工作台，不做营销页。
-- 第一版不做登录、云同步、AI 分类、AI 分析和多标签体系。
+- 第一版不做登录、云同步、AI 分类和 AI 分析。
 
 ## 3. 技术栈
 
@@ -87,7 +87,7 @@ npm run db:init
 - `npm run build` 运行生产构建和类型检查。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
-- `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库。
+- `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库，并继续执行全部增量 migrations。
 
 注意：
 
@@ -122,6 +122,7 @@ npm run db:init
 - `src/app/api/index-nodes/route.ts`：索引节点查询、创建、重命名、排序字段更新和删除。
 - `src/app/api/index-nodes/[id]/clear-images/route.ts`：清空某个索引及其后代下的图片。
 - `src/app/api/images/[id]/route.ts`：更新或删除单张图片。
+- `src/app/api/images/tags/route.ts`：批量给指定图片添加或移除标签。
 - `src/app/api/images/route.ts`：分页查询图库图片，供考试模式选择已有图片。
 - `src/app/api/images/[id]/file/route.ts`：读取图库内图片文件并返回给浏览器。
 - `src/app/api/ocr/retry/route.ts`：重试失败 OCR。
@@ -164,6 +165,8 @@ npm run db:init
 
 - `IndexNode`：无限层级索引节点，字段包括 `name`、`parentId`、`depth`、`path`、`sortOrder`。
 - `ChartImage`：图片主表，保存图库路径、原始文件名、mime type、大小、尺寸、hash、标题、备注、OCR 文本、OCR 状态、所属索引、导入批次。
+- `Tag`：可复用自由标签，保存展示名和大小写无关的规范化名称。
+- `ChartImageTag`：图片与标签的多对多关联；图片删除时级联删除关联，无图片使用的标签会自动清理。
 - `ImportBatch`：一次批量导入任务，保存总数、成功数、失败数、重复数、OCR 进度、状态、开始和结束时间。
 - `ImportItem`：导入批次中的单张图片记录，保存原始文件名、相对路径、保存路径、分组、状态、错误和映射索引。
 - `AppSetting`：本地设置，目前用于 OCR 并发数等键值配置。
@@ -226,6 +229,9 @@ npm run db:init
 - 可以导入备份 zip 进行恢复；恢复使用合并覆盖模式，相同 SHA-256 hash 的图片更新元数据和索引归属，不创建重复图片，也不删除当前系统里备份外的数据。
 - 可以创建当前选中索引下的新子索引。
 - 图片详情支持编辑标题、备注、所属索引。
+- 图片详情支持动态添加和移除标签，点击保存后与其他详情一起落库。
+- 图片网格支持复选框跨页选择；筛选条件或页面模式变化时清空选择，批量标签工具栏可以为选中图片添加或移除标签。
+- 标签输入使用应用内自绘建议菜单，不依赖浏览器原生 `datalist`；支持自由输入、已有标签过滤、方向键选择和回车确认。
 - 支持删除单张图片，删除前必须二次确认。
 - OCR 失败可重试。
 - 最近导入批次可撤销，撤销前必须二次确认。
@@ -333,7 +339,7 @@ npm run db:init
 
 `GET /api/atlas` 当前限制返回最多 `200` 张图片。服务端查询按 `originalName`、`createdAt` 排序，返回前又使用 `Intl.Collator` 做自然排序，避免 `1.jpg`、`2.jpg`、`10.jpg` 这类名称出现字典序错乱。
 
-考试模式选图使用 `GET /api/images?q=&indexId=&page=&pageSize=`，支持分页查询，不受 `/api/atlas` 200 张返回上限影响。
+考试模式选图使用 `GET /api/images?q=&indexId=&page=&pageSize=`，支持分页查询，不受 `/api/atlas` 200 张返回上限影响；关键词搜索也会匹配标签名称。
 
 前端图片网格分页：
 
@@ -373,10 +379,11 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 `GET /api/atlas`
 
-- 参数：`q`、`indexId`。
+- 参数：`q`、`indexId`、`tagId`。
 - 返回：索引树、图片列表、最近导入批次、统计信息。
 - 索引筛选包含所选节点及其后代路径。
-- 搜索覆盖 `originalName`、`title`、`notes`、`ocrText`、`indexNode.path`。
+- 搜索覆盖 `originalName`、`title`、`notes`、`ocrText`、`indexNode.path` 和标签名称。
+- 参数 `tagId` 可叠加一个精确标签筛选条件。
 - 图片列表当前 `take: 200`。
 - OCR 文本和错误会截断返回，避免接口太大。
 
@@ -384,7 +391,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 - 导出 `brooks-pa-atlas-backup-YYYYMMDD-HHmmssZ.zip`。
 - zip 顶层包含 `manifest.json` 和 `images/<hash>.<ext>` 图片文件。
-- manifest 格式为 `brooks-pa-atlas.backup` v2，保存索引树、图片元数据、试卷、题目、考试记录和 zip 内相对图片路径；恢复仍兼容 v1。
+- manifest 格式为 `brooks-pa-atlas.backup` v3，保存索引树、图片元数据、标签、试卷、题目、考试记录和 zip 内相对图片路径；恢复仍兼容 v1 和 v2。
 - 不保存 Windows 或 Linux 绝对路径，便于跨部署环境恢复。
 - 导出前会校验数据库中每张图片的图库文件存在；如果缺失则返回错误，不生成不完整备份。
 - 全量备份包含考试数据；按索引子树导出时仍只导出该索引下的索引和图片，不导出试卷，避免试卷引用缺失图片。
@@ -398,7 +405,8 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 按 SHA-256 hash 恢复图片；相同 hash 更新元数据和索引归属，不创建重复图片。
 - 如果相同 hash 的数据库记录存在但图库文件丢失，会从备份重新写入当前环境图库目录并更新 `libraryPath`。
 - 不删除当前系统中备份外的索引、图片或文件；不恢复旧 `ImportBatch` / `ImportItem` 历史。
-- v2 恢复会通过图片 SHA-256 hash 重新映射试题图片；缺失图片时拒绝恢复对应考试数据，避免断开的题目引用。
+- v2 和 v3 恢复会通过图片 SHA-256 hash 重新映射试题图片；缺失图片时拒绝恢复对应考试数据，避免断开的题目引用。
+- v3 恢复会覆盖备份内图片的标签；恢复旧版 v1 / v2 备份时保留当前系统中已有图片的标签。
 
 考试 API：
 
@@ -480,7 +488,12 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 `PATCH /api/images/[id]`
 
-- 更新标题、备注、所属索引。
+- 更新标题、备注、所属索引和标签。
+
+`PATCH /api/images/tags`
+
+- 批量给指定图片添加或移除标签。
+- 添加使用并集语义，移除只删除指定标签关联，不覆盖图片上的其他标签。
 
 `DELETE /api/images/[id]`
 

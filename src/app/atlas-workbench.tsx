@@ -5,6 +5,7 @@
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardList,
@@ -16,9 +17,11 @@ import {
   ImageIcon,
   Loader2,
   PencilLine,
+  Plus,
   RefreshCw,
   RotateCcw,
   Search,
+  Tag as TagIcon,
   Trash2,
   Undo2,
   UploadCloud,
@@ -26,7 +29,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import ExamMode from "@/app/exam-mode";
 
@@ -55,7 +58,13 @@ type ChartImage = {
   ocrText: string | null;
   ocrError: string | null;
   createdAt: string;
+  tags: ImageTag[];
   indexNode: { id: string; name: string; path: string } | null;
+};
+
+type ImageTag = {
+  id: string;
+  name: string;
 };
 
 type ImportBatch = {
@@ -74,6 +83,7 @@ type ImportBatch = {
 type AtlasData = {
   tree: IndexTreeNode[];
   images: ChartImage[];
+  tags: ImageTag[];
   batches: ImportBatch[];
   stats: {
     imageCount: number;
@@ -141,9 +151,22 @@ type NoticeDialog = {
   tone: "warning" | "error";
 };
 
+type TagSuggestionInputProps = {
+  ariaLabel: string;
+  className?: string;
+  excludedNames?: string[];
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  placeholder: string;
+  suggestions: ImageTag[];
+  submitOnComma?: boolean;
+  value: string;
+};
+
 const chunkSize = 80;
 const destructiveConfirmPhrase = "确认删除";
 const collapsedIndexesStorageKey = "brooks-pa-atlas.collapsedIndexes";
+const maxTagSuggestions = 8;
 
 const copy = {
   zh: {
@@ -172,7 +195,17 @@ const copy = {
     reorderIndexMode: "索引排序",
     reorderIndexFailed: "索引排序失败，请稍后重试。",
     allImages: "全部图片",
-    searchPlaceholder: "搜索标题、OCR、备注、索引",
+    searchPlaceholder: "搜索标题、OCR、备注、索引、标签",
+    tags: "标签",
+    tagPlaceholder: "输入或选择标签",
+    addTag: "添加标签",
+    removeTag: "移除标签",
+    activeTag: "标签筛选",
+    clearTagFilter: "清除标签筛选",
+    bulkSelected: "已选图片",
+    bulkAddTag: "批量添加",
+    bulkRemoveTag: "批量移除",
+    bulkTagUpdateFailed: "批量更新标签失败，请稍后重试。",
     chooseImages: "选择图片",
     chooseFolder: "选择文件夹",
     importDocuments: "导入资料",
@@ -184,7 +217,7 @@ const copy = {
     backupFailed: "备份失败，请稍后重试。",
     restoreFailed: "恢复失败，请确认 zip 文件有效后重试。",
     restoreConfirmMessage:
-      "恢复会合并备份数据：相同图片会覆盖标题、备注、OCR 和索引归属，不会删除当前系统中备份外的数据。是否继续？",
+      "恢复会合并备份数据：相同图片会覆盖标题、备注、标签、OCR 和索引归属，不会删除当前系统中备份外的数据。是否继续？",
     backupTaskTitle: "备份进度",
     restoreTaskTitle: "恢复进度",
     taskPreparing: "正在准备任务",
@@ -310,7 +343,17 @@ const copy = {
     reorderIndexMode: "Reorder",
     reorderIndexFailed: "Index reorder failed. Please try again.",
     allImages: "All images",
-    searchPlaceholder: "Search title, OCR, notes, index",
+    searchPlaceholder: "Search title, OCR, notes, index, tags",
+    tags: "Tags",
+    tagPlaceholder: "Enter or select a tag",
+    addTag: "Add tag",
+    removeTag: "Remove tag",
+    activeTag: "Tag filter",
+    clearTagFilter: "Clear tag filter",
+    bulkSelected: "Selected images",
+    bulkAddTag: "Add to selected",
+    bulkRemoveTag: "Remove from selected",
+    bulkTagUpdateFailed: "Bulk tag update failed. Please try again.",
     chooseImages: "Choose images",
     chooseFolder: "Choose folder",
     importDocuments: "Import materials",
@@ -322,7 +365,7 @@ const copy = {
     backupFailed: "Backup failed. Please try again.",
     restoreFailed: "Restore failed. Please confirm the zip file is valid and try again.",
     restoreConfirmMessage:
-      "Restore will merge backup data: matching images overwrite title, notes, OCR, and index assignment, and data outside the backup will not be deleted. Continue?",
+      "Restore will merge backup data: matching images overwrite title, notes, tags, OCR, and index assignment, and data outside the backup will not be deleted. Continue?",
     backupTaskTitle: "Backup progress",
     restoreTaskTitle: "Restore progress",
     taskPreparing: "Preparing task",
@@ -544,6 +587,158 @@ function formatBytes(value: number) {
   }
 
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function addTagName(names: string[], value: string) {
+  const name = value.trim();
+  if (!name || names.some((item) => item.toLowerCase() === name.toLowerCase())) {
+    return names;
+  }
+
+  return [...names, name].sort((left, right) => left.localeCompare(right));
+}
+
+function removeTagName(names: string[], value: string) {
+  const normalizedName = value.toLowerCase();
+  return names.filter((item) => item.toLowerCase() !== normalizedName);
+}
+
+function TagSuggestionInput({
+  ariaLabel,
+  className = "",
+  excludedNames = [],
+  onChange,
+  onSubmit,
+  placeholder,
+  suggestions,
+  submitOnComma = false,
+  value,
+}: TagSuggestionInputProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = useId();
+  const normalizedQuery = value.trim().toLowerCase();
+  const excluded = new Set(excludedNames.map((name) => name.toLowerCase()));
+  const filteredSuggestions = suggestions
+    .filter((tag) => !excluded.has(tag.name.toLowerCase()))
+    .filter((tag) => !normalizedQuery || tag.name.toLowerCase().includes(normalizedQuery))
+    .slice(0, maxTagSuggestions);
+
+  function chooseSuggestion(name: string) {
+    onChange(name);
+    setActiveIndex(-1);
+    setIsOpen(false);
+  }
+
+  function closeWhenFocusLeaves() {
+    window.setTimeout(() => {
+      if (!containerRef.current?.contains(document.activeElement)) {
+        setActiveIndex(-1);
+        setIsOpen(false);
+      }
+    }, 0);
+  }
+
+  return (
+    <div ref={containerRef} className={`relative ${className}`}>
+      <div className="flex h-full items-center rounded-md border border-zinc-200 bg-white transition focus-within:border-cyan-600 focus-within:ring-2 focus-within:ring-cyan-100">
+        <TagIcon className="ml-2.5 h-3.5 w-3.5 shrink-0 text-cyan-700" />
+        <input
+          value={value}
+          onChange={(event) => {
+            onChange(event.target.value);
+            setActiveIndex(-1);
+            setIsOpen(true);
+          }}
+          onFocus={() => setIsOpen(true)}
+          onBlur={closeWhenFocusLeaves}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown" && filteredSuggestions.length > 0) {
+              event.preventDefault();
+              setIsOpen(true);
+              setActiveIndex((current) => (current + 1) % filteredSuggestions.length);
+              return;
+            }
+
+            if (event.key === "ArrowUp" && filteredSuggestions.length > 0) {
+              event.preventDefault();
+              setIsOpen(true);
+              setActiveIndex((current) =>
+                current <= 0 ? filteredSuggestions.length - 1 : current - 1,
+              );
+              return;
+            }
+
+            if (event.key === "Escape") {
+              setActiveIndex(-1);
+              setIsOpen(false);
+              return;
+            }
+
+            if (event.key === "Enter" || (submitOnComma && event.key === ",")) {
+              event.preventDefault();
+              if (activeIndex >= 0) {
+                chooseSuggestion(filteredSuggestions[activeIndex].name);
+              } else {
+                onSubmit();
+                setIsOpen(false);
+              }
+            }
+          }}
+          className="h-full min-w-0 flex-1 bg-transparent px-2 text-inherit outline-none"
+          placeholder={placeholder}
+          aria-label={ariaLabel}
+          aria-controls={listboxId}
+          aria-expanded={isOpen && filteredSuggestions.length > 0}
+          aria-activedescendant={activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined}
+          aria-autocomplete="list"
+          role="combobox"
+        />
+        <button
+          type="button"
+          onClick={() => {
+            setActiveIndex(-1);
+            setIsOpen((current) => !current);
+          }}
+          onBlur={closeWhenFocusLeaves}
+          className="grid h-full w-8 shrink-0 place-items-center text-zinc-400 transition hover:text-cyan-700"
+          aria-label={ariaLabel}
+          title={ariaLabel}
+        >
+          <ChevronDown className={`h-3.5 w-3.5 transition ${isOpen ? "rotate-180" : ""}`} />
+        </button>
+      </div>
+
+      {isOpen && filteredSuggestions.length > 0 ? (
+        <div
+          id={listboxId}
+          role="listbox"
+          className="absolute left-0 top-[calc(100%+6px)] z-40 min-w-full overflow-hidden rounded-md border border-zinc-200 bg-white p-1 shadow-lg shadow-zinc-950/10"
+        >
+          {filteredSuggestions.map((tag, index) => (
+            <button
+              type="button"
+              key={tag.id}
+              id={`${listboxId}-${index}`}
+              role="option"
+              aria-selected={activeIndex === index}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => chooseSuggestion(tag.name)}
+              className={`flex h-8 w-full items-center gap-2 rounded px-2 text-left text-xs transition ${
+                activeIndex === index
+                  ? "bg-cyan-50 text-cyan-900"
+                  : "text-zinc-700 hover:bg-zinc-50"
+              }`}
+            >
+              <TagIcon className="h-3.5 w-3.5 shrink-0 text-cyan-700" />
+              <span className="truncate">{tag.name}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function backupFileNameFromHeader(value: string | null) {
@@ -858,7 +1053,13 @@ export default function AtlasWorkbench() {
   const [backupTask, setBackupTask] = useState<BackupJobSnapshot | null>(null);
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [newIndexName, setNewIndexName] = useState("");
-  const [detailDraft, setDetailDraft] = useState({ title: "", notes: "", indexNodeId: "" });
+  const [detailDraft, setDetailDraft] = useState({ title: "", notes: "", indexNodeId: "", tagNames: [] as string[] });
+  const [detailTagInput, setDetailTagInput] = useState("");
+  const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
+  const [selectedBulkImageIds, setSelectedBulkImageIds] = useState<Set<string>>(() => new Set());
+  const [bulkTagInput, setBulkTagInput] = useState("");
+  const [bulkRemoveTagId, setBulkRemoveTagId] = useState("");
+  const [bulkTagsBusy, setBulkTagsBusy] = useState(false);
   const [importPage, setImportPage] = useState(1);
   const [importPageSize, setImportPageSize] = useState(10);
   const [imageGridPage, setImageGridPage] = useState(1);
@@ -942,6 +1143,9 @@ export default function AtlasWorkbench() {
     if (selectedIndexId) {
       params.set("indexId", selectedIndexId);
     }
+    if (selectedTagId) {
+      params.set("tagId", selectedTagId);
+    }
 
     try {
       const response = await fetch(`/api/atlas?${params.toString()}`, { cache: "no-store" });
@@ -949,12 +1153,16 @@ export default function AtlasWorkbench() {
         throw new Error(`GET /api/atlas ${response.status}`);
       }
 
-      setData(await response.json());
+      const nextData = (await response.json()) as AtlasData;
+      setData(nextData);
+      if (selectedTagId && !nextData.tags.some((tag) => tag.id === selectedTagId)) {
+        setSelectedTagId(null);
+      }
       setDataError(null);
     } catch (error) {
       setDataError(error instanceof Error ? error.message : String(error));
     }
-  }, [query, selectedIndexId]);
+  }, [query, selectedIndexId, selectedTagId]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1104,6 +1312,23 @@ export default function AtlasWorkbench() {
   const selectedImage = data?.images.find((image) => image.id === selectedImageId) ?? null;
   const selectedImageIndex =
     data?.images.findIndex((image) => image.id === selectedImageId) ?? -1;
+  const activeTag = data?.tags.find((tag) => tag.id === selectedTagId) ?? null;
+  const selectedBulkTagStats = useMemo(() => {
+    const counts = new Map<string, { id: string; name: string; count: number }>();
+
+    for (const image of data?.images ?? []) {
+      if (!selectedBulkImageIds.has(image.id)) {
+        continue;
+      }
+
+      for (const tag of image.tags) {
+        const current = counts.get(tag.id);
+        counts.set(tag.id, { ...tag, count: (current?.count ?? 0) + 1 });
+      }
+    }
+
+    return [...counts.values()].sort((left, right) => left.name.localeCompare(right.name));
+  }, [data?.images, selectedBulkImageIds]);
   const pendingUndoBatch = data?.batches.find((batch) => batch.id === pendingUndoBatchId) ?? null;
   const indexContextImageCount = indexContextMenu
     ? indexBranchImageCount(indexContextMenu.node)
@@ -1123,6 +1348,7 @@ export default function AtlasWorkbench() {
             : t.unknown
         }`,
         `${t.hash}: ${selectedImage.hash}`,
+        selectedImage.tags.length > 0 ? `${t.tags}: ${selectedImage.tags.map((tag) => tag.name).join(", ")}` : null,
         selectedImage.notes ? `${t.notes}: ${selectedImage.notes}` : null,
         selectedImage.ocrError ? `${t.ocrFailedShort}: ${selectedImage.ocrError}` : null,
         selectedImage.ocrText ? `OCR: ${selectedImage.ocrText}` : null,
@@ -1188,6 +1414,7 @@ export default function AtlasWorkbench() {
         title: nextImage.title ?? "",
         notes: nextImage.notes ?? "",
         indexNodeId: nextImage.indexNode?.id ?? "",
+        tagNames: nextImage.tags.map((tag) => tag.name),
       });
     }
 
@@ -1384,6 +1611,7 @@ export default function AtlasWorkbench() {
 
     event.preventDefault();
     setSelectedIndexId(node.id);
+    setSelectedBulkImageIds(new Set());
     setIndexContextMenu({ node, x: event.clientX, y: event.clientY });
   }
 
@@ -1555,6 +1783,7 @@ export default function AtlasWorkbench() {
 
       if (selectedIndexId === indexAction.node.id) {
         setSelectedIndexId(null);
+        setSelectedBulkImageIds(new Set());
       }
       closeIndexAction(true);
       await refresh();
@@ -1608,7 +1837,88 @@ export default function AtlasWorkbench() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(detailDraft),
     });
+    setDetailTagInput("");
     await refresh();
+  }
+
+  function addDetailTag() {
+    setDetailDraft((draft) => ({
+      ...draft,
+      tagNames: addTagName(draft.tagNames, detailTagInput),
+    }));
+    setDetailTagInput("");
+  }
+
+  function applyTagFilter(tagId: string) {
+    setSelectedTagId(tagId);
+    setImageGridPage(1);
+    setSelectedBulkImageIds(new Set());
+  }
+
+  function clearTagFilter() {
+    setSelectedTagId(null);
+    setImageGridPage(1);
+    setSelectedBulkImageIds(new Set());
+  }
+
+  function toggleBulkImage(imageId: string) {
+    setSelectedBulkImageIds((current) => {
+      const next = new Set(current);
+      if (next.has(imageId)) {
+        next.delete(imageId);
+      } else {
+        next.add(imageId);
+      }
+
+      return next;
+    });
+  }
+
+  async function updateBulkTags(options: { addTagNames?: string[]; removeTagIds?: string[] }) {
+    if (selectedBulkImageIds.size === 0) {
+      return;
+    }
+
+    setBulkTagsBusy(true);
+    try {
+      const response = await fetch("/api/images/tags", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageIds: [...selectedBulkImageIds],
+          addTagNames: options.addTagNames ?? [],
+          removeTagIds: options.removeTagIds ?? [],
+        }),
+      });
+
+      if (!response.ok) {
+        window.alert(t.bulkTagUpdateFailed);
+        return;
+      }
+
+      setBulkTagInput("");
+      setBulkRemoveTagId("");
+      setSelectedBulkImageIds(new Set());
+      await refresh();
+    } finally {
+      setBulkTagsBusy(false);
+    }
+  }
+
+  function addBulkTag() {
+    if (!bulkTagInput.trim()) {
+      return;
+    }
+
+    void updateBulkTags({ addTagNames: [bulkTagInput] });
+  }
+
+  function removeBulkTag() {
+    if (!bulkRemoveTagId) {
+      return;
+    }
+
+    void updateBulkTags({ removeTagIds: [bulkRemoveTagId] });
   }
 
   async function retryOcr() {
@@ -1838,7 +2148,9 @@ export default function AtlasWorkbench() {
       title: image.title ?? "",
       notes: image.notes ?? "",
       indexNodeId: image.indexNode?.id ?? "",
+      tagNames: image.tags.map((tag) => tag.name),
     });
+    setDetailTagInput("");
   }
 
   function selectAdjacentImage(direction: -1 | 1) {
@@ -1855,6 +2167,7 @@ export default function AtlasWorkbench() {
   function selectIndex(id: string | null) {
     setSelectedIndexId(id);
     setImageGridPage(1);
+    setSelectedBulkImageIds(new Set());
   }
 
   function toggleIndexExpanded(id: string) {
@@ -1918,6 +2231,7 @@ export default function AtlasWorkbench() {
 
     setPersistedViewMode(mode);
     setImageGridPage(1);
+    setSelectedBulkImageIds(new Set());
   }
 
   function setPersistedViewMode(nextMode: ViewMode) {
@@ -2144,11 +2458,24 @@ export default function AtlasWorkbench() {
                   onChange={(event) => {
                     setQuery(event.target.value);
                     setImageGridPage(1);
+                    setSelectedBulkImageIds(new Set());
                   }}
                   className="h-10 w-full rounded-md border border-zinc-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-zinc-500"
                   placeholder={t.searchPlaceholder}
                 />
               </div>
+              {activeTag ? (
+                <button
+                  type="button"
+                  onClick={clearTagFilter}
+                  className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full border border-cyan-200 bg-cyan-50 px-3 text-xs font-medium text-cyan-800 hover:bg-cyan-100"
+                  title={t.clearTagFilter}
+                >
+                  <TagIcon className="h-3.5 w-3.5" />
+                  <span>{t.activeTag}: {activeTag.name}</span>
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
               {isManageMode ? (
                 <>
                   <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800">
@@ -2493,9 +2820,25 @@ export default function AtlasWorkbench() {
             {isBrowseMode && selectedImage ? (
               <div className="mb-4 rounded-md border border-zinc-200 bg-white p-4">
                 <div className="mb-3 flex min-h-8 min-w-0 flex-wrap items-center gap-3">
-                  <h2 className="min-w-0 flex-1 truncate text-base font-semibold" title={selectedImageTip}>
-                    {selectedImage.title ?? selectedImage.originalName}
-                  </h2>
+                  <div className="min-w-0 flex-1">
+                    <h2 className="truncate text-base font-semibold" title={selectedImageTip}>
+                      {selectedImage.title ?? selectedImage.originalName}
+                    </h2>
+                    {selectedImage.tags.length > 0 ? (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {selectedImage.tags.map((tag) => (
+                          <button
+                            type="button"
+                            key={tag.id}
+                            onClick={() => applyTagFilter(tag.id)}
+                            className="inline-flex h-5 items-center rounded-full border border-cyan-200 bg-cyan-50 px-2 text-[11px] font-medium text-cyan-800 hover:bg-cyan-100"
+                          >
+                            {tag.name}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                   <span className="min-w-0 max-w-[45%] truncate text-sm text-zinc-500" title={selectedImageTip}>
                     {selectedImage.indexNode?.path ?? t.unclassified}
                   </span>
@@ -2637,26 +2980,93 @@ export default function AtlasWorkbench() {
                     </div>
                   </div>
                 ) : null}
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-4">
-                  {imageGridPageImages.map((image) => (
+                {isManageMode && selectedBulkImageIds.size > 0 ? (
+                  <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-cyan-200 bg-cyan-50 p-3 text-xs text-cyan-950">
+                    <span className="font-semibold">
+                      {t.bulkSelected}: {selectedBulkImageIds.size}
+                    </span>
+                    <TagSuggestionInput
+                      value={bulkTagInput}
+                      onChange={setBulkTagInput}
+                      onSubmit={addBulkTag}
+                      suggestions={data?.tags ?? []}
+                      className="h-8 min-w-44 text-xs"
+                      placeholder={t.tagPlaceholder}
+                      ariaLabel={t.tagPlaceholder}
+                    />
                     <button
                       type="button"
+                      onClick={addBulkTag}
+                      disabled={bulkTagsBusy || !bulkTagInput.trim()}
+                      className="inline-flex h-8 items-center gap-1 rounded-md bg-cyan-700 px-3 font-medium text-white hover:bg-cyan-800 disabled:opacity-50"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      {t.bulkAddTag}
+                    </button>
+                    <select
+                      value={bulkRemoveTagId}
+                      onChange={(event) => setBulkRemoveTagId(event.target.value)}
+                      className="h-8 min-w-40 rounded-md border border-cyan-200 bg-white px-2 outline-none focus:border-cyan-600"
+                    >
+                      <option value="">{t.removeTag}</option>
+                      {selectedBulkTagStats.map((tag) => (
+                        <option key={tag.id} value={tag.id}>
+                          {tag.name} ({tag.count}/{selectedBulkImageIds.size})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={removeBulkTag}
+                      disabled={bulkTagsBusy || !bulkRemoveTagId}
+                      className="inline-flex h-8 items-center gap-1 rounded-md border border-cyan-300 bg-white px-3 font-medium text-cyan-800 hover:bg-cyan-100 disabled:opacity-50"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {t.bulkRemoveTag}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedBulkImageIds(new Set())}
+                      disabled={bulkTagsBusy}
+                      className="ml-auto h-8 rounded-md border border-cyan-300 bg-white px-3 font-medium text-cyan-800 hover:bg-cyan-100 disabled:opacity-50"
+                    >
+                      {t.clearSelection}
+                    </button>
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-4">
+                  {imageGridPageImages.map((image) => (
+                    <div
                       key={image.id}
-                      onClick={() => selectImage(image)}
-                      className={`overflow-hidden rounded-md border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+                      className={`relative overflow-hidden rounded-md border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
                         selectedImage?.id === image.id ? "border-zinc-950" : "border-zinc-200"
                       }`}
                     >
-                      <div className="aspect-[4/3] bg-zinc-100">
-                        <img
-                          src={`/api/images/${image.id}/file`}
-                          alt={image.title ?? image.originalName}
-                          className="h-full w-full object-contain"
-                          loading="lazy"
-                        />
-                      </div>
-                      <div className="space-y-2 p-3">
-                        <div>
+                      {isManageMode ? (
+                        <label className="absolute left-2 top-2 z-10 grid h-6 w-6 place-items-center rounded border border-zinc-200 bg-white/90 shadow-sm">
+                          <input
+                            type="checkbox"
+                            checked={selectedBulkImageIds.has(image.id)}
+                            onChange={() => toggleBulkImage(image.id)}
+                            className="h-4 w-4 accent-cyan-700"
+                            aria-label={`${t.bulkSelected}: ${image.title ?? image.originalName}`}
+                          />
+                        </label>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => selectImage(image)}
+                        className="block w-full text-left"
+                      >
+                        <div className="aspect-[4/3] bg-zinc-100">
+                          <img
+                            src={`/api/images/${image.id}/file`}
+                            alt={image.title ?? image.originalName}
+                            className="h-full w-full object-contain"
+                            loading="lazy"
+                          />
+                        </div>
+                        <div className="p-3 pb-2">
                           <p className="truncate text-sm font-semibold" title={image.title ?? image.originalName}>
                             {image.title ?? image.originalName}
                           </p>
@@ -2664,11 +3074,33 @@ export default function AtlasWorkbench() {
                             {image.indexNode?.path ?? t.unclassified}
                           </p>
                         </div>
+                      </button>
+                      {image.tags.length > 0 ? (
+                        <div className="flex min-h-5 flex-wrap gap-1 px-3 pb-2">
+                          {image.tags.slice(0, 2).map((tag) => (
+                            <button
+                              type="button"
+                              key={tag.id}
+                              onClick={() => applyTagFilter(tag.id)}
+                              className="inline-flex h-5 max-w-full items-center truncate rounded-full border border-cyan-200 bg-cyan-50 px-2 text-[11px] font-medium text-cyan-800 hover:bg-cyan-100"
+                              title={tag.name}
+                            >
+                              {tag.name}
+                            </button>
+                          ))}
+                          {image.tags.length > 2 ? (
+                            <span className="inline-flex h-5 items-center rounded-full bg-zinc-100 px-2 text-[11px] text-zinc-600">
+                              +{image.tags.length - 2}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      <div className="px-3 pb-3">
                         <span className={`inline-flex h-6 items-center rounded border px-2 text-xs ${ocrTone(image.ocrStatus)}`}>
                           {ocrStatusLabels[locale][image.ocrStatus]}
                         </span>
                       </div>
-                    </button>
+                    </div>
                   ))}
                 </div>
                 {imageGridTotalPages > 1 ? (
@@ -2728,6 +3160,57 @@ export default function AtlasWorkbench() {
                     className="h-9 w-full rounded-md border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-500"
                   />
                 </label>
+
+                <div>
+                  <span className="mb-1 block text-xs font-medium text-zinc-500">{t.tags}</span>
+                  {detailDraft.tagNames.length > 0 ? (
+                    <div className="mb-2 flex flex-wrap gap-1">
+                      {detailDraft.tagNames.map((name) => (
+                        <span
+                          key={name.toLowerCase()}
+                          className="inline-flex h-6 max-w-full items-center gap-1 rounded-full border border-cyan-200 bg-cyan-50 pl-2 pr-1 text-xs font-medium text-cyan-800"
+                        >
+                          <span className="truncate">{name}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDetailDraft((draft) => ({
+                                ...draft,
+                                tagNames: removeTagName(draft.tagNames, name),
+                              }))
+                            }
+                            className="grid h-4 w-4 shrink-0 place-items-center rounded-full hover:bg-cyan-100"
+                            title={`${t.removeTag}: ${name}`}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="flex gap-2">
+                    <TagSuggestionInput
+                      value={detailTagInput}
+                      onChange={setDetailTagInput}
+                      onSubmit={addDetailTag}
+                      suggestions={data?.tags ?? []}
+                      excludedNames={detailDraft.tagNames}
+                      submitOnComma
+                      className="h-9 min-w-0 flex-1 text-sm"
+                      placeholder={t.tagPlaceholder}
+                      ariaLabel={t.tagPlaceholder}
+                    />
+                    <button
+                      type="button"
+                      onClick={addDetailTag}
+                      disabled={!detailTagInput.trim()}
+                      className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-zinc-200 text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+                      title={t.addTag}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
 
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-zinc-500">{t.index}</span>

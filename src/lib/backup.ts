@@ -16,9 +16,10 @@ import {
   parseMaskRects,
 } from "@/lib/exam";
 import { absoluteImagePath, getLibraryRoot, sanitizeFileName } from "@/lib/storage";
+import { cleanupUnusedTags, replaceImageTags } from "@/lib/tags";
 
 const backupFormat = "brooks-pa-atlas.backup";
-const backupVersion = 2;
+const backupVersion = 3;
 const imageZipPrefix = "images/";
 
 const ocrStatusSchema = z.enum(["PENDING", "RUNNING", "COMPLETED", "FAILED", "SKIPPED"]);
@@ -55,6 +56,7 @@ const backupImageSchema = z.object({
   updatedAt: z.string().nullable(),
   indexPath: z.string().nullable(),
   imagePath: z.string().min(1),
+  tags: z.array(z.string()).optional(),
 });
 
 const backupExamQuestionSchema = z.object({
@@ -109,7 +111,7 @@ const backupExamAttemptSchema = z.object({
 
 const backupManifestSchema = z.object({
   format: z.literal(backupFormat),
-  version: z.union([z.literal(1), z.literal(backupVersion)]),
+  version: z.union([z.literal(1), z.literal(2), z.literal(backupVersion)]),
   exportedAt: z.string(),
   indexes: z.array(backupIndexSchema),
   images: z.array(backupImageSchema),
@@ -438,7 +440,7 @@ export async function createBackupZip(options: BackupOptions = {}) {
   const images = await prisma.chartImage.findMany({
     where: rootIndex ? { indexNodeId: { in: [...indexIds] } } : undefined,
     orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],
-    include: { indexNode: true },
+    include: { indexNode: true, tags: { include: { tag: true } } },
   });
   const [examPapers, examAttempts] = rootIndex
     ? [[], []] as const
@@ -504,6 +506,9 @@ export async function createBackupZip(options: BackupOptions = {}) {
         updatedAt: iso(image.updatedAt),
         indexPath: image.indexNode?.path ? exportPathByOriginalPath.get(image.indexNode.path) ?? null : null,
         imagePath,
+        tags: image.tags
+          .map((item) => item.tag.name)
+          .sort((left, right) => left.localeCompare(right)),
       },
     });
     processedImages += 1;
@@ -512,7 +517,7 @@ export async function createBackupZip(options: BackupOptions = {}) {
 
   const manifest: BackupManifest = {
     format: backupFormat,
-    version: rootIndex ? 1 : backupVersion,
+    version: backupVersion,
     exportedAt: new Date().toISOString(),
     indexes: indexes.map((index) => ({
       id: index.id,
@@ -734,20 +739,28 @@ async function restoreBackupSource(
         indexNodeId,
       };
 
+      await prisma.$transaction(async (tx) => {
+        const restoredImage = existing
+          ? await tx.chartImage.update({
+              where: { id: existing.id },
+              data: imageData,
+            })
+          : await tx.chartImage.create({
+              data: {
+                ...imageData,
+                hash: image.hash,
+                createdAt: parseDate(image.createdAt) ?? undefined,
+              },
+            });
+
+        if (manifest.version >= 3) {
+          await replaceImageTags(tx, restoredImage.id, image.tags ?? [], { cleanup: false });
+        }
+      });
+
       if (existing) {
-        await prisma.chartImage.update({
-          where: { id: existing.id },
-          data: imageData,
-        });
         stats.imagesUpdated += 1;
       } else {
-        await prisma.chartImage.create({
-          data: {
-            ...imageData,
-            hash: image.hash,
-            createdAt: parseDate(image.createdAt) ?? undefined,
-          },
-        });
         stats.imagesCreated += 1;
       }
 
@@ -772,6 +785,12 @@ async function restoreBackupSource(
       throw error;
     }
   });
+
+  if (manifest.version >= 3) {
+    await prisma.$transaction(async (tx) => {
+      await cleanupUnusedTags(tx);
+    });
+  }
 
   log("image restore completed", {
     imagesCreated: stats.imagesCreated,

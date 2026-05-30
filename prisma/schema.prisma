@@ -100,11 +100,36 @@ model ChartImage {
   importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   importItem  ImportItem?
   examQuestions ExamQuestion[]
+  tags          ChartImageTag[]
 
   @@index([indexNodeId])
   @@index([importBatchId])
   @@index([ocrStatus])
   @@index([originalName])
+}
+
+model Tag {
+  id             String   @id @default(cuid())
+  name           String
+  normalizedName String   @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  images ChartImageTag[]
+
+  @@index([name])
+}
+
+model ChartImageTag {
+  chartImageId String
+  tagId        String
+  createdAt    DateTime @default(now())
+
+  chartImage ChartImage @relation(fields: [chartImageId], references: [id], onDelete: Cascade)
+  tag        Tag        @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([chartImageId, tagId])
+  @@index([tagId])
 }
 
 model ImportBatch {

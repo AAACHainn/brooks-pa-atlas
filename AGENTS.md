@@ -45,7 +45,7 @@ Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart
 - 管理模式提供“导入资料”入口，第一版支持 PDF：把每页转换成图片，并按 PDF 内置书签目录挂载到索引树。
 - 数据库只保存图片相对路径和元数据，不保存图片 blob。
 - 用无限层级索引树组织图表图片。
-- 导入后图片立刻入库并可浏览，OCR 在后台队列异步执行。
+- 导入后图片立刻入库并可浏览，OCR 是可选项；默认跳过 OCR，用户可在导入时开启自动 OCR，或之后对单张图片手动 OCR。
 - 首页直接进入 Atlas 工作台，不做营销页。
 - 第一版不做登录、云同步、AI 分类和 AI 分析。
 
@@ -121,10 +121,11 @@ npm run db:init
 - `src/app/api/import/[id]/undo/route.ts`：撤销导入批次。
 - `src/app/api/index-nodes/route.ts`：索引节点查询、创建、重命名、排序字段更新和删除。
 - `src/app/api/index-nodes/[id]/clear-images/route.ts`：清空某个索引及其后代下的图片。
-- `src/app/api/images/[id]/route.ts`：更新或删除单张图片。
+- `src/app/api/images/[id]/route.ts`：读取完整图片详情，更新或删除单张图片。
 - `src/app/api/images/tags/route.ts`：批量给指定图片添加或移除标签。
 - `src/app/api/images/route.ts`：分页查询图库图片，供考试模式选择已有图片。
 - `src/app/api/images/[id]/file/route.ts`：读取图库内图片文件并返回给浏览器。
+- `src/app/api/ocr/images/[id]/route.ts`：把单张图片放入 OCR 队列。
 - `src/app/api/ocr/retry/route.ts`：重试失败 OCR。
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
 - `src/lib/backup.ts`：备份 manifest、zip 导出、zip 校验和合并恢复逻辑。
@@ -200,8 +201,8 @@ npm run db:init
 
 当前有三种模式：
 
-- 管理模式：导入、创建索引、编辑图片详情、OCR 重试、撤销批次、删除图片、索引右键管理。
-- 浏览模式：只读，隐藏导入、新建索引、保存、OCR 重试、撤销、删除等写操作。
+- 管理模式：导入、创建索引、编辑图片详情、编辑 OCR 文本、单图 OCR、OCR 重试、撤销批次、删除图片、索引右键管理。
+- 浏览模式：只读，隐藏导入、新建索引、保存、OCR 编辑/重试、撤销、删除等写操作。
 - 考试模式：创建试卷、从图库选图制题、多矩形遮罩、发布考试、随机顺序作答和结果复盘。
 
 主要布局：
@@ -224,6 +225,7 @@ npm run db:init
 管理模式特性：
 
 - 可以选择图片或文件夹导入。
+- 导入图片、文件夹或资料时可以选择是否在导入后 OCR；默认不 OCR，导入图片会标记为 `SKIPPED`。
 - 可以通过“导入资料”导入 PDF；系统会按 PDF 文件名创建容器索引，按内置书签目录创建子索引，并把每页转换后的 PNG 图片挂到对应节点。
 - 可以导出备份 zip，包含所有索引、图片文件、标题、备注、OCR 文本和 OCR 状态等元数据。
 - 可以导入备份 zip 进行恢复；恢复使用合并覆盖模式，相同 SHA-256 hash 的图片更新元数据和索引归属，不创建重复图片，也不删除当前系统里备份外的数据。
@@ -233,7 +235,8 @@ npm run db:init
 - 图片网格支持复选框跨页选择；筛选条件或页面模式变化时清空选择，批量标签工具栏可以为选中图片添加或移除标签。
 - 标签输入、顶部标签多选筛选器和批量移除标签选择器使用应用内自绘菜单，不依赖浏览器原生 `datalist` / `select`；支持已有标签过滤、方向键选择和回车确认，标签输入仍支持自由输入。
 - 支持删除单张图片，删除前必须二次确认。
-- OCR 失败可重试。
+- OCR 文本可在图片详情面板手动编辑并保存；保存非空文本会把状态设为 `COMPLETED`，清空文本会把状态设为 `SKIPPED`。
+- 单张图片可从详情面板手动执行 OCR；如果已有 OCR 文本，前端会先确认覆盖。OCR 失败可重试。
 - 最近导入批次可撤销，撤销前必须二次确认。
 - 概览区可折叠。
 - 图片网格有客户端分页，避免一次渲染过多图片导致打开缓慢。
@@ -312,6 +315,7 @@ npm run db:init
 - 前端每批上传 `80` 张，避免单次请求过大。
 - 每张图片提交 `files`、`relativePaths`、`groupKeys`、`indexPaths`。
 - `indexPaths` 是逐文件索引路径，JSON 数组格式，例如 `["1", "2", "2131"]`。
+- `ocrEnabled` 是导入批次级开关，字符串 `"true"` 表示新图片入 OCR 队列；缺省或 `"false"` 表示新图片标记为 `SKIPPED`。
 - 后端仍兼容旧的 `assignments: Record<string, string[]>` 作为 group fallback。
 
 后端导入：
@@ -321,17 +325,17 @@ npm run db:init
 - `ensureIndexPath()` 会自动创建不存在的索引路径。
 - 用 SHA-256 hash 检测重复图片；重复项记录为 `DUPLICATE`，默认不新增 `ChartImage`。
 - 新图片保存到图库目录并创建 `ChartImage` 与 `ImportItem`。
-- 每个 chunk 完成后更新 `ImportBatch` 并触发 `scheduleOcrPump()`。
+- 每个 chunk 完成后更新 `ImportBatch`；只有 `ocrEnabled` 为 `"true"` 时才触发 `scheduleOcrPump()`。
 
 资料导入：
 
-- `POST /api/import/documents` 接收 `multipart/form-data`，字段 `file` 为资料文件，`baseIndexPath` 为 JSON 字符串数组；这是兼容用同步接口。
+- `POST /api/import/documents` 接收 `multipart/form-data`，字段 `file` 为资料文件，`baseIndexPath` 为 JSON 字符串数组，`ocrEnabled` 为可选 OCR 开关；这是兼容用同步接口。
 - 前端默认使用 `POST /api/import/documents/jobs` 启动后台导入任务，并轮询 `GET /api/import/documents/jobs/[id]` 显示页级进度。
 - 当前只注册 PDF importer；后续支持 PPT 等类型时应新增 importer，不要把入口改回某个具体格式名称。
 - PDF importer 使用 PDF 内置 outline/bookmarks 作为目录来源，不做正文目录页 OCR 识别。
 - 未选中索引时在根节点创建 PDF 文件名容器；选中索引时在该索引子树下创建 PDF 文件名容器。
 - 有书签时按书签层级创建子索引；没有书签或页面未命中书签时，页图片挂到 PDF 容器节点。
-- 每页默认最多以 1.8 倍渲染，最长边限制为 1920px，并用 JPEG 初始质量 84 输出；编码会先降质量、必要时再缩放，默认以 500KB 作为单页图片上限，常规页面保持长边约 1080px 以上，极复杂页面会继续压缩以满足体积上限。之后复用 `importImageBuffer()` 入库，继续使用同一套图库保存、SHA-256 去重、`ImportBatch`、`ImportItem`、OCR、备份和撤销逻辑。
+- 每页默认最多以 1.8 倍渲染，最长边限制为 1920px，并用 JPEG 初始质量 84 输出；编码会先降质量、必要时再缩放，默认以 500KB 作为单页图片上限，常规页面保持长边约 1080px 以上，极复杂页面会继续压缩以满足体积上限。之后复用 `importImageBuffer()` 入库，继续使用同一套图库保存、SHA-256 去重、`ImportBatch`、`ImportItem`、可选 OCR、备份和撤销逻辑。
 - PDF 转图片和导入并发参数可通过环境变量调整：`BROOKS_PDF_RENDER_SCALE`、`BROOKS_PDF_MAX_IMAGE_EDGE`、`BROOKS_PDF_JPEG_QUALITY`、`BROOKS_PDF_MAX_IMAGE_BYTES`、`BROOKS_PDF_IMPORT_CONCURRENCY`。并发默认 `2`，范围 `1-4`。
 - 单页渲染失败只创建该页 `FAILED` 导入项，其他页继续处理。
 
@@ -360,7 +364,8 @@ npm run db:init
 
 ## 13. OCR 规则
 
-- OCR 队列在导入后通过 `scheduleOcrPump()` 异步触发。
+- OCR 默认不随导入自动执行；导入开关开启时，新图片以 `PENDING` 状态入库并通过 `scheduleOcrPump()` 异步触发。
+- 导入开关关闭时，新图片以 `SKIPPED` 状态入库，不进入 OCR 队列。
 - 默认 OCR 命令是 `tesseract`。
 - 可用环境变量 `BROOKS_OCR_COMMAND` 指定 OCR 命令。
 - 当前调用参数：`<command> <imagePath> stdout -l <language>`。
@@ -371,6 +376,8 @@ npm run db:init
 - `AppSetting` 的 `ocr.concurrency` 可覆盖并发数，最大 `8`。
 - 单张 OCR 超时为 `120_000ms`，stdout buffer 上限为 `8MB`。
 - OCR 失败时图片进入 `FAILED`，错误写入 `ocrError`，前端可重试。
+- 用户可以在图片详情面板编辑 OCR 文本；非空保存会将状态设为 `COMPLETED`，清空保存会将状态设为 `SKIPPED`。
+- `queueImageOcr(imageId)` 可把单张图片重新设为 `PENDING` 并调度 OCR，适用于 `SKIPPED`、`FAILED` 或已有结果的图片。
 - `retryFailedOcr(imageIds?)` 会把失败图片重置为 `PENDING` 并重新调度。
 
 README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
@@ -431,20 +438,21 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 - 创建或复用 `ImportBatch`。
 - 支持逐文件 `indexPaths` 和旧式 `assignments`。
+- 支持 `ocrEnabled` 表单字段；`"true"` 时新图片自动进入 OCR 队列，缺省或 `"false"` 时新图片状态为 `SKIPPED`。
 - 写入图库文件、`ChartImage`、`ImportItem`。
-- 更新批次计数并调度 OCR。
+- 更新批次计数；只有开启 OCR 时才调度 OCR。
 
 `POST /api/import/documents`
 
 - 通用资料导入接口，当前支持 PDF。
-- 接收 `multipart/form-data`：`file` 为资料文件，`baseIndexPath` 为选中索引路径数组。
+- 接收 `multipart/form-data`：`file` 为资料文件，`baseIndexPath` 为选中索引路径数组，`ocrEnabled` 为导入后是否自动 OCR。
 - PDF 会先创建 PDF 文件名容器索引，再按内置书签目录创建子索引。
-- 每页转换为 JPEG 图片后按普通图库图片入库并调度 OCR。
+- 每页转换为 JPEG 图片后按普通图库图片入库；只有开启 OCR 时才调度 OCR。
 - 相同 SHA-256 hash 的页图片记录为 `DUPLICATE`，不创建重复 `ChartImage`。
 
 `POST /api/import/documents/jobs`
 
-- 启动资料导入后台任务，接收字段与同步资料导入接口一致。
+- 启动资料导入后台任务，接收字段与同步资料导入接口一致，包括 `ocrEnabled`。
 - 返回 `{ job }`，job 包含 `id`、`status`、`processedPages`、`totalPages`、`imported`、`failed`、`duplicate`、`batchId` 和 `error`。
 - 任务状态保存在当前 Node.js 进程内存中，TTL 为 30 分钟；开发服务器重启后未完成任务状态会丢失。
 
@@ -486,9 +494,15 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 请求体必须包含 `confirmation: "确认删除"`。
 - 后端逐张删除图库文件，再删除对应数据库记录。
 
+`GET /api/images/[id]`
+
+- 返回单张图片完整详情，包含完整 `ocrText`，供详情面板编辑使用。
+- `/api/atlas` 为了控制响应体大小仍只返回 OCR 摘要。
+
 `PATCH /api/images/[id]`
 
-- 更新标题、备注、所属索引和标签。
+- 更新标题、备注、所属索引、标签和 OCR 文本。
+- 传入 `ocrText` 时，非空文本会把图片状态设为 `COMPLETED`，清空文本会把图片状态设为 `SKIPPED`，并清空 `ocrError`。
 
 `PATCH /api/images/tags`
 
@@ -510,6 +524,11 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 `POST /api/ocr/retry`
 
 - 重试失败 OCR；传 `imageIds` 时只重试指定图片，不传则重试所有失败图片。
+
+`POST /api/ocr/images/[id]`
+
+- 将单张图片放回 OCR 队列，可用于跳过、失败或已有 OCR 文本的图片。
+- 如果图片已有 OCR 文本，前端必须先确认覆盖；OCR 完成后会用新识别结果覆盖 `ocrText`。
 
 ## 15. 本地偏好键
 
@@ -539,7 +558,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 任何删除文件的代码都必须逐个明确路径删除，不能批量删除目录。
 - 删除图片、撤销导入批次或清空索引图片前，后端必须校验图片是否被 `ExamQuestion` 引用；被引用时应拒绝删除。
 - 高风险写操作需要二次确认；清空索引图片必须要求用户输入 `确认删除`。
-- 浏览模式必须保持只读，不要暴露导入、保存、OCR 重试、撤销、删除等写操作。
+- 浏览模式必须保持只读，不要暴露导入、保存、OCR 编辑/重试、撤销、删除等写操作。
 - 读取 `localStorage` 的用户偏好不要放进 `useState` lazy initializer，否则可能再次造成 hydration mismatch；应在挂载后恢复偏好。
 - `src/generated/prisma` 是生成目录，不要手改。
 - `dev.db`、`data/library`、`.next`、`node_modules` 和运行日志不应作为功能代码修改。

@@ -21,6 +21,7 @@ export type ImportImageBufferInput = {
     height: number | null;
   };
   title?: string | null;
+  ocrEnabled?: boolean;
 };
 
 export type ImportImageBufferResult = {
@@ -41,6 +42,7 @@ export async function importImageBuffer({
   indexNodeId,
   dimensions: knownDimensions,
   title,
+  ocrEnabled = false,
 }: ImportImageBufferInput): Promise<ImportImageBufferResult> {
   const indexNode = indexNodeId
     ? { id: indexNodeId }
@@ -88,7 +90,7 @@ export async function importImageBuffer({
       title: title ?? fileName.replace(/\.[^.]+$/, ""),
       indexNodeId: indexNode?.id ?? null,
       importBatchId: batchId,
-      ocrStatus: "PENDING",
+      ocrStatus: ocrEnabled ? "PENDING" : "SKIPPED",
     },
   });
 

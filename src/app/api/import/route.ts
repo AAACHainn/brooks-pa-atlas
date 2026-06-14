@@ -52,6 +52,10 @@ function pathPartsAt(values: FormDataEntryValue[], index: number) {
   }
 }
 
+function parseBooleanField(formData: FormData, key: string) {
+  return formData.get(key) === "true";
+}
+
 async function getOrCreateBatch(batchId: string | null, totalCount: number) {
   if (batchId) {
     const existing = await prisma.importBatch.findUnique({ where: { id: batchId } });
@@ -78,6 +82,7 @@ export async function POST(request: Request) {
   const assignments = parseJsonField<GroupAssignments>(formData, "assignments", {});
   const totalCount = Number(formData.get("totalCount")) || files.length;
   const batchId = typeof formData.get("batchId") === "string" ? String(formData.get("batchId")) : null;
+  const ocrEnabled = parseBooleanField(formData, "ocrEnabled");
   const batch = await getOrCreateBatch(batchId, totalCount);
 
   let imported = 0;
@@ -104,6 +109,7 @@ export async function POST(request: Request) {
         relativePath,
         groupKey,
         indexPath: assignment,
+        ocrEnabled,
       });
 
       if (result.status === "DUPLICATE") {
@@ -133,13 +139,15 @@ export async function POST(request: Request) {
     where: { id: batch.id },
     data: {
       totalCount,
-      status: processedCount >= totalCount ? "PROCESSING_OCR" : "IMPORTING",
+      status: processedCount >= totalCount && ocrEnabled ? "PROCESSING_OCR" : "IMPORTING",
       error: failed > 0 ? `${failed} item(s) failed in the latest chunk.` : null,
     },
   });
 
   await updateBatchCounters(batch.id);
-  scheduleOcrPump();
+  if (ocrEnabled) {
+    scheduleOcrPump();
+  }
 
   return NextResponse.json({
     batchId: batch.id,

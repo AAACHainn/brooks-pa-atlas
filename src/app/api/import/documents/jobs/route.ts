@@ -32,6 +32,10 @@ function parseIndexPath(value: FormDataEntryValue | null) {
   }
 }
 
+function parseBooleanField(value: FormDataEntryValue | null) {
+  return value === "true";
+}
+
 export async function POST(request: Request) {
   const formData = await request.formData();
   const file = formData.get("file");
@@ -50,6 +54,7 @@ export async function POST(request: Request) {
     file,
     buffer: await fileToBuffer(file),
     baseIndexPath: parseIndexPath(formData.get("baseIndexPath")),
+    ocrEnabled: parseBooleanField(formData.get("ocrEnabled")),
   });
 
   return NextResponse.json({ job: serializeDocumentImportJob(job) });

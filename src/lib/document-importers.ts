@@ -2,6 +2,7 @@ export type DocumentImportInput = {
   file: File;
   buffer: Buffer;
   baseIndexPath: string[];
+  ocrEnabled: boolean;
   onProgress?: (progress: DocumentImportProgress) => void;
 };
 

@@ -420,7 +420,7 @@ export const pdfImporter: DocumentImporter = {
 
   supports: isPdf,
 
-  async importDocument({ file, buffer, baseIndexPath, onProgress }) {
+  async importDocument({ file, buffer, baseIndexPath, ocrEnabled, onProgress }) {
     configurePdfWorker();
     console.info("[pdf-import] starting", {
       fileName: file.name,
@@ -558,6 +558,7 @@ export const pdfImporter: DocumentImporter = {
               height: renderedPage.height,
             },
             title: plan.fileName.replace(/\.jpg$/i, ""),
+            ocrEnabled,
           }));
 
           if (result.status === "DUPLICATE") {
@@ -595,13 +596,15 @@ export const pdfImporter: DocumentImporter = {
       await prisma.importBatch.update({
         where: { id: batch.id },
         data: {
-          status: "PROCESSING_OCR",
+          status: ocrEnabled ? "PROCESSING_OCR" : "IMPORTING",
           error: failed > 0 ? `${failed} page(s) failed during document import.` : null,
         },
       });
 
       await updateBatchCounters(batch.id);
-      scheduleOcrPump();
+      if (ocrEnabled) {
+        scheduleOcrPump();
+      }
       processedCount = persistedProcessedCount;
       emitProgress();
       console.info("[pdf-import] completed", {

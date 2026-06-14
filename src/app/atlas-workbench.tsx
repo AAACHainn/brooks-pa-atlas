@@ -230,6 +230,7 @@ const copy = {
     chooseFolder: "选择文件夹",
     importDocuments: "导入资料",
     importingDocuments: "导入资料中",
+    runImportOcr: "导入后 OCR",
     backupData: "备份",
     backingUp: "备份中",
     restoreData: "恢复",
@@ -309,6 +310,10 @@ const copy = {
     notes: "备注",
     save: "保存",
     retryOcr: "重试 OCR",
+    runOcr: "执行 OCR",
+    ocrText: "OCR 文本",
+    ocrOverwriteConfirm: "当前已有 OCR 文本。重新 OCR 会在完成后覆盖现有内容，是否继续？",
+    ocrUpdateFailed: "OCR 操作失败，请稍后重试。",
     noOcrText: "暂无 OCR 文本",
     size: "大小",
     pixels: "像素",
@@ -378,6 +383,7 @@ const copy = {
     chooseFolder: "Choose folder",
     importDocuments: "Import materials",
     importingDocuments: "Importing materials",
+    runImportOcr: "Run OCR after import",
     backupData: "Backup",
     backingUp: "Backing up",
     restoreData: "Restore",
@@ -460,6 +466,10 @@ const copy = {
     notes: "Notes",
     save: "Save",
     retryOcr: "Retry OCR",
+    runOcr: "Run OCR",
+    ocrText: "OCR text",
+    ocrOverwriteConfirm: "This image already has OCR text. Running OCR again will overwrite it when completed. Continue?",
+    ocrUpdateFailed: "OCR update failed. Please try again.",
     noOcrText: "No OCR text",
     size: "Size",
     pixels: "Pixels",
@@ -1079,6 +1089,16 @@ function ocrTone(status: ChartImage["ocrStatus"]) {
   }
 }
 
+function detailDraftFromImage(image: ChartImage) {
+  return {
+    title: image.title ?? "",
+    notes: image.notes ?? "",
+    ocrText: image.ocrText ?? "",
+    indexNodeId: image.indexNode?.id ?? "",
+    tagNames: image.tags.map((tag) => tag.name),
+  };
+}
+
 function clampZoom(value: number) {
   return Math.min(220, Math.max(50, value));
 }
@@ -1338,6 +1358,7 @@ export default function AtlasWorkbench() {
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [files, setFiles] = useState<SelectedFile[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
+  const [importOcrEnabled, setImportOcrEnabled] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [documentImporting, setDocumentImporting] = useState(false);
   const [documentImportJob, setDocumentImportJob] = useState<DocumentImportJobSnapshot | null>(null);
@@ -1346,8 +1367,15 @@ export default function AtlasWorkbench() {
   const [backupTask, setBackupTask] = useState<BackupJobSnapshot | null>(null);
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [newIndexName, setNewIndexName] = useState("");
-  const [detailDraft, setDetailDraft] = useState({ title: "", notes: "", indexNodeId: "", tagNames: [] as string[] });
+  const [detailDraft, setDetailDraft] = useState({
+    title: "",
+    notes: "",
+    ocrText: "",
+    indexNodeId: "",
+    tagNames: [] as string[],
+  });
   const [detailTagInput, setDetailTagInput] = useState("");
+  const [ocrRunningImageId, setOcrRunningImageId] = useState<string | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(() => new Set());
   const [selectedBulkImageIds, setSelectedBulkImageIds] = useState<Set<string>>(() => new Set());
   const [bulkTagInput, setBulkTagInput] = useState("");
@@ -1382,6 +1410,7 @@ export default function AtlasWorkbench() {
   const importTableHeightRef = useRef(importTableHeight);
   const viewerResizeStartRef = useRef({ height: imageViewerHeight, y: 0 });
   const viewerHeightRef = useRef(imageViewerHeight);
+  const selectedImageIdRef = useRef<string | null>(null);
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const t = copy[locale];
@@ -1498,6 +1527,10 @@ export default function AtlasWorkbench() {
 
     return () => window.clearTimeout(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    selectedImageIdRef.current = selectedImageId;
+  }, [selectedImageId]);
 
   useEffect(() => {
     const hasActiveBatch = data?.batches.some((batch) =>
@@ -1629,6 +1662,9 @@ export default function AtlasWorkbench() {
   const indexActionImageCount = indexAction ? indexBranchImageCount(indexAction.node) : 0;
   const canNavigateSelectedImage = (data?.images.length ?? 0) > 1;
   const shouldShowImageGrid = isManageMode || (isBrowseMode && (showBrowseThumbnails || !selectedImage));
+  const isSelectedImageOcrBusy = selectedImage
+    ? selectedImage.ocrStatus === "RUNNING" || ocrRunningImageId === selectedImage.id
+    : false;
   const selectedImageTip = selectedImage
     ? [
         `${t.title}: ${selectedImage.title ?? selectedImage.originalName}`,
@@ -1703,12 +1739,7 @@ export default function AtlasWorkbench() {
       const nextImage = images[(currentIndex + direction + images.length) % images.length];
       setSelectedImageId(nextImage.id);
       setImageZoom(100);
-      setDetailDraft({
-        title: nextImage.title ?? "",
-        notes: nextImage.notes ?? "",
-        indexNodeId: nextImage.indexNode?.id ?? "",
-        tagNames: nextImage.tags.map((tag) => tag.name),
-      });
+      setDetailDraft(detailDraftFromImage(nextImage));
     }
 
     window.addEventListener("keydown", handleKeyDown);
@@ -1771,6 +1802,7 @@ export default function AtlasWorkbench() {
 
         formData.set("totalCount", String(files.length));
         formData.set("assignments", JSON.stringify(groupAssignments));
+        formData.set("ocrEnabled", importOcrEnabled ? "true" : "false");
         if (batchId) {
           formData.set("batchId", batchId);
         }
@@ -1847,6 +1879,7 @@ export default function AtlasWorkbench() {
       const formData = new FormData();
       formData.set("file", file);
       formData.set("baseIndexPath", JSON.stringify(indexPathParts(selectedIndexPath)));
+      formData.set("ocrEnabled", importOcrEnabled ? "true" : "false");
 
       const started = await readDocumentImportJobResponse(await fetch("/api/import/documents/jobs", {
         method: "POST",
@@ -2224,12 +2257,29 @@ export default function AtlasWorkbench() {
   }
 
   async function retryOcr() {
-    await fetch("/api/ocr/retry", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageIds: selectedImage ? [selectedImage.id] : undefined }),
-    });
-    await refresh();
+    if (!selectedImage || selectedImage.ocrStatus === "RUNNING") {
+      return;
+    }
+
+    if (detailDraft.ocrText.trim() && !window.confirm(t.ocrOverwriteConfirm)) {
+      return;
+    }
+
+    setOcrRunningImageId(selectedImage.id);
+    try {
+      const response = await fetch(`/api/ocr/images/${selectedImage.id}`, {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        window.alert(t.ocrUpdateFailed);
+        return;
+      }
+
+      await refresh();
+    } finally {
+      setOcrRunningImageId(null);
+    }
   }
 
   async function readBackupJobResponse(response: Response) {
@@ -2443,16 +2493,35 @@ export default function AtlasWorkbench() {
     }
   }
 
+  async function loadImageDetails(imageId: string) {
+    try {
+      const response = await fetch(`/api/images/${imageId}`, { cache: "no-store" });
+      const result = (await response.json().catch(() => null)) as { image?: ChartImage } | null;
+      if (!response.ok || !result?.image || selectedImageIdRef.current !== imageId) {
+        return;
+      }
+
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              images: current.images.map((image) => (image.id === imageId ? result.image! : image)),
+            }
+          : current,
+      );
+      setDetailDraft(detailDraftFromImage(result.image));
+    } catch {
+      // Keep the atlas summary visible if the full detail request fails.
+    }
+  }
+
   function selectImage(image: ChartImage) {
+    selectedImageIdRef.current = image.id;
     setSelectedImageId(image.id);
     setImageZoom(100);
-    setDetailDraft({
-      title: image.title ?? "",
-      notes: image.notes ?? "",
-      indexNodeId: image.indexNode?.id ?? "",
-      tagNames: image.tags.map((tag) => tag.name),
-    });
+    setDetailDraft(detailDraftFromImage(image));
     setDetailTagInput("");
+    void loadImageDetails(image.id);
   }
 
   function selectAdjacentImage(direction: -1 | 1) {
@@ -2828,6 +2897,16 @@ export default function AtlasWorkbench() {
                       event.target.value = "";
                     }}
                   />
+                  <label className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700">
+                    <input
+                      type="checkbox"
+                      checked={importOcrEnabled}
+                      onChange={(event) => setImportOcrEnabled(event.target.checked)}
+                      disabled={uploading || documentImporting}
+                      className="h-4 w-4 rounded border-zinc-300 text-cyan-700 focus:ring-cyan-700"
+                    />
+                    <span>{t.runImportOcr}</span>
+                  </label>
                   <button
                     type="button"
                     onClick={() => void downloadBackup()}
@@ -3565,10 +3644,15 @@ export default function AtlasWorkbench() {
                   <button
                     type="button"
                     onClick={() => void retryOcr()}
-                    className="grid h-8 w-8 place-items-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
-                    title={t.retryOcr}
+                    disabled={isSelectedImageOcrBusy}
+                    className="grid h-8 w-8 place-items-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    title={selectedImage.ocrStatus === "FAILED" ? t.retryOcr : t.runOcr}
                   >
-                    <RefreshCw className="h-4 w-4" />
+                    {ocrRunningImageId === selectedImage.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" />
+                    )}
                   </button>
                 </div>
                 {selectedImage.ocrError ? (
@@ -3577,9 +3661,15 @@ export default function AtlasWorkbench() {
                     <span>{selectedImage.ocrError}</span>
                   </p>
                 ) : null}
-                <p className="max-h-40 overflow-auto whitespace-pre-wrap text-xs leading-5 text-zinc-600">
-                  {selectedImage.ocrText ?? t.noOcrText}
-                </p>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-zinc-500">{t.ocrText}</span>
+                  <textarea
+                    value={detailDraft.ocrText}
+                    onChange={(event) => setDetailDraft((draft) => ({ ...draft, ocrText: event.target.value }))}
+                    placeholder={t.noOcrText}
+                    className="min-h-32 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-xs leading-5 outline-none focus:border-zinc-500"
+                  />
+                </label>
               </div>
 
               <dl className="mt-5 grid grid-cols-2 gap-2 text-xs">

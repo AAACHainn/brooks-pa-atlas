@@ -79,11 +79,13 @@ export function startDocumentImportJob({
   file,
   buffer,
   baseIndexPath,
+  ocrEnabled,
 }: {
   importer: DocumentImporter;
   file: File;
   buffer: Buffer;
   baseIndexPath: string[];
+  ocrEnabled: boolean;
 }) {
   cleanupJobs();
   const id = randomUUID();
@@ -114,6 +116,7 @@ export function startDocumentImportJob({
         file,
         buffer,
         baseIndexPath,
+        ocrEnabled,
         onProgress(progress) {
           job.phase = "importing";
           job.batchId = progress.batchId;

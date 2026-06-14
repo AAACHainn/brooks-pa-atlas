@@ -199,4 +199,33 @@ export async function retryFailedOcr(imageIds?: string[]) {
   scheduleOcrPump();
 }
 
+export async function queueImageOcr(imageId: string) {
+  const image = await prisma.chartImage.findUnique({
+    where: { id: imageId },
+    select: { id: true, ocrStatus: true, importBatchId: true },
+  });
+
+  if (!image) {
+    return null;
+  }
+
+  if (image.ocrStatus !== "RUNNING") {
+    await prisma.chartImage.update({
+      where: { id: image.id },
+      data: {
+        ocrStatus: "PENDING",
+        ocrError: null,
+        ocrUpdatedAt: new Date(),
+      },
+    });
+  }
+
+  if (image.importBatchId) {
+    await updateBatchCounters(image.importBatchId);
+  }
+
+  scheduleOcrPump();
+  return image;
+}
+
 export { updateBatchCounters };

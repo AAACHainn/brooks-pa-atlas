@@ -196,6 +196,8 @@ const copy = {
     addIndex: "添加索引",
     renameIndex: "重命名索引",
     exportIndex: "导出索引",
+    collapseLeafIndexes: "收缩叶子节点",
+    collapseLeafIndexesDisabled: "当前索引没有可收缩的子节点。",
     deleteIndex: "删除索引",
     clearIndexImages: "清空索引图片",
     deleteIndexConfirmTitle: "删除索引？",
@@ -347,6 +349,8 @@ const copy = {
     addIndex: "Add index",
     renameIndex: "Rename index",
     exportIndex: "Export index",
+    collapseLeafIndexes: "Collapse leaf nodes",
+    collapseLeafIndexesDisabled: "This index has no child nodes to collapse.",
     deleteIndex: "Delete index",
     clearIndexImages: "Clear index images",
     deleteIndexConfirmTitle: "Delete index?",
@@ -1097,6 +1101,28 @@ function detailDraftFromImage(image: ChartImage) {
     indexNodeId: image.indexNode?.id ?? "",
     tagNames: image.tags.map((tag) => tag.name),
   };
+}
+
+function collapsibleIndexIds(node: IndexTreeNode) {
+  const ids: string[] = [];
+  const visit = (current: IndexTreeNode) => {
+    if (current.children.length === 0) {
+      return;
+    }
+
+    ids.push(current.id);
+    current.children.forEach(visit);
+  };
+  visit(node);
+  return ids;
+}
+
+function persistCollapsedIndexIds(ids: Set<string>) {
+  try {
+    window.localStorage.setItem(collapsedIndexesStorageKey, JSON.stringify([...ids]));
+  } catch {
+    // localStorage can be unavailable in restricted browser contexts.
+  }
 }
 
 function clampZoom(value: number) {
@@ -2069,11 +2095,12 @@ export default function AtlasWorkbench() {
         body: JSON.stringify({ id: indexAction.node.id, name: renameIndexName }),
       });
       if (!response.ok) {
+        const result = (await response.json().catch(() => null)) as { error?: string } | null;
         closeIndexAction(true);
         setNoticeDialog({
           title: t.indexActionFailedTitle,
-          message: t.indexActionFailed,
-          tone: "error",
+          message: result?.error ?? t.indexActionFailed,
+          tone: response.status === 409 ? "warning" : "error",
         });
         return;
       }
@@ -2098,11 +2125,12 @@ export default function AtlasWorkbench() {
         body: JSON.stringify({ id: indexAction.node.id }),
       });
       if (!response.ok) {
+        const result = (await response.json().catch(() => null)) as { error?: string } | null;
         closeIndexAction(true);
         setNoticeDialog({
           title: t.indexActionFailedTitle,
-          message: t.indexActionFailed,
-          tone: "error",
+          message: result?.error ?? t.indexActionFailed,
+          tone: response.status === 409 ? "warning" : "error",
         });
         return;
       }
@@ -2135,11 +2163,12 @@ export default function AtlasWorkbench() {
         body: JSON.stringify({ confirmation: clearIndexConfirmText }),
       });
       if (!response.ok) {
+        const result = (await response.json().catch(() => null)) as { error?: string } | null;
         closeIndexAction(true);
         setNoticeDialog({
           title:
             response.status === 409 ? t.clearIndexImagesBlockedTitle : t.clearIndexImagesFailedTitle,
-          message: response.status === 409 ? t.clearIndexImagesBlockedByExam : t.indexActionFailed,
+          message: response.status === 409 ? t.clearIndexImagesBlockedByExam : result?.error ?? t.indexActionFailed,
           tone: response.status === 409 ? "warning" : "error",
         });
         return;
@@ -2551,14 +2580,25 @@ export default function AtlasWorkbench() {
         next.add(id);
       }
 
-      try {
-        window.localStorage.setItem(collapsedIndexesStorageKey, JSON.stringify([...next]));
-      } catch {
-        // localStorage can be unavailable in restricted browser contexts.
-      }
+      persistCollapsedIndexIds(next);
 
       return next;
     });
+  }
+
+  function collapseLeafIndexes(node: IndexTreeNode) {
+    const ids = collapsibleIndexIds(node);
+    if (ids.length === 0) {
+      return;
+    }
+
+    setCollapsedIndexIds((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => next.add(id));
+      persistCollapsedIndexIds(next);
+      return next;
+    });
+    setIndexContextMenu(null);
   }
 
   function adjustImageZoom(delta: number) {
@@ -3833,6 +3873,16 @@ export default function AtlasWorkbench() {
           >
             <Download className="h-4 w-4" />
             <span>{t.exportIndex}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => collapseLeafIndexes(indexContextMenu.node)}
+            disabled={indexContextMenu.node.children.length === 0}
+            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent"
+            title={indexContextMenu.node.children.length === 0 ? t.collapseLeafIndexesDisabled : t.collapseLeafIndexes}
+          >
+            <ChevronRight className="h-4 w-4" />
+            <span>{t.collapseLeafIndexes}</span>
           </button>
           <button
             type="button"

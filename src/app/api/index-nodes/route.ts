@@ -6,6 +6,17 @@ import { prisma } from "@/lib/db";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const prismaChunkSize = 500;
+
+function chunkArray<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks;
+}
+
 export async function GET() {
   return NextResponse.json({ tree: await getIndexTree() });
 }
@@ -131,9 +142,16 @@ export async function DELETE(request: Request) {
     orderBy: { depth: "desc" },
   });
   const nodeIds = [node.id, ...descendants.map((descendant) => descendant.id)];
-  const imageCount = await prisma.chartImage.count({
-    where: { indexNodeId: { in: nodeIds } },
-  });
+  let imageCount = 0;
+
+  for (const nodeIdChunk of chunkArray(nodeIds, prismaChunkSize)) {
+    imageCount += await prisma.chartImage.count({
+      where: { indexNodeId: { in: nodeIdChunk } },
+    });
+    if (imageCount > 0) {
+      break;
+    }
+  }
 
   if (imageCount > 0) {
     return NextResponse.json(

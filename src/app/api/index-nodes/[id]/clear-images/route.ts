@@ -10,6 +10,16 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const requiredConfirmation = "确认删除";
+const prismaChunkSize = 500;
+
+function chunkArray<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks;
+}
 
 export async function POST(
   request: Request,
@@ -41,9 +51,17 @@ export async function POST(
     where: { indexNodeId: { in: nodeIds } },
     select: { id: true, libraryPath: true },
   });
-  const examQuestionCount = await prisma.examQuestion.count({
-    where: { chartImageId: { in: images.map((image) => image.id) } },
-  });
+  const imageIds = images.map((image) => image.id);
+  let examQuestionCount = 0;
+
+  for (const imageIdChunk of chunkArray(imageIds, prismaChunkSize)) {
+    examQuestionCount += await prisma.examQuestion.count({
+      where: { chartImageId: { in: imageIdChunk } },
+    });
+    if (examQuestionCount > 0) {
+      break;
+    }
+  }
 
   if (examQuestionCount > 0) {
     return NextResponse.json(
@@ -58,6 +76,12 @@ export async function POST(
     } catch (error) {
       const code = error instanceof Error && "code" in error ? error.code : null;
       if (code !== "ENOENT") {
+        console.error("[clear-index-images] file removal failed", {
+          indexNodeId: node.id,
+          imageId: image.id,
+          libraryPath: image.libraryPath,
+          error,
+        });
         return NextResponse.json(
           { error: `Failed to remove ${image.libraryPath}.` },
           { status: 500 },
@@ -67,9 +91,11 @@ export async function POST(
   }
 
   await prisma.$transaction(async (tx) => {
-    await tx.chartImage.deleteMany({
-      where: { id: { in: images.map((image) => image.id) } },
-    });
+    for (const imageIdChunk of chunkArray(imageIds, prismaChunkSize)) {
+      await tx.chartImage.deleteMany({
+        where: { id: { in: imageIdChunk } },
+      });
+    }
     await cleanupUnusedTags(tx);
   });
 

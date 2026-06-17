@@ -15,11 +15,12 @@ import {
   parseExamOptions,
   parseMaskRects,
 } from "@/lib/exam";
+import { imageAnnotationPayloadSchema } from "@/lib/image-annotations";
 import { absoluteImagePath, getLibraryRoot, sanitizeFileName } from "@/lib/storage";
 import { cleanupUnusedTags, replaceImageTags } from "@/lib/tags";
 
 const backupFormat = "brooks-pa-atlas.backup";
-const backupVersion = 3;
+const backupVersion = 4;
 const imageZipPrefix = "images/";
 
 const ocrStatusSchema = z.enum(["PENDING", "RUNNING", "COMPLETED", "FAILED", "SKIPPED"]);
@@ -37,6 +38,11 @@ const backupIndexSchema = z.object({
   sortOrder: z.number().int(),
   createdAt: z.string().nullable().optional(),
   updatedAt: z.string().nullable().optional(),
+});
+
+const backupImageAnnotationSchema = imageAnnotationPayloadSchema.extend({
+  createdAt: z.string().nullable(),
+  updatedAt: z.string().nullable(),
 });
 
 const backupImageSchema = z.object({
@@ -57,6 +63,7 @@ const backupImageSchema = z.object({
   indexPath: z.string().nullable(),
   imagePath: z.string().min(1),
   tags: z.array(z.string()).optional(),
+  annotations: z.array(backupImageAnnotationSchema).optional().default([]),
 });
 
 const backupExamQuestionSchema = z.object({
@@ -111,7 +118,7 @@ const backupExamAttemptSchema = z.object({
 
 const backupManifestSchema = z.object({
   format: z.literal(backupFormat),
-  version: z.union([z.literal(1), z.literal(2), z.literal(backupVersion)]),
+  version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(backupVersion)]),
   exportedAt: z.string(),
   indexes: z.array(backupIndexSchema),
   images: z.array(backupImageSchema),
@@ -440,7 +447,11 @@ export async function createBackupZip(options: BackupOptions = {}) {
   const images = await prisma.chartImage.findMany({
     where: rootIndex ? { indexNodeId: { in: [...indexIds] } } : undefined,
     orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],
-    include: { indexNode: true, tags: { include: { tag: true } } },
+    include: {
+      indexNode: true,
+      tags: { include: { tag: true } },
+      annotations: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+    },
   });
   const [examPapers, examAttempts] = rootIndex
     ? [[], []] as const
@@ -509,6 +520,20 @@ export async function createBackupZip(options: BackupOptions = {}) {
         tags: image.tags
           .map((item) => item.tag.name)
           .sort((left, right) => left.localeCompare(right)),
+        annotations: image.annotations.map((annotation) => ({
+          id: annotation.id,
+          text: annotation.text,
+          x: annotation.x,
+          y: annotation.y,
+          width: annotation.width,
+          height: annotation.height,
+          fontSize: annotation.fontSize,
+          color: annotation.color,
+          backgroundColor: null,
+          sortOrder: annotation.sortOrder,
+          createdAt: iso(annotation.createdAt),
+          updatedAt: iso(annotation.updatedAt),
+        })),
       },
     });
     processedImages += 1;
@@ -755,6 +780,27 @@ async function restoreBackupSource(
 
         if (manifest.version >= 3) {
           await replaceImageTags(tx, restoredImage.id, image.tags ?? [], { cleanup: false });
+        }
+
+        if (manifest.version >= 4) {
+          await tx.imageAnnotation.deleteMany({ where: { chartImageId: restoredImage.id } });
+          for (const [index, annotation] of image.annotations.entries()) {
+            await tx.imageAnnotation.create({
+              data: {
+                chartImageId: restoredImage.id,
+                text: annotation.text,
+                x: annotation.x,
+                y: annotation.y,
+                width: annotation.width,
+                height: annotation.height,
+                fontSize: annotation.fontSize,
+                color: annotation.color,
+                backgroundColor: null,
+                sortOrder: index,
+                createdAt: parseDate(annotation.createdAt) ?? undefined,
+              },
+            });
+          }
         }
       });
 

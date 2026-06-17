@@ -101,11 +101,32 @@ model ChartImage {
   importItem  ImportItem?
   examQuestions ExamQuestion[]
   tags          ChartImageTag[]
+  annotations   ImageAnnotation[]
 
   @@index([indexNodeId])
   @@index([importBatchId])
   @@index([ocrStatus])
   @@index([originalName])
+}
+
+model ImageAnnotation {
+  id              String   @id @default(cuid())
+  chartImageId    String
+  text            String
+  x               Float
+  y               Float
+  width           Float    @default(0.24)
+  height          Float    @default(0.12)
+  fontSize        Int      @default(18)
+  color           String   @default("#111827")
+  backgroundColor String?
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  chartImage ChartImage @relation(fields: [chartImageId], references: [id], onDelete: Cascade)
+
+  @@index([chartImageId])
 }
 
 model Tag {

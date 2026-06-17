@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
+import { serializeImageAnnotation } from "@/lib/image-annotations";
 import { getIndexTree } from "@/lib/index-tree";
 
 export const runtime = "nodejs";
@@ -49,6 +50,7 @@ export async function GET(request: Request) {
                 { ocrText: { contains: query } },
                 { indexNode: { path: { contains: query } } },
                 { tags: { some: { tag: { name: { contains: query } } } } },
+                { annotations: { some: { text: { contains: query } } } },
               ],
             }
           : {},
@@ -57,7 +59,11 @@ export async function GET(request: Request) {
     },
     orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],
     take: 200,
-    include: { indexNode: true, tags: { include: { tag: true } } },
+    include: {
+      indexNode: true,
+      tags: { include: { tag: true } },
+      annotations: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+    },
   });
   const sortedImages = [...images].sort((left, right) => {
     const nameComparison = imageNameCollator.compare(left.originalName, right.originalName);
@@ -113,6 +119,7 @@ export async function GET(request: Request) {
       tags: image.tags
         .map((item) => item.tag)
         .sort((left, right) => left.name.localeCompare(right.name)),
+      annotations: image.annotations.map(serializeImageAnnotation),
       indexNode: image.indexNode
         ? {
             id: image.indexNode.id,

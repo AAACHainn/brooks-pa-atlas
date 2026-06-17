@@ -122,6 +122,7 @@ npm run db:init
 - `src/app/api/index-nodes/route.ts`：索引节点查询、创建、重命名、排序字段更新和删除。
 - `src/app/api/index-nodes/[id]/clear-images/route.ts`：清空某个索引及其后代下的图片。
 - `src/app/api/images/[id]/route.ts`：读取完整图片详情，更新或删除单张图片。
+- `src/app/api/images/[id]/annotations/route.ts`：替换保存单张图片的浏览模式文字标注。
 - `src/app/api/images/tags/route.ts`：批量给指定图片添加或移除标签。
 - `src/app/api/images/route.ts`：分页查询图库图片，供考试模式选择已有图片。
 - `src/app/api/images/[id]/file/route.ts`：读取图库内图片文件并返回给浏览器。
@@ -135,6 +136,7 @@ npm run db:init
 - `src/lib/document-import-jobs.ts`：资料导入后台任务状态，供前端轮询进度。
 - `src/lib/pdf-importer.ts`：PDF 书签解析、逐页渲染和按目录挂载逻辑。
 - `src/lib/storage.ts`：图片存储、hash、文件名清洗、尺寸读取、安全路径校验。
+- `src/lib/image-annotations.ts`：图片文字标注的校验和序列化 helper。
 - `src/lib/ocr-queue.ts`：本地 OCR 并发队列。
 - `prisma/schema.prisma`：Prisma 数据模型。
 - `prisma/migrations/20260505000000_init/migration.sql`：初始 SQLite schema。
@@ -166,6 +168,7 @@ npm run db:init
 
 - `IndexNode`：无限层级索引节点，字段包括 `name`、`parentId`、`depth`、`path`、`sortOrder`。
 - `ChartImage`：图片主表，保存图库路径、原始文件名、mime type、大小、尺寸、hash、标题、备注、OCR 文本、OCR 状态、所属索引、导入批次。
+- `ImageAnnotation`：浏览模式图片文字标注，保存相对图片坐标、宽度、高度、文字、字号、颜色和排序；标注完成编辑后不渲染背景或边框，图片删除时级联删除标注。
 - `Tag`：可复用自由标签，保存展示名和大小写无关的规范化名称。
 - `ChartImageTag`：图片与标签的多对多关联；图片删除时级联删除关联，无图片使用的标签会自动清理。
 - `ImportBatch`：一次批量导入任务，保存总数、成功数、失败数、重复数、OCR 进度、状态、开始和结束时间。
@@ -190,6 +193,7 @@ npm run db:init
 
 - `ChartImage.hash` 唯一，用 SHA-256 检测重复图片。
 - `ChartImage.libraryPath` 唯一，数据库只保存应用图库内的相对路径。
+- `ImageAnnotation.chartImageId` 删除级联到 `ChartImage`，标注不会阻止图片删除；但图片被考试题引用时仍禁止删除图片。
 - `IndexNode` 在同一父节点下 `name` 唯一。
 - `ImportItem.chartImageId` 唯一，一张已入库图片最多对应一个导入 item 记录。
 - `ExamQuestion` 复用已有 `ChartImage`，不重复上传图片；图片被试题引用时禁止删除，避免发布试卷和历史记录断图。
@@ -202,7 +206,7 @@ npm run db:init
 当前有三种模式：
 
 - 管理模式：导入、创建索引、编辑图片详情、编辑 OCR 文本、单图 OCR、OCR 重试、撤销批次、删除图片、索引右键管理。
-- 浏览模式：只读，隐藏导入、新建索引、保存、OCR 编辑/重试、撤销、删除等写操作。
+- 浏览模式：图片浏览和学习标注，隐藏导入、新建索引、详情保存、OCR 编辑/重试、撤销、删除等管理写操作；允许编辑图片文字标注。
 - 考试模式：创建试卷、从图库选图制题、多矩形遮罩、发布考试、随机顺序作答和结果复盘。
 
 主要布局：
@@ -218,6 +222,10 @@ npm run db:init
 - 选中图片后显示大图查看器。
 - 查看器固定高度并可拖动调整，缩放范围 `50%` 到 `220%`。
 - 放大后在查看器内部滚动，不撑大整页。
+- 图片文字标注可独立显示或隐藏；进入标注编辑后可点击图片添加文字、编辑文字、拖动位置、拖动文本框边框控制点调整宽高、调整字号和颜色、删除标注，修改会防抖自动保存。
+- 标注编辑时显示类似 PPT 文本框的边框和缩放控制点；完成编辑后边框和控制点隐藏，只显示文字。
+- 图片标注保存为相对图片坐标，不写入原图文件；随缩放、滚动和窗口尺寸变化贴在同一图上位置。
+- 图片详情里的 `notes` 备注可在浏览模式大图下方、图片列表上方独立显示或隐藏，类似 PPT 演讲者备注，不覆盖在原图上。
 - 鼠标悬停图片时显示左右箭头；箭头 tooltip 提示 `←` / `→` 快捷键。
 - 键盘 `ArrowLeft` / `ArrowRight` 可切换上一张/下一张；焦点在输入框、选择框、滑杆等编辑控件时不会触发。
 - 下方缩略图网格可隐藏或显示。
@@ -227,7 +235,7 @@ npm run db:init
 - 可以选择图片或文件夹导入。
 - 导入图片、文件夹或资料时可以选择是否在导入后 OCR；默认不 OCR，导入图片会标记为 `SKIPPED`。
 - 可以通过“导入资料”导入 PDF；系统会按 PDF 文件名创建容器索引，按内置书签目录创建子索引，并把每页转换后的 PNG 图片挂到对应节点。
-- 可以导出备份 zip，包含所有索引、图片文件、标题、备注、OCR 文本和 OCR 状态等元数据。
+- 可以导出备份 zip，包含所有索引、图片文件、标题、备注、图片文字标注、OCR 文本和 OCR 状态等元数据。
 - 可以导入备份 zip 进行恢复；恢复使用合并覆盖模式，相同 SHA-256 hash 的图片更新元数据和索引归属，不创建重复图片，也不删除当前系统里备份外的数据。
 - 可以创建当前选中索引下的新子索引。
 - 图片详情支持编辑标题、备注、所属索引。
@@ -389,7 +397,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 参数：`q`、`indexId`、`tagId`；`tagId` 可重复传递。
 - 返回：索引树、图片列表、最近导入批次、统计信息。
 - 索引筛选包含所选节点及其后代路径。
-- 搜索覆盖 `originalName`、`title`、`notes`、`ocrText`、`indexNode.path` 和标签名称。
+- 搜索覆盖 `originalName`、`title`、`notes`、`ocrText`、图片文字标注、`indexNode.path` 和标签名称。
 - 参数 `tagId` 可叠加精确标签筛选条件；重复传递多个 `tagId` 时按 AND 组合，只返回同时包含全部所选标签的图片。
 - 图片列表当前 `take: 200`。
 - OCR 文本和错误会截断返回，避免接口太大。
@@ -398,7 +406,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 - 导出 `brooks-pa-atlas-backup-YYYYMMDD-HHmmssZ.zip`。
 - zip 顶层包含 `manifest.json` 和 `images/<hash>.<ext>` 图片文件。
-- manifest 格式为 `brooks-pa-atlas.backup` v3，保存索引树、图片元数据、标签、试卷、题目、考试记录和 zip 内相对图片路径；恢复仍兼容 v1 和 v2。
+- manifest 格式为 `brooks-pa-atlas.backup` v4，保存索引树、图片元数据、标签、图片文字标注、试卷、题目、考试记录和 zip 内相对图片路径；恢复仍兼容 v1、v2 和 v3。
 - 不保存 Windows 或 Linux 绝对路径，便于跨部署环境恢复。
 - 导出前会校验数据库中每张图片的图库文件存在；如果缺失则返回错误，不生成不完整备份。
 - 全量备份包含考试数据；按索引子树导出时仍只导出该索引下的索引和图片，不导出试卷，避免试卷引用缺失图片。
@@ -412,8 +420,9 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 按 SHA-256 hash 恢复图片；相同 hash 更新元数据和索引归属，不创建重复图片。
 - 如果相同 hash 的数据库记录存在但图库文件丢失，会从备份重新写入当前环境图库目录并更新 `libraryPath`。
 - 不删除当前系统中备份外的索引、图片或文件；不恢复旧 `ImportBatch` / `ImportItem` 历史。
-- v2 和 v3 恢复会通过图片 SHA-256 hash 重新映射试题图片；缺失图片时拒绝恢复对应考试数据，避免断开的题目引用。
-- v3 恢复会覆盖备份内图片的标签；恢复旧版 v1 / v2 备份时保留当前系统中已有图片的标签。
+- v2、v3 和 v4 恢复会通过图片 SHA-256 hash 重新映射试题图片；缺失图片时拒绝恢复对应考试数据，避免断开的题目引用。
+- v3 和 v4 恢复会覆盖备份内图片的标签；恢复旧版 v1 / v2 备份时保留当前系统中已有图片的标签。
+- v4 恢复会覆盖备份内图片的文字标注；恢复旧版 v1 / v2 / v3 备份时保留当前系统中已有图片的文字标注。
 
 考试 API：
 
@@ -496,13 +505,19 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 `GET /api/images/[id]`
 
-- 返回单张图片完整详情，包含完整 `ocrText`，供详情面板编辑使用。
+- 返回单张图片完整详情，包含完整 `ocrText` 和图片文字标注，供详情面板和浏览模式标注使用。
 - `/api/atlas` 为了控制响应体大小仍只返回 OCR 摘要。
 
 `PATCH /api/images/[id]`
 
 - 更新标题、备注、所属索引、标签和 OCR 文本。
 - 传入 `ocrText` 时，非空文本会把图片状态设为 `COMPLETED`，清空文本会把图片状态设为 `SKIPPED`，并清空 `ocrError`。
+
+`PUT /api/images/[id]/annotations`
+
+- 替换保存单张图片的文字标注数组。
+- 标注字段包括 `text`、相对图片坐标 `x/y`、相对尺寸 `width/height`、`fontSize`、`color` 和 `sortOrder`；背景色会被保存逻辑清空，前端仅在编辑时渲染文本框边框。
+- 后端限制单图最多 100 条标注、单条文字最长 500 字，并校验坐标、字号和十六进制颜色。
 
 `PATCH /api/images/tags`
 
@@ -543,6 +558,8 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - `brooks-pa-atlas.viewerHeight`：浏览模式大图查看器高度。
 - `brooks-pa-atlas.examViewerHeight`：考试模式作答/结果看图窗口高度。
 - `brooks-pa-atlas.browseThumbnails`：浏览模式缩略图显隐。
+- `brooks-pa-atlas.browseAnnotations`：浏览模式图片文字标注显隐。
+- `brooks-pa-atlas.browseNotes`：浏览模式图片备注区域显隐。
 - `brooks-pa-atlas.importTableHeight`：导入表格高度。
 
 ## 16. 实现注意事项
@@ -558,7 +575,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 任何删除文件的代码都必须逐个明确路径删除，不能批量删除目录。
 - 删除图片、撤销导入批次或清空索引图片前，后端必须校验图片是否被 `ExamQuestion` 引用；被引用时应拒绝删除。
 - 高风险写操作需要二次确认；清空索引图片必须要求用户输入 `确认删除`。
-- 浏览模式必须保持只读，不要暴露导入、保存、OCR 编辑/重试、撤销、删除等写操作。
+- 浏览模式除图片文字标注自动保存外，不要暴露导入、详情保存、OCR 编辑/重试、撤销、删除等管理写操作。
 - 读取 `localStorage` 的用户偏好不要放进 `useState` lazy initializer，否则可能再次造成 hydration mismatch；应在挂载后恢复偏好。
 - `src/generated/prisma` 是生成目录，不要手改。
 - `dev.db`、`data/library`、`.next`、`node_modules` 和运行日志不应作为功能代码修改。

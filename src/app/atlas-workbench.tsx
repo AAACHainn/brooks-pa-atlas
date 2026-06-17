@@ -59,8 +59,41 @@ type ChartImage = {
   ocrError: string | null;
   createdAt: string;
   tags: ImageTag[];
+  annotations: ImageAnnotation[];
   indexNode: { id: string; name: string; path: string } | null;
 };
+
+type ImageAnnotation = {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  color: string;
+  backgroundColor: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type AnnotationResizeHandle = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
+
+const annotationResizeHandles: {
+  handle: AnnotationResizeHandle;
+  className: string;
+  cursor: string;
+}[] = [
+  { handle: "nw", className: "-left-1.5 -top-1.5", cursor: "cursor-nwse-resize" },
+  { handle: "n", className: "left-1/2 -top-1.5 -translate-x-1/2", cursor: "cursor-ns-resize" },
+  { handle: "ne", className: "-right-1.5 -top-1.5", cursor: "cursor-nesw-resize" },
+  { handle: "e", className: "-right-1.5 top-1/2 -translate-y-1/2", cursor: "cursor-ew-resize" },
+  { handle: "se", className: "-bottom-1.5 -right-1.5", cursor: "cursor-nwse-resize" },
+  { handle: "s", className: "-bottom-1.5 left-1/2 -translate-x-1/2", cursor: "cursor-ns-resize" },
+  { handle: "sw", className: "-bottom-1.5 -left-1.5", cursor: "cursor-nesw-resize" },
+  { handle: "w", className: "-left-1.5 top-1/2 -translate-y-1/2", cursor: "cursor-ew-resize" },
+];
 
 type ImageTag = {
   id: string;
@@ -217,7 +250,7 @@ const copy = {
     reorderIndexMode: "索引排序",
     reorderIndexFailed: "索引排序失败，请稍后重试。",
     allImages: "全部图片",
-    searchPlaceholder: "搜索标题、OCR、备注、索引、标签",
+    searchPlaceholder: "搜索标题、OCR、备注、标注、索引、标签",
     tags: "标签",
     tagPlaceholder: "输入或选择标签",
     addTag: "添加标签",
@@ -339,6 +372,22 @@ const copy = {
     resetZoom: "重置缩放",
     hideThumbnails: "隐藏缩略图",
     showThumbnails: "显示缩略图",
+    hideAnnotations: "隐藏标注",
+    showAnnotations: "显示标注",
+    editAnnotations: "编辑标注",
+    stopEditAnnotations: "完成标注",
+    annotationStyle: "标注样式",
+    annotationFontSize: "字号",
+    annotationColor: "颜色",
+    addAnnotationHint: "点击图片添加文字标注",
+    annotationTextPlaceholder: "输入标注",
+    deleteAnnotation: "删除标注",
+    annotationsSaving: "标注保存中",
+    annotationsSaveFailed: "标注自动保存失败",
+    hideBrowseNotes: "隐藏备注",
+    showBrowseNotes: "显示备注",
+    browseNotesTitle: "备注",
+    noBrowseNotes: "暂无备注",
     resizeViewer: "拖动调整查看区高度",
     language: "EN",
   },
@@ -372,7 +421,7 @@ const copy = {
     reorderIndexMode: "Reorder",
     reorderIndexFailed: "Index reorder failed. Please try again.",
     allImages: "All images",
-    searchPlaceholder: "Search title, OCR, notes, index, tags",
+    searchPlaceholder: "Search title, OCR, notes, annotations, index, tags",
     tags: "Tags",
     tagPlaceholder: "Enter or select a tag",
     addTag: "Add tag",
@@ -497,6 +546,22 @@ const copy = {
     resetZoom: "Reset zoom",
     hideThumbnails: "Hide thumbnails",
     showThumbnails: "Show thumbnails",
+    hideAnnotations: "Hide annotations",
+    showAnnotations: "Show annotations",
+    editAnnotations: "Edit annotations",
+    stopEditAnnotations: "Done editing",
+    annotationStyle: "Annotation style",
+    annotationFontSize: "Size",
+    annotationColor: "Color",
+    addAnnotationHint: "Click the image to add a text note",
+    annotationTextPlaceholder: "Enter annotation",
+    deleteAnnotation: "Delete annotation",
+    annotationsSaving: "Saving annotations",
+    annotationsSaveFailed: "Annotation autosave failed",
+    hideBrowseNotes: "Hide notes",
+    showBrowseNotes: "Show notes",
+    browseNotesTitle: "Notes",
+    noBrowseNotes: "No notes yet",
     resizeViewer: "Drag to resize viewer",
     language: "中",
   },
@@ -1137,6 +1202,109 @@ function clampImportTableHeight(value: number) {
   return Math.min(760, Math.max(180, value));
 }
 
+function clampAnnotationX(x: number, width: number) {
+  return Math.min(Math.max(0, 1 - width), Math.max(0, x));
+}
+
+function clampAnnotationY(y: number, height: number) {
+  return Math.min(Math.max(0, 1 - height), Math.max(0, y));
+}
+
+function clampAnnotationWidth(value: number) {
+  return Math.min(1, Math.max(0.08, Number.isFinite(value) ? value : 0.24));
+}
+
+function clampAnnotationHeight(value: number) {
+  return Math.min(1, Math.max(0.04, Number.isFinite(value) ? value : 0.12));
+}
+
+function clampAnnotationFontSize(value: number) {
+  return Math.min(48, Math.max(10, Math.round(Number.isFinite(value) ? value : 18)));
+}
+
+function cleanAnnotations(annotations: ImageAnnotation[]) {
+  return annotations
+    .map((annotation, index) => {
+      const width = clampAnnotationWidth(annotation.width);
+      const height = clampAnnotationHeight(annotation.height);
+
+      return {
+        ...annotation,
+        text: annotation.text.trim(),
+        x: clampAnnotationX(annotation.x, width),
+        y: clampAnnotationY(annotation.y, height),
+        width,
+        height,
+        fontSize: clampAnnotationFontSize(annotation.fontSize),
+        color: annotation.color,
+        backgroundColor: null,
+        sortOrder: index,
+      };
+    })
+    .filter((annotation) => annotation.text.length > 0);
+}
+
+function annotationFingerprint(annotations: ImageAnnotation[]) {
+  return JSON.stringify(
+    cleanAnnotations(annotations).map((annotation) => ({
+      id: annotation.id.startsWith("local-") ? null : annotation.id,
+      text: annotation.text,
+      x: Number(annotation.x.toFixed(5)),
+      y: Number(annotation.y.toFixed(5)),
+      width: Number(annotation.width.toFixed(5)),
+      height: Number(annotation.height.toFixed(5)),
+      fontSize: annotation.fontSize,
+      color: annotation.color,
+      backgroundColor: null,
+    })),
+  );
+}
+
+function localAnnotationId() {
+  return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function resizeAnnotationBox(
+  handle: AnnotationResizeHandle,
+  start: { x: number; y: number; width: number; height: number },
+  deltaX: number,
+  deltaY: number,
+) {
+  const minWidth = 0.08;
+  const minHeight = 0.04;
+  let nextX = start.x;
+  let nextY = start.y;
+  let nextWidth = start.width;
+  let nextHeight = start.height;
+
+  if (handle.includes("e")) {
+    nextWidth = Math.min(1 - start.x, Math.max(minWidth, start.width + deltaX));
+  }
+
+  if (handle.includes("s")) {
+    nextHeight = Math.min(1 - start.y, Math.max(minHeight, start.height + deltaY));
+  }
+
+  if (handle.includes("w")) {
+    const right = start.x + start.width;
+    nextX = Math.min(right - minWidth, Math.max(0, start.x + deltaX));
+    nextWidth = right - nextX;
+  }
+
+  if (handle.includes("n")) {
+    const bottom = start.y + start.height;
+    nextY = Math.min(bottom - minHeight, Math.max(0, start.y + deltaY));
+    nextHeight = bottom - nextY;
+  }
+
+  return {
+    x: clampAnnotationX(nextX, nextWidth),
+    y: clampAnnotationY(nextY, nextHeight),
+    width: clampAnnotationWidth(nextWidth),
+    height: clampAnnotationHeight(nextHeight),
+  };
+}
+
 function parseCollapsedIndexIds(value: string | null) {
   if (!value) {
     return new Set<string>();
@@ -1432,11 +1600,48 @@ export default function AtlasWorkbench() {
   const [imageViewerHeight, setImageViewerHeight] = useState(720);
   const [isResizingViewer, setIsResizingViewer] = useState(false);
   const [showBrowseThumbnails, setShowBrowseThumbnails] = useState(true);
+  const [showBrowseAnnotations, setShowBrowseAnnotations] = useState(true);
+  const [showBrowseNotes, setShowBrowseNotes] = useState(true);
+  const [isEditingAnnotations, setIsEditingAnnotations] = useState(false);
+  const [annotationDrafts, setAnnotationDrafts] = useState<ImageAnnotation[]>([]);
+  const [editingAnnotationId, setEditingAnnotationId] = useState<string | null>(null);
+  const [draggingAnnotation, setDraggingAnnotation] = useState<{
+    id: string;
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+    width: number;
+    stageWidth: number;
+    stageHeight: number;
+  } | null>(null);
+  const [resizingAnnotation, setResizingAnnotation] = useState<{
+    id: string;
+    handle: AnnotationResizeHandle;
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+    stageWidth: number;
+    stageHeight: number;
+  } | null>(null);
+  const [annotationsSaving, setAnnotationsSaving] = useState(false);
+  const [annotationSaveFailed, setAnnotationSaveFailed] = useState(false);
+  const [viewerViewportSize, setViewerViewportSize] = useState({ width: 0, height: 0 });
   const importTableResizeStartRef = useRef({ height: importTableHeight, y: 0 });
   const importTableHeightRef = useRef(importTableHeight);
   const viewerResizeStartRef = useRef({ height: imageViewerHeight, y: 0 });
   const viewerHeightRef = useRef(imageViewerHeight);
   const selectedImageIdRef = useRef<string | null>(null);
+  const annotationDraftsRef = useRef<ImageAnnotation[]>([]);
+  const annotationSaveImageIdRef = useRef<string | null>(null);
+  const editingAnnotationIdRef = useRef<string | null>(null);
+  const annotationDirtyRef = useRef(false);
+  const annotationSaveTimerRef = useRef<number | null>(null);
+  const annotationStageRef = useRef<HTMLDivElement | null>(null);
+  const viewerViewportRef = useRef<HTMLDivElement | null>(null);
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const t = copy[locale];
@@ -1522,6 +1727,8 @@ export default function AtlasWorkbench() {
         const savedViewMode = window.localStorage.getItem("brooks-pa-atlas.viewMode");
         setViewMode(savedViewMode === "browse" || savedViewMode === "exam" ? savedViewMode : "manage");
         setShowBrowseThumbnails(window.localStorage.getItem("brooks-pa-atlas.browseThumbnails") !== "hidden");
+        setShowBrowseAnnotations(window.localStorage.getItem("brooks-pa-atlas.browseAnnotations") !== "hidden");
+        setShowBrowseNotes(window.localStorage.getItem("brooks-pa-atlas.browseNotes") !== "hidden");
         setCollapsedIndexIds(parseCollapsedIndexIds(window.localStorage.getItem(collapsedIndexesStorageKey)));
 
         const savedGridPageSize = Number(window.localStorage.getItem("brooks-pa-atlas.imageGridPageSize"));
@@ -1557,6 +1764,123 @@ export default function AtlasWorkbench() {
   useEffect(() => {
     selectedImageIdRef.current = selectedImageId;
   }, [selectedImageId]);
+
+  useEffect(() => {
+    editingAnnotationIdRef.current = editingAnnotationId;
+  }, [editingAnnotationId]);
+
+  useEffect(() => {
+    const viewport = viewerViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    const updateSize = () => {
+      setViewerViewportSize({
+        width: viewport.clientWidth,
+        height: viewport.clientHeight,
+      });
+    };
+    updateSize();
+
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(viewport);
+
+    return () => observer.disconnect();
+  }, [selectedImageId, imageViewerHeight]);
+
+  useEffect(() => {
+    if (!draggingAnnotation) {
+      return;
+    }
+
+    const drag = draggingAnnotation;
+    function handlePointerMove(event: PointerEvent) {
+      updateAnnotationDrafts(
+        (annotations) =>
+          annotations.map((annotation) => {
+            if (annotation.id !== drag.id) {
+              return annotation;
+            }
+
+            const nextX = drag.startX + (event.clientX - drag.startClientX) / drag.stageWidth;
+            const nextY = drag.startY + (event.clientY - drag.startClientY) / drag.stageHeight;
+            return {
+              ...annotation,
+              x: clampAnnotationX(nextX, drag.width),
+              y: clampAnnotationY(nextY, annotation.height),
+            };
+          }),
+        { save: false },
+      );
+    }
+
+    function handlePointerUp() {
+      setDraggingAnnotation(null);
+      markAnnotationsDirty(annotationDraftsRef.current);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+    // Dragging intentionally captures the pointer-start snapshot for this gesture.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draggingAnnotation]);
+
+  useEffect(() => {
+    if (!resizingAnnotation) {
+      return;
+    }
+
+    const resize = resizingAnnotation;
+    function handlePointerMove(event: PointerEvent) {
+      const deltaX = (event.clientX - resize.startClientX) / resize.stageWidth;
+      const deltaY = (event.clientY - resize.startClientY) / resize.stageHeight;
+      const nextBox = resizeAnnotationBox(
+        resize.handle,
+        {
+          x: resize.startX,
+          y: resize.startY,
+          width: resize.startWidth,
+          height: resize.startHeight,
+        },
+        deltaX,
+        deltaY,
+      );
+
+      updateAnnotationDrafts(
+        (annotations) =>
+          annotations.map((annotation) =>
+            annotation.id === resize.id
+              ? {
+                  ...annotation,
+                  ...nextBox,
+                }
+              : annotation,
+          ),
+        { save: false },
+      );
+    }
+
+    function handlePointerUp() {
+      setResizingAnnotation(null);
+      markAnnotationsDirty(annotationDraftsRef.current);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+    // Resizing intentionally captures the pointer-start snapshot for this gesture.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resizingAnnotation]);
 
   useEffect(() => {
     const hasActiveBatch = data?.batches.some((batch) =>
@@ -1681,6 +2005,8 @@ export default function AtlasWorkbench() {
 
     return [...counts.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [data?.images, selectedBulkImageIds]);
+  const selectedAnnotation =
+    annotationDrafts.find((annotation) => annotation.id === editingAnnotationId) ?? null;
   const pendingUndoBatch = data?.batches.find((batch) => batch.id === pendingUndoBatchId) ?? null;
   const indexContextImageCount = indexContextMenu
     ? indexBranchImageCount(indexContextMenu.node)
@@ -1737,6 +2063,22 @@ export default function AtlasWorkbench() {
     imageGridStartIndex + imageGridPageSize,
   );
   const imageGridEndIndex = imageGridStartIndex + imageGridPageImages.length;
+  const imageStageSize = useMemo(() => {
+    if (!selectedImage?.width || !selectedImage?.height || viewerViewportSize.width <= 0 || viewerViewportSize.height <= 0) {
+      return null;
+    }
+
+    const fitScale = Math.min(
+      viewerViewportSize.width / selectedImage.width,
+      viewerViewportSize.height / selectedImage.height,
+    );
+    const scale = fitScale * (imageZoom / 100);
+
+    return {
+      width: Math.max(1, Math.round(selectedImage.width * scale)),
+      height: Math.max(1, Math.round(selectedImage.height * scale)),
+    };
+  }, [imageZoom, selectedImage?.height, selectedImage?.width, viewerViewportSize.height, viewerViewportSize.width]);
 
   useEffect(() => {
     const images = data?.images ?? [];
@@ -1763,13 +2105,13 @@ export default function AtlasWorkbench() {
       const direction = event.key === "ArrowLeft" ? -1 : 1;
       const currentIndex = selectedImageIndex >= 0 ? selectedImageIndex : 0;
       const nextImage = images[(currentIndex + direction + images.length) % images.length];
-      setSelectedImageId(nextImage.id);
-      setImageZoom(100);
-      setDetailDraft(detailDraftFromImage(nextImage));
+      selectImage(nextImage);
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
+    // Keyboard navigation should use the current image list and selected index only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.images, isBrowseMode, selectedImageIndex]);
 
   function handleFiles(fileList: FileList | null) {
@@ -2522,6 +2864,212 @@ export default function AtlasWorkbench() {
     }
   }
 
+  function hydrateAnnotationDrafts(image: ChartImage) {
+    const annotations = [...(image.annotations ?? [])]
+      .sort((left, right) => left.sortOrder - right.sortOrder)
+      .map((annotation) => ({
+        ...annotation,
+        width: clampAnnotationWidth(annotation.width),
+        height: clampAnnotationHeight(annotation.height),
+        x: clampAnnotationX(annotation.x, clampAnnotationWidth(annotation.width)),
+        y: clampAnnotationY(annotation.y, clampAnnotationHeight(annotation.height)),
+      }));
+    annotationDraftsRef.current = annotations;
+    annotationSaveImageIdRef.current = image.id;
+    annotationDirtyRef.current = false;
+    setAnnotationDrafts(annotations);
+    setEditingAnnotationId(null);
+    editingAnnotationIdRef.current = null;
+    setDraggingAnnotation(null);
+    setResizingAnnotation(null);
+    setAnnotationSaveFailed(false);
+  }
+
+  function markAnnotationsDirty(nextAnnotations: ImageAnnotation[]) {
+    annotationDirtyRef.current = true;
+    setAnnotationSaveFailed(false);
+
+    if (annotationSaveTimerRef.current) {
+      window.clearTimeout(annotationSaveTimerRef.current);
+    }
+
+    const imageId = annotationSaveImageIdRef.current;
+    annotationSaveTimerRef.current = window.setTimeout(() => {
+      void saveAnnotationsNow(imageId, nextAnnotations);
+    }, 600);
+  }
+
+  function updateAnnotationDrafts(
+    updater: (annotations: ImageAnnotation[]) => ImageAnnotation[],
+    options: { save: boolean } = { save: true },
+  ) {
+    setAnnotationDrafts((current) => {
+      const nextAnnotations = updater(current).map((annotation, index) => ({
+        ...annotation,
+        sortOrder: index,
+      }));
+      annotationDraftsRef.current = nextAnnotations;
+
+      if (options.save) {
+        markAnnotationsDirty(nextAnnotations);
+      }
+
+      return nextAnnotations;
+    });
+  }
+
+  async function saveAnnotationsNow(
+    imageId = annotationSaveImageIdRef.current,
+    annotations = annotationDraftsRef.current,
+  ) {
+    if (!imageId || !annotationDirtyRef.current) {
+      return;
+    }
+
+    if (annotationSaveTimerRef.current) {
+      window.clearTimeout(annotationSaveTimerRef.current);
+      annotationSaveTimerRef.current = null;
+    }
+
+    const cleanedAnnotations = cleanAnnotations(annotations);
+    const savedFingerprint = annotationFingerprint(cleanedAnnotations);
+    const editingIdBeforeSave = editingAnnotationIdRef.current;
+    const editingIndexBeforeSave = editingIdBeforeSave
+      ? cleanedAnnotations.findIndex((annotation) => annotation.id === editingIdBeforeSave)
+      : -1;
+    setAnnotationsSaving(true);
+
+    try {
+      const response = await fetch(`/api/images/${imageId}/annotations`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ annotations: cleanedAnnotations }),
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { annotations?: ImageAnnotation[]; error?: string }
+        | null;
+
+      if (!response.ok || !result?.annotations) {
+        throw new Error(result?.error ?? t.annotationsSaveFailed);
+      }
+
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              images: current.images.map((image) =>
+                image.id === imageId ? { ...image, annotations: result.annotations! } : image,
+              ),
+            }
+          : current,
+      );
+
+      if (annotationSaveImageIdRef.current === imageId) {
+        const currentFingerprint = annotationFingerprint(annotationDraftsRef.current);
+        if (currentFingerprint === savedFingerprint) {
+          annotationDraftsRef.current = result.annotations;
+          annotationDirtyRef.current = false;
+          setAnnotationDrafts(result.annotations);
+          if (editingIndexBeforeSave >= 0) {
+            const nextEditingId = result.annotations[editingIndexBeforeSave]?.id ?? null;
+            editingAnnotationIdRef.current = nextEditingId;
+            setEditingAnnotationId(nextEditingId);
+          }
+        } else {
+          markAnnotationsDirty(annotationDraftsRef.current);
+        }
+      }
+    } catch {
+      setAnnotationSaveFailed(true);
+    } finally {
+      setAnnotationsSaving(false);
+    }
+  }
+
+  function addAnnotationAt(event: React.PointerEvent<HTMLDivElement>) {
+    if (!isEditingAnnotations || !imageStageSize || event.target !== event.currentTarget) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const width = 0.24;
+    const height = 0.12;
+    const x = clampAnnotationX((event.clientX - rect.left) / rect.width, width);
+    const y = clampAnnotationY((event.clientY - rect.top) / rect.height, height);
+    const annotation: ImageAnnotation = {
+      id: localAnnotationId(),
+      text: locale === "zh" ? "新标注" : "New note",
+      x,
+      y,
+      width,
+      height,
+      fontSize: 18,
+      color: "#111827",
+      backgroundColor: null,
+      sortOrder: annotationDraftsRef.current.length,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    setEditingAnnotationId(annotation.id);
+    updateAnnotationDrafts((annotations) => [...annotations, annotation]);
+  }
+
+  function startAnnotationDrag(annotation: ImageAnnotation, event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const stage = annotationStageRef.current;
+    if (!stage) {
+      return;
+    }
+
+    setEditingAnnotationId(annotation.id);
+    setDraggingAnnotation({
+      id: annotation.id,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: annotation.x,
+      startY: annotation.y,
+      width: annotation.width,
+      stageWidth: stage.clientWidth || 1,
+      stageHeight: stage.clientHeight || 1,
+    });
+  }
+
+  function startAnnotationResize(
+    annotation: ImageAnnotation,
+    handle: AnnotationResizeHandle,
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    const stage = annotationStageRef.current;
+    if (!stage) {
+      return;
+    }
+
+    setEditingAnnotationId(annotation.id);
+    setResizingAnnotation({
+      id: annotation.id,
+      handle,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: annotation.x,
+      startY: annotation.y,
+      startWidth: annotation.width,
+      startHeight: annotation.height,
+      stageWidth: stage.clientWidth || 1,
+      stageHeight: stage.clientHeight || 1,
+    });
+  }
+
+  function deleteAnnotation(annotationId: string) {
+    updateAnnotationDrafts((annotations) => annotations.filter((annotation) => annotation.id !== annotationId));
+    if (editingAnnotationId === annotationId) {
+      setEditingAnnotationId(null);
+    }
+  }
+
   async function loadImageDetails(imageId: string) {
     try {
       const response = await fetch(`/api/images/${imageId}`, { cache: "no-store" });
@@ -2538,6 +3086,9 @@ export default function AtlasWorkbench() {
             }
           : current,
       );
+      if (!annotationDirtyRef.current) {
+        hydrateAnnotationDrafts(result.image);
+      }
       setDetailDraft(detailDraftFromImage(result.image));
     } catch {
       // Keep the atlas summary visible if the full detail request fails.
@@ -2545,10 +3096,12 @@ export default function AtlasWorkbench() {
   }
 
   function selectImage(image: ChartImage) {
+    void saveAnnotationsNow();
     selectedImageIdRef.current = image.id;
     setSelectedImageId(image.id);
     setImageZoom(100);
     setDetailDraft(detailDraftFromImage(image));
+    hydrateAnnotationDrafts(image);
     setDetailTagInput("");
     void loadImageDetails(image.id);
   }
@@ -2626,6 +3179,39 @@ export default function AtlasWorkbench() {
       "brooks-pa-atlas.browseThumbnails",
       nextValue ? "visible" : "hidden",
     );
+  }
+
+  function toggleBrowseAnnotations() {
+    const nextValue = !showBrowseAnnotations;
+    setShowBrowseAnnotations(nextValue);
+    window.localStorage.setItem(
+      "brooks-pa-atlas.browseAnnotations",
+      nextValue ? "visible" : "hidden",
+    );
+  }
+
+  function toggleBrowseNotes() {
+    const nextValue = !showBrowseNotes;
+    setShowBrowseNotes(nextValue);
+    window.localStorage.setItem(
+      "brooks-pa-atlas.browseNotes",
+      nextValue ? "visible" : "hidden",
+    );
+  }
+
+  function toggleAnnotationEditing() {
+    setIsEditingAnnotations((current) => {
+      const nextValue = !current;
+      if (!nextValue) {
+        setEditingAnnotationId(null);
+        void saveAnnotationsNow();
+      } else {
+        setShowBrowseAnnotations(true);
+        window.localStorage.setItem("brooks-pa-atlas.browseAnnotations", "visible");
+      }
+
+      return nextValue;
+    });
   }
 
   function toggleLocale() {
@@ -3272,6 +3858,35 @@ export default function AtlasWorkbench() {
                     </button>
                     <button
                       type="button"
+                      onClick={toggleBrowseAnnotations}
+                      className="inline-flex h-6 items-center gap-1 rounded px-2 text-xs font-medium text-zinc-600 hover:bg-white"
+                      title={showBrowseAnnotations ? t.hideAnnotations : t.showAnnotations}
+                    >
+                      <PencilLine className="h-3.5 w-3.5" />
+                      <span>{showBrowseAnnotations ? t.hideAnnotations : t.showAnnotations}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleAnnotationEditing}
+                      className={`inline-flex h-6 items-center gap-1 rounded px-2 text-xs font-medium ${
+                        isEditingAnnotations ? "bg-zinc-950 text-white" : "text-zinc-600 hover:bg-white"
+                      }`}
+                      title={isEditingAnnotations ? t.stopEditAnnotations : t.editAnnotations}
+                    >
+                      <PencilLine className="h-3.5 w-3.5" />
+                      <span>{isEditingAnnotations ? t.stopEditAnnotations : t.editAnnotations}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleBrowseNotes}
+                      className="inline-flex h-6 items-center gap-1 rounded px-2 text-xs font-medium text-zinc-600 hover:bg-white"
+                      title={showBrowseNotes ? t.hideBrowseNotes : t.showBrowseNotes}
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                      <span>{showBrowseNotes ? t.hideBrowseNotes : t.showBrowseNotes}</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => adjustImageZoom(-25)}
                       className="grid h-6 w-6 place-items-center rounded text-zinc-600 hover:bg-white"
                       title={t.zoomOut}
@@ -3310,19 +3925,146 @@ export default function AtlasWorkbench() {
                   </div>
                 </div>
                 <div
+                  ref={viewerViewportRef}
                   className={`group relative min-h-[420px] overflow-auto rounded-md border border-zinc-200 bg-zinc-100 ${
                     isResizingViewer ? "select-none" : ""
                   }`}
                   style={{ height: imageViewerHeight }}
                 >
-                  <div className="flex h-full min-h-full min-w-full items-center justify-center">
-                    <img
-                      src={`/api/images/${selectedImage.id}/file`}
-                      alt={selectedImage.title ?? selectedImage.originalName}
-                      className={imageZoom === 100 ? "h-full w-full object-contain" : "block max-w-none"}
-                      style={imageZoom === 100 ? undefined : { width: `${imageZoom}%` }}
-                    />
+                  <div
+                    className="relative min-h-full min-w-full"
+                    style={
+                      imageStageSize
+                        ? {
+                            width: Math.max(imageStageSize.width, viewerViewportSize.width),
+                            height: Math.max(imageStageSize.height, viewerViewportSize.height),
+                          }
+                        : undefined
+                    }
+                  >
+                    {imageStageSize ? (
+                      <div
+                        ref={annotationStageRef}
+                        onPointerDown={addAnnotationAt}
+                        className={`absolute left-1/2 top-1/2 bg-white ${
+                          isEditingAnnotations ? "cursor-crosshair" : ""
+                        }`}
+                        style={{
+                          width: imageStageSize.width,
+                          height: imageStageSize.height,
+                          transform: "translate(-50%, -50%)",
+                        }}
+                        title={isEditingAnnotations ? t.addAnnotationHint : undefined}
+                      >
+                        <img
+                          src={`/api/images/${selectedImage.id}/file`}
+                          alt={selectedImage.title ?? selectedImage.originalName}
+                          className="pointer-events-none h-full w-full select-none object-contain"
+                        />
+                        {showBrowseAnnotations
+                          ? annotationDrafts.map((annotation) => (
+                              <div
+                                key={annotation.id}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                className={`absolute z-10 ${
+                                  isEditingAnnotations ? "pointer-events-auto" : "pointer-events-none"
+                                } ${
+                                  isEditingAnnotations
+                                    ? editingAnnotationId === annotation.id
+                                      ? "border border-sky-600"
+                                      : "border border-zinc-400"
+                                    : ""
+                                }`}
+                                style={{
+                                  left: `${annotation.x * 100}%`,
+                                  top: `${annotation.y * 100}%`,
+                                  width: `${annotation.width * 100}%`,
+                                  height: `${annotation.height * 100}%`,
+                                  color: annotation.color,
+                                  fontSize: `${Math.max(10, annotation.fontSize * (imageZoom / 100))}px`,
+                                }}
+                              >
+                                {isEditingAnnotations ? (
+                                  <div className="relative flex h-full items-start gap-1">
+                                    <button
+                                      type="button"
+                                      onPointerDown={(event) => startAnnotationDrag(annotation, event)}
+                                      className="absolute -left-6 top-0 grid h-5 w-5 shrink-0 cursor-move place-items-center rounded bg-white/80 text-zinc-500 shadow-sm hover:bg-white"
+                                      title={t.editAnnotations}
+                                    >
+                                      <GripVertical className="h-3.5 w-3.5" />
+                                    </button>
+                                    <textarea
+                                      value={annotation.text}
+                                      onFocus={() => setEditingAnnotationId(annotation.id)}
+                                      onPointerDown={(event) => event.stopPropagation()}
+                                      onChange={(event) =>
+                                        updateAnnotationDrafts((annotations) =>
+                                          annotations.map((item) =>
+                                            item.id === annotation.id
+                                              ? { ...item, text: event.target.value }
+                                              : item,
+                                          ),
+                                        )
+                                      }
+                                      placeholder={t.annotationTextPlaceholder}
+                                      className="h-full min-h-0 flex-1 resize-none bg-transparent px-1 py-0.5 font-medium leading-snug text-inherit outline-none"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => deleteAnnotation(annotation.id)}
+                                      className="absolute -right-6 top-0 grid h-5 w-5 shrink-0 place-items-center rounded bg-white/80 text-zinc-500 shadow-sm hover:bg-white"
+                                      title={t.deleteAnnotation}
+                                      aria-label={t.deleteAnnotation}
+                                    >
+                                      <X className="h-3.5 w-3.5" />
+                                    </button>
+                                    {editingAnnotationId === annotation.id
+                                      ? annotationResizeHandles.map((item) => (
+                                          <button
+                                            type="button"
+                                            key={item.handle}
+                                            onPointerDown={(event) => startAnnotationResize(annotation, item.handle, event)}
+                                            className={`absolute h-3 w-3 rounded-sm border border-sky-700 bg-white shadow-sm ${item.className} ${item.cursor}`}
+                                            aria-label={`${t.annotationStyle} ${item.handle}`}
+                                            title={t.annotationStyle}
+                                          />
+                                        ))
+                                      : null}
+                                  </div>
+                                ) : (
+                                  <div className="whitespace-pre-wrap font-medium leading-snug">
+                                    {annotation.text}
+                                  </div>
+                                )}
+                              </div>
+                            ))
+                          : null}
+                      </div>
+                    ) : (
+                      <div className="flex h-full min-h-[420px] min-w-full items-center justify-center">
+                        <img
+                          src={`/api/images/${selectedImage.id}/file`}
+                          alt={selectedImage.title ?? selectedImage.originalName}
+                          className={imageZoom === 100 ? "h-full w-full object-contain" : "block max-w-none"}
+                          style={imageZoom === 100 ? undefined : { width: `${imageZoom}%` }}
+                        />
+                      </div>
+                    )}
                   </div>
+                  {isEditingAnnotations ? (
+                    <div className="absolute left-3 top-3 z-20 rounded-md border border-zinc-200 bg-white/90 px-2 py-1 text-xs font-medium text-zinc-600 shadow-sm backdrop-blur">
+                      {annotationSaveFailed
+                        ? t.annotationsSaveFailed
+                        : annotationsSaving
+                          ? t.annotationsSaving
+                          : t.addAnnotationHint}
+                    </div>
+                  ) : annotationSaveFailed ? (
+                    <div className="absolute left-3 top-3 z-20 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-medium text-rose-700 shadow-sm">
+                      {t.annotationsSaveFailed}
+                    </div>
+                  ) : null}
                   {canNavigateSelectedImage ? (
                     <>
                       <button
@@ -3355,6 +4097,78 @@ export default function AtlasWorkbench() {
                     <span className="h-1 w-12 rounded-full bg-zinc-400" />
                   </button>
                 </div>
+                {isEditingAnnotations && selectedAnnotation ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+                    <span className="font-semibold text-zinc-700">{t.annotationStyle}</span>
+                    <label className="inline-flex items-center gap-2">
+                      <span>{t.annotationColor}</span>
+                      <input
+                        type="color"
+                        value={selectedAnnotation.color}
+                        onChange={(event) =>
+                          updateAnnotationDrafts((annotations) =>
+                            annotations.map((annotation) =>
+                              annotation.id === selectedAnnotation.id
+                                ? { ...annotation, color: event.target.value }
+                                : annotation,
+                            ),
+                          )
+                        }
+                        className="h-7 w-9 rounded border border-zinc-200 bg-white p-0.5"
+                        aria-label={t.annotationColor}
+                      />
+                    </label>
+                    <label className="inline-flex min-w-52 items-center gap-2">
+                      <span>{t.annotationFontSize}</span>
+                      <input
+                        type="range"
+                        min="10"
+                        max="48"
+                        step="1"
+                        value={selectedAnnotation.fontSize}
+                        onChange={(event) =>
+                          updateAnnotationDrafts((annotations) =>
+                            annotations.map((annotation) =>
+                              annotation.id === selectedAnnotation.id
+                                ? { ...annotation, fontSize: clampAnnotationFontSize(Number(event.target.value)) }
+                                : annotation,
+                            ),
+                          )
+                        }
+                        className="w-28 accent-zinc-950"
+                        aria-label={t.annotationFontSize}
+                      />
+                      <input
+                        type="number"
+                        min="10"
+                        max="48"
+                        value={selectedAnnotation.fontSize}
+                        onChange={(event) =>
+                          updateAnnotationDrafts((annotations) =>
+                            annotations.map((annotation) =>
+                              annotation.id === selectedAnnotation.id
+                                ? { ...annotation, fontSize: clampAnnotationFontSize(Number(event.target.value)) }
+                                : annotation,
+                            ),
+                          )
+                        }
+                        className="h-7 w-14 rounded border border-zinc-200 bg-white px-2 text-xs outline-none focus:border-zinc-500"
+                        aria-label={t.annotationFontSize}
+                      />
+                    </label>
+                  </div>
+                ) : null}
+                {showBrowseNotes ? (
+                  <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                    <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-zinc-600">
+                      <FileText className="h-3.5 w-3.5" />
+                      <span>{t.browseNotesTitle}</span>
+                    </div>
+                    <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-700">
+                      {selectedImage.notes?.trim() ? selectedImage.notes : t.noBrowseNotes}
+                    </p>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 

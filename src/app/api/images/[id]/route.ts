@@ -3,6 +3,7 @@ import { unlink } from "node:fs/promises";
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
+import { serializeImageAnnotation } from "@/lib/image-annotations";
 import { updateBatchCounters } from "@/lib/ocr-queue";
 import { absoluteImagePath } from "@/lib/storage";
 import { cleanupUnusedTags, replaceImageTags } from "@/lib/tags";
@@ -12,6 +13,20 @@ export const dynamic = "force-dynamic";
 
 type ImageWithTags = NonNullable<Awaited<ReturnType<typeof prisma.chartImage.findUnique>>> & {
   tags: { tag: { id: string; name: string; normalizedName: string; createdAt: Date; updatedAt: Date } }[];
+  annotations: {
+    id: string;
+    text: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    fontSize: number;
+    color: string;
+    backgroundColor: string | null;
+    sortOrder: number;
+    createdAt: Date;
+    updatedAt: Date;
+  }[];
 };
 
 function serializeImage(image: ImageWithTags) {
@@ -20,6 +35,7 @@ function serializeImage(image: ImageWithTags) {
     tags: image.tags
       .map((item) => item.tag)
       .sort((left, right) => left.name.localeCompare(right.name)),
+    annotations: image.annotations.map(serializeImageAnnotation),
   };
 }
 
@@ -30,7 +46,11 @@ export async function GET(
   const { id } = await context.params;
   const image = await prisma.chartImage.findUnique({
     where: { id },
-    include: { indexNode: true, tags: { include: { tag: true } } },
+    include: {
+      indexNode: true,
+      tags: { include: { tag: true } },
+      annotations: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+    },
   });
 
   if (!image) {
@@ -79,7 +99,11 @@ export async function PATCH(
 
     return tx.chartImage.findUniqueOrThrow({
       where: { id },
-      include: { indexNode: true, tags: { include: { tag: true } } },
+      include: {
+        indexNode: true,
+        tags: { include: { tag: true } },
+        annotations: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+      },
     });
   });
 

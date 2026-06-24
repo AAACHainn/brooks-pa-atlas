@@ -1776,9 +1776,15 @@ export default function AtlasWorkbench() {
     }
 
     const updateSize = () => {
-      setViewerViewportSize({
+      const nextSize = {
         width: viewport.clientWidth,
         height: viewport.clientHeight,
+      };
+      setViewerViewportSize((current) => {
+        if (current.width === nextSize.width && current.height === nextSize.height) {
+          return current;
+        }
+        return nextSize;
       });
     };
     updateSize();
@@ -1787,7 +1793,7 @@ export default function AtlasWorkbench() {
     observer.observe(viewport);
 
     return () => observer.disconnect();
-  }, [selectedImageId, imageViewerHeight]);
+  }, [selectedImageId]);
 
   useEffect(() => {
     if (!draggingAnnotation) {
@@ -1906,6 +1912,9 @@ export default function AtlasWorkbench() {
       const nextHeight = clampViewerHeight(
         viewerResizeStartRef.current.height + event.clientY - viewerResizeStartRef.current.y,
       );
+      if (!Number.isFinite(nextHeight) || nextHeight === viewerHeightRef.current) {
+        return;
+      }
       viewerHeightRef.current = nextHeight;
       setImageViewerHeight(nextHeight);
     }
@@ -1936,6 +1945,9 @@ export default function AtlasWorkbench() {
       const nextHeight = clampImportTableHeight(
         importTableResizeStartRef.current.height + event.clientY - importTableResizeStartRef.current.y,
       );
+      if (!Number.isFinite(nextHeight) || nextHeight === importTableHeightRef.current) {
+        return;
+      }
       importTableHeightRef.current = nextHeight;
       setImportTableHeight(nextHeight);
     }

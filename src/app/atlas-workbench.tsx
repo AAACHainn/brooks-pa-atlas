@@ -95,6 +95,11 @@ const annotationResizeHandles: {
   { handle: "w", className: "-left-1.5 top-1/2 -translate-y-1/2", cursor: "cursor-ew-resize" },
 ];
 
+const viewerFitSafetyPx = 2;
+const imageZoomStep = 10;
+
+let cachedScrollbarThickness: number | null = null;
+
 type ImageTag = {
   id: string;
   name: string;
@@ -1190,6 +1195,43 @@ function persistCollapsedIndexIds(ids: Set<string>) {
   }
 }
 
+function measureScrollbarThickness() {
+  if (cachedScrollbarThickness !== null) {
+    return cachedScrollbarThickness;
+  }
+
+  if (typeof document === "undefined" || !document.body) {
+    return 0;
+  }
+
+  const probe = document.createElement("div");
+  probe.style.position = "absolute";
+  probe.style.left = "-9999px";
+  probe.style.top = "-9999px";
+  probe.style.width = "100px";
+  probe.style.height = "100px";
+  probe.style.overflow = "scroll";
+  probe.style.visibility = "hidden";
+  document.body.appendChild(probe);
+  cachedScrollbarThickness = Math.max(0, probe.offsetWidth - probe.clientWidth);
+  probe.remove();
+
+  return cachedScrollbarThickness;
+}
+
+function measureStableViewerViewport(viewport: HTMLDivElement) {
+  const rect = viewport.getBoundingClientRect();
+  const styles = window.getComputedStyle(viewport);
+  const borderX = Number.parseFloat(styles.borderLeftWidth) + Number.parseFloat(styles.borderRightWidth);
+  const borderY = Number.parseFloat(styles.borderTopWidth) + Number.parseFloat(styles.borderBottomWidth);
+  const scrollbarThickness = measureScrollbarThickness();
+
+  return {
+    width: Math.max(1, Math.floor(rect.width - borderX - scrollbarThickness)),
+    height: Math.max(1, Math.floor(rect.height - borderY - scrollbarThickness)),
+  };
+}
+
 function clampZoom(value: number) {
   return Math.min(220, Math.max(50, value));
 }
@@ -1775,11 +1817,9 @@ export default function AtlasWorkbench() {
       return;
     }
 
+    let animationFrame = 0;
     const updateSize = () => {
-      const nextSize = {
-        width: viewport.clientWidth,
-        height: viewport.clientHeight,
-      };
+      const nextSize = measureStableViewerViewport(viewport);
       setViewerViewportSize((current) => {
         if (current.width === nextSize.width && current.height === nextSize.height) {
           return current;
@@ -1787,12 +1827,29 @@ export default function AtlasWorkbench() {
         return nextSize;
       });
     };
+    const scheduleUpdateSize = () => {
+      if (animationFrame) {
+        return;
+      }
+
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = 0;
+        updateSize();
+      });
+    };
     updateSize();
 
-    const observer = new ResizeObserver(updateSize);
+    const observer = new ResizeObserver(scheduleUpdateSize);
     observer.observe(viewport);
+    window.addEventListener("resize", scheduleUpdateSize);
 
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", scheduleUpdateSize);
+      if (animationFrame) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+    };
   }, [selectedImageId]);
 
   useEffect(() => {
@@ -2080,10 +2137,9 @@ export default function AtlasWorkbench() {
       return null;
     }
 
-    const fitScale = Math.min(
-      viewerViewportSize.width / selectedImage.width,
-      viewerViewportSize.height / selectedImage.height,
-    );
+    const fitWidth = Math.max(1, viewerViewportSize.width - viewerFitSafetyPx);
+    const fitHeight = Math.max(1, viewerViewportSize.height - viewerFitSafetyPx);
+    const fitScale = Math.min(fitWidth / selectedImage.width, fitHeight / selectedImage.height);
     const scale = fitScale * (imageZoom / 100);
 
     return {
@@ -3111,7 +3167,6 @@ export default function AtlasWorkbench() {
     void saveAnnotationsNow();
     selectedImageIdRef.current = image.id;
     setSelectedImageId(image.id);
-    setImageZoom(100);
     setDetailDraft(detailDraftFromImage(image));
     hydrateAnnotationDrafts(image);
     setDetailTagInput("");
@@ -3899,7 +3954,7 @@ export default function AtlasWorkbench() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => adjustImageZoom(-25)}
+                      onClick={() => adjustImageZoom(-imageZoomStep)}
                       className="grid h-6 w-6 place-items-center rounded text-zinc-600 hover:bg-white"
                       title={t.zoomOut}
                     >
@@ -3920,7 +3975,7 @@ export default function AtlasWorkbench() {
                     </span>
                     <button
                       type="button"
-                      onClick={() => adjustImageZoom(25)}
+                      onClick={() => adjustImageZoom(imageZoomStep)}
                       className="grid h-6 w-6 place-items-center rounded text-zinc-600 hover:bg-white"
                       title={t.zoomIn}
                     >
@@ -3938,7 +3993,7 @@ export default function AtlasWorkbench() {
                 </div>
                 <div
                   ref={viewerViewportRef}
-                  className={`group relative min-h-[420px] overflow-auto rounded-md border border-zinc-200 bg-zinc-100 ${
+                  className={`brooks-image-viewer-scrollport group relative min-h-[420px] overflow-auto rounded-md border border-zinc-200 bg-zinc-100 ${
                     isResizingViewer ? "select-none" : ""
                   }`}
                   style={{ height: imageViewerHeight }}

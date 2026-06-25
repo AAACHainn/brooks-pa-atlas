@@ -1219,16 +1219,27 @@ function measureScrollbarThickness() {
   return cachedScrollbarThickness;
 }
 
+function cssPixelValue(value: string) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function measureStableViewerViewport(viewport: HTMLDivElement) {
   const rect = viewport.getBoundingClientRect();
   const styles = window.getComputedStyle(viewport);
-  const borderX = Number.parseFloat(styles.borderLeftWidth) + Number.parseFloat(styles.borderRightWidth);
-  const borderY = Number.parseFloat(styles.borderTopWidth) + Number.parseFloat(styles.borderBottomWidth);
+  const borderX = cssPixelValue(styles.borderLeftWidth) + cssPixelValue(styles.borderRightWidth);
+  const borderY = cssPixelValue(styles.borderTopWidth) + cssPixelValue(styles.borderBottomWidth);
   const scrollbarThickness = measureScrollbarThickness();
+  const stableWidth = rect.width - borderX - scrollbarThickness;
+  const stableHeight = rect.height - borderY - scrollbarThickness;
 
   return {
-    width: Math.max(1, Math.floor(rect.width - borderX - scrollbarThickness)),
-    height: Math.max(1, Math.floor(rect.height - borderY - scrollbarThickness)),
+    width: Number.isFinite(stableWidth)
+      ? Math.max(1, Math.floor(stableWidth))
+      : Math.max(1, viewport.clientWidth || 1),
+    height: Number.isFinite(stableHeight)
+      ? Math.max(1, Math.floor(stableHeight))
+      : Math.max(1, viewport.clientHeight || 1),
   };
 }
 
@@ -2133,7 +2144,14 @@ export default function AtlasWorkbench() {
   );
   const imageGridEndIndex = imageGridStartIndex + imageGridPageImages.length;
   const imageStageSize = useMemo(() => {
-    if (!selectedImage?.width || !selectedImage?.height || viewerViewportSize.width <= 0 || viewerViewportSize.height <= 0) {
+    if (
+      !selectedImage?.width ||
+      !selectedImage?.height ||
+      !Number.isFinite(viewerViewportSize.width) ||
+      !Number.isFinite(viewerViewportSize.height) ||
+      viewerViewportSize.width <= 0 ||
+      viewerViewportSize.height <= 0
+    ) {
       return null;
     }
 
@@ -2141,10 +2159,16 @@ export default function AtlasWorkbench() {
     const fitHeight = Math.max(1, viewerViewportSize.height - viewerFitSafetyPx);
     const fitScale = Math.min(fitWidth / selectedImage.width, fitHeight / selectedImage.height);
     const scale = fitScale * (imageZoom / 100);
+    const width = Math.round(selectedImage.width * scale);
+    const height = Math.round(selectedImage.height * scale);
+
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      return null;
+    }
 
     return {
-      width: Math.max(1, Math.round(selectedImage.width * scale)),
-      height: Math.max(1, Math.round(selectedImage.height * scale)),
+      width: Math.max(1, width),
+      height: Math.max(1, height),
     };
   }, [imageZoom, selectedImage?.height, selectedImage?.width, viewerViewportSize.height, viewerViewportSize.width]);
 

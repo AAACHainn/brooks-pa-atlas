@@ -251,6 +251,10 @@ type IndexTreeSelectorProps = {
 const chunkSize = 80;
 const destructiveConfirmPhrase = "确认删除";
 const collapsedIndexesStorageKey = "brooks-pa-atlas.collapsedIndexes";
+const sidebarWidthStorageKey = "brooks-pa-atlas.sidebarWidth";
+const defaultSidebarWidth = 300;
+const minSidebarWidth = 240;
+const maxSidebarWidth = 640;
 const maxTagSuggestions = 8;
 
 const copy = {
@@ -283,6 +287,7 @@ const copy = {
     reorderIndexFailed: "索引排序失败，请稍后重试。",
     allImages: "全部图片",
     searchPlaceholder: "搜索标题、OCR、备注、标注、索引、标签",
+    viewLocatedIndexImages: "查看此栏目全部图片",
     tags: "标签",
     tagPlaceholder: "输入或选择标签",
     addTag: "添加标签",
@@ -356,6 +361,7 @@ const copy = {
     showOverview: "展开概览",
     collapseSidebar: "收起侧栏",
     expandSidebar: "展开侧栏",
+    resizeSidebar: "拖动调整侧栏宽度",
     unclassified: "未分类",
     ocrPending: "OCR 待处理",
     ocrDone: "OCR 已完成",
@@ -463,6 +469,7 @@ const copy = {
     reorderIndexFailed: "Index reorder failed. Please try again.",
     allImages: "All images",
     searchPlaceholder: "Search title, OCR, notes, annotations, index, tags",
+    viewLocatedIndexImages: "View all images in this index",
     tags: "Tags",
     tagPlaceholder: "Enter or select a tag",
     addTag: "Add tag",
@@ -537,6 +544,7 @@ const copy = {
     showOverview: "Show overview",
     collapseSidebar: "Collapse sidebar",
     expandSidebar: "Expand sidebar",
+    resizeSidebar: "Drag to resize sidebar",
     unclassified: "Unclassified",
     ocrPending: "OCR pending",
     ocrDone: "OCR done",
@@ -707,6 +715,22 @@ function expandedIndexIdsForSelection(nodes: IndexTreeNode[], selectedId: string
 
   nodes.some((node) => visit(node, []));
   return expanded;
+}
+
+function ancestorIndexIdsForSelection(nodes: IndexTreeNode[], selectedId: string) {
+  let result: string[] = [];
+
+  function visit(node: IndexTreeNode, ancestors: string[]): boolean {
+    if (node.id === selectedId) {
+      result = ancestors;
+      return true;
+    }
+
+    return node.children.some((child) => visit(child, [...ancestors, node.id]));
+  }
+
+  nodes.some((node) => visit(node, []));
+  return result;
 }
 
 function IndexTreeSelector({ labels, nodes, onChange, value }: IndexTreeSelectorProps) {
@@ -1724,6 +1748,10 @@ function clampImportTableHeight(value: number) {
   return Math.min(760, Math.max(180, value));
 }
 
+function clampSidebarWidth(value: number) {
+  return Math.min(maxSidebarWidth, Math.max(minSidebarWidth, value));
+}
+
 function clampAnnotationX(x: number, width: number) {
   return Math.min(Math.max(0, 1 - width), Math.max(0, x));
 }
@@ -1847,6 +1875,7 @@ function parseCollapsedIndexIds(value: string | null) {
 function IndexBranch({
   nodes,
   selectedId,
+  locatedId,
   collapsedIds,
   allowReorder,
   draggedNodeId,
@@ -1862,6 +1891,7 @@ function IndexBranch({
 }: {
   nodes: IndexTreeNode[];
   selectedId: string | null;
+  locatedId: string | null;
   collapsedIds: Set<string>;
   allowReorder: boolean;
   draggedNodeId: string | null;
@@ -1890,6 +1920,7 @@ function IndexBranch({
       {nodes.map((node) => {
         const hasChildren = node.children.length > 0;
         const isCollapsed = collapsedIds.has(node.id);
+        const isLocated = locatedId === node.id;
         const isDragging = draggedNodeId === node.id;
         const isDropTarget = dropIndicator?.id === node.id;
         const dropLineTop = dropIndicator?.position === "before" ? 0 : undefined;
@@ -1908,6 +1939,7 @@ function IndexBranch({
               />
             ) : null}
             <button
+              id={`atlas-index-node-${node.id}`}
               type="button"
               draggable={allowReorder}
               onDragStart={(event) => {
@@ -1941,6 +1973,8 @@ function IndexBranch({
               className={`grid h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition ${
                 selectedId === node.id
                   ? "bg-zinc-950 text-white"
+                  : isLocated
+                    ? "bg-cyan-50 text-cyan-950 ring-1 ring-inset ring-cyan-500 hover:bg-cyan-100"
                   : "text-zinc-700 hover:bg-zinc-100"
               } ${allowReorder ? "grid-cols-[16px_14px_1fr_auto] cursor-grab active:cursor-grabbing" : "grid-cols-[16px_1fr_auto]"} ${
                 isDragging ? "opacity-45" : ""
@@ -1985,6 +2019,7 @@ function IndexBranch({
               <IndexBranch
                 nodes={node.children}
                 selectedId={selectedId}
+                locatedId={locatedId}
                 collapsedIds={collapsedIds}
                 allowReorder={allowReorder}
                 draggedNodeId={draggedNodeId}
@@ -2064,12 +2099,15 @@ function ModeSwitch({
 export default function AtlasWorkbench() {
   const [locale, setLocale] = useState<Locale>("zh");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(defaultSidebarWidth);
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("manage");
   const [data, setData] = useState<AtlasData | null>(null);
   const [dataError, setDataError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [selectedIndexId, setSelectedIndexId] = useState<string | null>(null);
+  const [locatedIndexId, setLocatedIndexId] = useState<string | null>(null);
   const [collapsedIndexIds, setCollapsedIndexIds] = useState<Set<string>>(() => new Set());
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [files, setFiles] = useState<SelectedFile[]>([]);
@@ -2156,6 +2194,8 @@ export default function AtlasWorkbench() {
   const [viewerViewportSize, setViewerViewportSize] = useState({ width: 0, height: 0 });
   const importTableResizeStartRef = useRef({ height: importTableHeight, y: 0 });
   const importTableHeightRef = useRef(importTableHeight);
+  const sidebarResizeStartRef = useRef({ width: sidebarWidth, x: 0 });
+  const sidebarWidthRef = useRef(sidebarWidth);
   const viewerResizeStartRef = useRef({ height: imageViewerHeight, y: 0 });
   const viewerHeightRef = useRef(imageViewerHeight);
   const selectedImageIdRef = useRef<string | null>(null);
@@ -2254,6 +2294,13 @@ export default function AtlasWorkbench() {
       try {
         setLocale(window.localStorage.getItem("brooks-pa-atlas.locale") === "en" ? "en" : "zh");
         setIsSidebarCollapsed(window.localStorage.getItem("brooks-pa-atlas.sidebar") === "collapsed");
+        const savedSidebarWidth = Number(window.localStorage.getItem(sidebarWidthStorageKey));
+        const nextSidebarWidth =
+          Number.isFinite(savedSidebarWidth) && savedSidebarWidth > 0
+            ? clampSidebarWidth(savedSidebarWidth)
+            : defaultSidebarWidth;
+        sidebarWidthRef.current = nextSidebarWidth;
+        setSidebarWidth(nextSidebarWidth);
         setIsOverviewCollapsed(window.localStorage.getItem("brooks-pa-atlas.overview") === "collapsed");
         const savedViewMode = window.localStorage.getItem("brooks-pa-atlas.viewMode");
         setViewMode(savedViewMode === "browse" || savedViewMode === "exam" ? savedViewMode : "manage");
@@ -2458,6 +2505,38 @@ export default function AtlasWorkbench() {
   }, [data?.batches, refresh]);
 
   useEffect(() => {
+    if (!isResizingSidebar) {
+      return;
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const nextWidth = clampSidebarWidth(
+        sidebarResizeStartRef.current.width + event.clientX - sidebarResizeStartRef.current.x,
+      );
+      if (!Number.isFinite(nextWidth) || nextWidth === sidebarWidthRef.current) {
+        return;
+      }
+      sidebarWidthRef.current = nextWidth;
+      setSidebarWidth(nextWidth);
+    }
+
+    function handlePointerEnd() {
+      setIsResizingSidebar(false);
+      window.localStorage.setItem(sidebarWidthStorageKey, String(sidebarWidthRef.current));
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerEnd, { once: true });
+    window.addEventListener("pointercancel", handlePointerEnd, { once: true });
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+    };
+  }, [isResizingSidebar]);
+
+  useEffect(() => {
     if (!isResizingViewer) {
       return;
     }
@@ -2552,6 +2631,7 @@ export default function AtlasWorkbench() {
   const flatIndexes = useMemo(() => flattenTree(data?.tree ?? []), [data?.tree]);
   const selectedIndexPath =
     flatIndexes.find((node) => node.id === selectedIndexId)?.path ?? "";
+  const locatedIndex = flatIndexes.find((node) => node.id === locatedIndexId) ?? null;
   const selectedImage = data?.images.find((image) => image.id === selectedImageId) ?? null;
   const selectedImageIndex =
     data?.images.findIndex((image) => image.id === selectedImageId) ?? -1;
@@ -2615,10 +2695,10 @@ export default function AtlasWorkbench() {
   const layoutClass = isBrowseMode || isExamMode
     ? isSidebarCollapsed
       ? "grid min-h-screen grid-cols-1 xl:grid-cols-[64px_minmax(0,1fr)]"
-      : "grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)]"
+      : "grid min-h-screen grid-cols-1 xl:grid-cols-[var(--atlas-sidebar-width)_minmax(0,1fr)]"
     : isSidebarCollapsed
       ? "grid min-h-screen grid-cols-1 xl:grid-cols-[64px_minmax(520px,1fr)_360px]"
-      : "grid min-h-screen grid-cols-1 xl:grid-cols-[300px_minmax(520px,1fr)_360px]";
+      : "grid min-h-screen grid-cols-1 xl:grid-cols-[var(--atlas-sidebar-width)_minmax(520px,1fr)_360px]";
   const groups = useMemo(() => {
     const counts = new Map<string, number>();
     files.forEach((item) => counts.set(item.groupKey, (counts.get(item.groupKey) ?? 0) + 1));
@@ -3770,6 +3850,30 @@ export default function AtlasWorkbench() {
     void loadImageDetails(image.id);
   }
 
+  function locateSearchedImageIndex(image: ChartImage) {
+    if (!query.trim() || !image.indexNode) {
+      return;
+    }
+
+    const indexId = image.indexNode.id;
+    const ancestorIds = ancestorIndexIdsForSelection(data?.tree ?? [], indexId);
+    setCollapsedIndexIds((current) => {
+      const next = new Set(current);
+      ancestorIds.forEach((id) => next.delete(id));
+      persistCollapsedIndexIds(next);
+      return next;
+    });
+    setLocatedIndexId(indexId);
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById(`atlas-index-node-${indexId}`)?.scrollIntoView({
+          block: "nearest",
+        });
+      });
+    });
+  }
+
   async function saveCurrentImageChanges() {
     const annotationsSaved = await saveAnnotationsNow();
     if (!annotationsSaved) {
@@ -3799,6 +3903,7 @@ export default function AtlasWorkbench() {
       }
 
       if (image.id === selectedImageIdRef.current) {
+        locateSearchedImageIndex(image);
         return true;
       }
 
@@ -3807,6 +3912,7 @@ export default function AtlasWorkbench() {
       }
 
       commitSelectedImage(image);
+      locateSearchedImageIndex(image);
       return true;
     })();
 
@@ -3857,6 +3963,19 @@ export default function AtlasWorkbench() {
 
   function selectIndex(id: string | null) {
     setSelectedIndexId(id);
+    setLocatedIndexId(null);
+    setImageGridPage(1);
+    setSelectedBulkImageIds(new Set());
+  }
+
+  function viewLocatedIndexImages() {
+    if (!locatedIndexId) {
+      return;
+    }
+
+    setSelectedIndexId(locatedIndexId);
+    setLocatedIndexId(null);
+    setQuery("");
     setImageGridPage(1);
     setSelectedBulkImageIds(new Set());
   }
@@ -3988,6 +4107,29 @@ export default function AtlasWorkbench() {
     );
   }
 
+  function setAndPersistSidebarWidth(value: number) {
+    const nextWidth = clampSidebarWidth(value);
+    sidebarWidthRef.current = nextWidth;
+    setSidebarWidth(nextWidth);
+    window.localStorage.setItem(sidebarWidthStorageKey, String(nextWidth));
+  }
+
+  function startSidebarResize(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    sidebarResizeStartRef.current = { width: sidebarWidth, x: event.clientX };
+    sidebarWidthRef.current = sidebarWidth;
+    setIsResizingSidebar(true);
+  }
+
+  function handleSidebarResizeKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+
+    event.preventDefault();
+    setAndPersistSidebarWidth(sidebarWidth + (event.key === "ArrowRight" ? 16 : -16));
+  }
+
   function toggleOverview() {
     const nextValue = !isOverviewCollapsed;
     setIsOverviewCollapsed(nextValue);
@@ -4013,8 +4155,11 @@ export default function AtlasWorkbench() {
 
   return (
     <main className="min-h-screen bg-[#f7f7f4] text-zinc-950">
-      <div className={layoutClass}>
-        <aside className="border-r border-zinc-200 bg-white">
+      <div
+        className={`${layoutClass} ${isResizingSidebar ? "select-none" : ""}`}
+        style={{ "--atlas-sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}
+      >
+        <aside className="relative min-w-0 border-r border-zinc-200 bg-white">
           {isSidebarCollapsed ? (
             <div className="flex min-h-screen flex-col items-center gap-3 py-3">
               <button
@@ -4170,6 +4315,7 @@ export default function AtlasWorkbench() {
                 <IndexBranch
                   nodes={data?.tree ?? []}
                   selectedId={selectedIndexId}
+                  locatedId={locatedIndexId}
                   collapsedIds={collapsedIndexIds}
                   allowReorder={canReorderIndexes}
                   draggedNodeId={draggedIndexNodeId}
@@ -4186,6 +4332,27 @@ export default function AtlasWorkbench() {
               </nav>
             </>
           )}
+          {!isSidebarCollapsed ? (
+            <div
+              role="separator"
+              tabIndex={0}
+              onPointerDown={startSidebarResize}
+              onKeyDown={handleSidebarResizeKeyDown}
+              className="group absolute -right-1.5 top-0 z-30 hidden h-full w-3 touch-none cursor-col-resize items-center justify-center bg-transparent outline-none xl:flex"
+              title={t.resizeSidebar}
+              aria-label={t.resizeSidebar}
+              aria-orientation="vertical"
+              aria-valuemin={minSidebarWidth}
+              aria-valuemax={maxSidebarWidth}
+              aria-valuenow={sidebarWidth}
+            >
+              <span
+                className={`h-full w-px transition-colors ${
+                  isResizingSidebar ? "bg-cyan-600" : "bg-transparent group-hover:bg-cyan-500 group-focus-visible:bg-cyan-500"
+                }`}
+              />
+            </div>
+          ) : null}
         </aside>
 
         <section className="min-w-0">
@@ -4200,9 +4367,22 @@ export default function AtlasWorkbench() {
                     setImageGridPage(1);
                     setSelectedBulkImageIds(new Set());
                   }}
-                  className="h-10 w-full rounded-md border border-zinc-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-zinc-500"
+                  className={`h-10 w-full rounded-md border border-zinc-200 bg-white pl-9 text-sm outline-none focus:border-zinc-500 ${
+                    locatedIndex && query.trim() ? "pr-28" : "pr-3"
+                  }`}
                   placeholder={t.searchPlaceholder}
                 />
+                {locatedIndex && query.trim() ? (
+                  <button
+                    type="button"
+                    onClick={viewLocatedIndexImages}
+                    className="absolute right-1.5 top-1/2 inline-flex h-7 max-w-24 -translate-y-1/2 items-center gap-1 rounded-md bg-cyan-50 px-2 text-xs font-medium text-cyan-800 transition hover:bg-cyan-100"
+                    title={`${t.viewLocatedIndexImages}: ${locatedIndex.path}`}
+                  >
+                    <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{t.viewLocatedIndexImages}</span>
+                  </button>
+                ) : null}
               </div>
               <TagFilterSelector
                 selectedIds={selectedTagIds}

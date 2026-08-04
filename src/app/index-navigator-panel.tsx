@@ -102,6 +102,12 @@ const labels = {
     close: "关闭",
     nodeSearch: "搜索索引节点名称或路径",
     selectedNodes: "已选节点",
+    totalNodes: "全部节点",
+    expandAllNodes: "全部展开",
+    collapseAllNodes: "全部收起",
+    expandNode: "展开节点",
+    collapseNode: "收起节点",
+    noNodes: "没有匹配的索引节点。",
     selectNodesHint: "选择一个或多个索引节点。父节点不会自动包含后代。",
     optionOperation: "选择要批量操作的选项",
     addToNodes: "添加到所选节点",
@@ -111,7 +117,6 @@ const labels = {
     updateFailed: "导航器更新失败",
     confirmDeleteCategory: "删除该分类会同时删除其选项和所有节点关联。是否继续？",
     confirmDeleteOption: "删除该选项会同时删除所有节点关联。是否继续？",
-    tooManyNodes: "仅显示前500个节点，请使用搜索缩小范围。",
     assigned: "已配置",
   },
   en: {
@@ -143,6 +148,12 @@ const labels = {
     close: "Close",
     nodeSearch: "Search index name or path",
     selectedNodes: "Selected nodes",
+    totalNodes: "Total nodes",
+    expandAllNodes: "Expand all",
+    collapseAllNodes: "Collapse all",
+    expandNode: "Expand node",
+    collapseNode: "Collapse node",
+    noNodes: "No matching index nodes.",
     selectNodesHint: "Select one or more nodes. Selecting a parent does not include descendants.",
     optionOperation: "Choose options to update",
     addToNodes: "Add to selected nodes",
@@ -152,7 +163,6 @@ const labels = {
     updateFailed: "Failed to update navigator",
     confirmDeleteCategory: "Deleting this category also removes its options and node assignments. Continue?",
     confirmDeleteOption: "Deleting this option also removes all node assignments. Continue?",
-    tooManyNodes: "Showing the first 500 nodes. Search to narrow the list.",
     assigned: "assigned",
   },
 } as const;
@@ -161,6 +171,28 @@ const expandedStorageKey = "brooks-pa-atlas.indexNavigatorExpanded";
 
 function flattenNodes(nodes: NavigatorIndexNode[]): NavigatorIndexNode[] {
   return nodes.flatMap((node) => [node, ...flattenNodes(node.children)]);
+}
+
+function filterNodeTree(nodes: NavigatorIndexNode[], term: string): NavigatorIndexNode[] {
+  if (!term) return nodes;
+  return nodes.flatMap((node) => {
+    const children = filterNodeTree(node.children, term);
+    if (!node.path.toLowerCase().includes(term) && children.length === 0) return [];
+    return [{ ...node, children }];
+  });
+}
+
+function flattenVisibleNodes(
+  nodes: NavigatorIndexNode[],
+  expandedNodeIds: Set<string>,
+  forceExpand: boolean,
+): NavigatorIndexNode[] {
+  return nodes.flatMap((node) => [
+    node,
+    ...(forceExpand || expandedNodeIds.has(node.id)
+      ? flattenVisibleNodes(node.children, expandedNodeIds, forceExpand)
+      : []),
+  ]);
 }
 
 async function jsonRequest(url: string, init?: RequestInit) {
@@ -205,10 +237,12 @@ export default function IndexNavigatorPanel({
   const [draggedOptionId, setDraggedOptionId] = useState<string | null>(null);
   const [nodeSearch, setNodeSearch] = useState("");
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
+  const [expandedAssignmentNodeIds, setExpandedAssignmentNodeIds] = useState<Set<string>>(new Set());
   const [operationOptionIds, setOperationOptionIds] = useState<Set<string>>(new Set());
   const [assignmentCounts, setAssignmentCounts] = useState<Map<string, number>>(new Map());
 
   const allNodes = useMemo(() => flattenNodes(nodes), [nodes]);
+  const nodeById = useMemo(() => new Map(allNodes.map((node) => [node.id, node])), [allNodes]);
   const selectedCategory = data?.categories.find((category) => category.id === selectedCategoryId) ?? null;
 
   useEffect(() => {
@@ -256,12 +290,21 @@ export default function IndexNavigatorPanel({
     if (!requestedEditNode) return;
     const timer = window.setTimeout(() => {
       setSelectedNodeIds(new Set([requestedEditNode.id]));
+      setExpandedAssignmentNodeIds((current) => {
+        const next = new Set(current);
+        let parentId = requestedEditNode.parentId;
+        while (parentId) {
+          next.add(parentId);
+          parentId = nodeById.get(parentId)?.parentId ?? null;
+        }
+        return next;
+      });
       setSettingsTab("assignments");
       setSettingsOpen(true);
       onRequestedEditNodeHandled();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [onRequestedEditNodeHandled, requestedEditNode]);
+  }, [nodeById, onRequestedEditNodeHandled, requestedEditNode]);
 
   useEffect(() => {
     if (!settingsOpen || settingsTab !== "assignments" || selectedNodeIds.size === 0) {
@@ -358,10 +401,22 @@ export default function IndexNavigatorPanel({
     setOperationOptionIds(new Set());
   }
 
-  const filteredNodes = allNodes.filter((node) => {
-    const term = nodeSearch.trim().toLowerCase();
-    return !term || node.path.toLowerCase().includes(term);
-  });
+  const normalizedNodeSearch = nodeSearch.trim().toLowerCase();
+  const filteredNodeTree = filterNodeTree(nodes, normalizedNodeSearch);
+  const visibleAssignmentNodes = flattenVisibleNodes(
+    filteredNodeTree,
+    expandedAssignmentNodeIds,
+    Boolean(normalizedNodeSearch),
+  );
+
+  function toggleAssignmentNode(nodeId: string) {
+    setExpandedAssignmentNodeIds((current) => {
+      const next = new Set(current);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  }
 
   return (
     <div className="border-b border-zinc-200 bg-white">
@@ -716,33 +771,81 @@ export default function IndexNavigatorPanel({
                         placeholder={t.nodeSearch}
                       />
                     </div>
-                    <p className="mt-3 text-xs text-zinc-500">{t.selectedNodes}: {selectedNodeIds.size}</p>
-                    {filteredNodes.length > 500 ? <p className="mt-1 text-[11px] text-amber-700">{t.tooManyNodes}</p> : null}
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs text-zinc-500">
+                        {t.selectedNodes}: {selectedNodeIds.size} · {t.totalNodes}: {allNodes.length}
+                      </p>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          disabled={Boolean(normalizedNodeSearch)}
+                          onClick={() =>
+                            setExpandedAssignmentNodeIds(
+                              new Set(allNodes.filter((node) => node.children.length > 0).map((node) => node.id)),
+                            )
+                          }
+                          className="h-7 rounded px-2 text-[11px] text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {t.expandAllNodes}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(normalizedNodeSearch)}
+                          onClick={() => setExpandedAssignmentNodeIds(new Set())}
+                          className="h-7 rounded px-2 text-[11px] text-zinc-600 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {t.collapseAllNodes}
+                        </button>
+                      </div>
+                    </div>
                     <div className="mt-3 max-h-[430px] space-y-1 overflow-y-auto">
-                      {filteredNodes.slice(0, 500).map((node) => (
-                        <label
+                      {visibleAssignmentNodes.map((node) => {
+                        const hasChildren = node.children.length > 0;
+                        const isNodeExpanded = Boolean(normalizedNodeSearch) || expandedAssignmentNodeIds.has(node.id);
+                        return (
+                        <div
                           key={node.id}
-                          className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-zinc-50"
-                          style={{ paddingLeft: 8 + node.depth * 10 }}
+                          className="flex items-center rounded-md py-1 pr-2 text-sm hover:bg-zinc-50"
+                          style={{ paddingLeft: 6 + node.depth * 14 }}
                           title={node.path}
                         >
-                          <input
-                            type="checkbox"
-                            checked={selectedNodeIds.has(node.id)}
-                            onChange={() => {
-                              setSelectedNodeIds((current) => {
-                                const next = new Set(current);
-                                if (next.has(node.id)) next.delete(node.id);
-                                else if (next.size < 1000) next.add(node.id);
-                                return next;
-                              });
-                            }}
-                            className="h-4 w-4 accent-cyan-700"
-                          />
-                          <span className="min-w-0 flex-1 truncate">{node.name}</span>
-                          <span className="text-[11px] text-zinc-400">{node.imageCount}</span>
-                        </label>
-                      ))}
+                          {hasChildren ? (
+                            <button
+                              type="button"
+                              disabled={Boolean(normalizedNodeSearch)}
+                              onClick={() => toggleAssignmentNode(node.id)}
+                              className="mr-1 grid h-6 w-6 shrink-0 place-items-center rounded text-zinc-500 hover:bg-zinc-200 disabled:cursor-default"
+                              title={`${isNodeExpanded ? t.collapseNode : t.expandNode}: ${node.name}`}
+                              aria-label={`${isNodeExpanded ? t.collapseNode : t.expandNode}: ${node.name}`}
+                            >
+                              <ChevronRight className={`h-3.5 w-3.5 transition ${isNodeExpanded ? "rotate-90" : ""}`} />
+                            </button>
+                          ) : (
+                            <span className="mr-1 h-6 w-6 shrink-0" />
+                          )}
+                          <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-0.5">
+                            <input
+                              type="checkbox"
+                              checked={selectedNodeIds.has(node.id)}
+                              onChange={() => {
+                                setSelectedNodeIds((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(node.id)) next.delete(node.id);
+                                  else if (next.size < 1000) next.add(node.id);
+                                  return next;
+                                });
+                              }}
+                              className="h-4 w-4 shrink-0 accent-cyan-700"
+                            />
+                            <span className="min-w-0 flex-1 truncate">{node.name}</span>
+                            <span className="text-[11px] text-zinc-400">{node.imageCount}</span>
+                          </label>
+                        </div>
+                        );
+                      })}
+                      {visibleAssignmentNodes.length === 0 ? (
+                        <p className="px-2 py-8 text-center text-xs text-zinc-400">{t.noNodes}</p>
+                      ) : null}
                     </div>
                   </div>
                   <div className="rounded-md border border-zinc-200 p-4">

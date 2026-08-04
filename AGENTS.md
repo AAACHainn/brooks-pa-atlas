@@ -106,6 +106,7 @@ npm run db:init
 - `src/app/globals.css`：Tailwind v4 入口和全局 CSS。
 - `src/app/atlas-workbench.tsx`：主工作台客户端组件，绝大多数前端交互在这里。
 - `src/app/index-navigator-panel.tsx`：统一索引节点导航器和管理设置弹窗。
+- `src/app/app-dialog.tsx`：全局统一的应用内提示、确认和文本输入弹窗，提供危险级别样式、焦点管理和键盘操作。
 - `src/app/exam-mode.tsx`：考试模式客户端组件，包含试卷管理、制题、遮罩、考试和结果复盘。
 - `src/app/api/atlas/route.ts`：工作台聚合查询接口。
 - `src/app/api/exam/**/route.ts`：考试模式 API，负责试卷、题目、发布、考试记录和提交评分。
@@ -217,6 +218,8 @@ npm run db:init
 - 管理模式：导入、创建索引、编辑图片详情、编辑 OCR 文本、单图 OCR、OCR 重试、撤销批次、删除图片、索引右键管理。
 - 浏览模式：图片浏览和学习标注，隐藏导入、新建索引、详情保存、OCR 编辑/重试、撤销、删除等管理写操作；允许编辑图片文字标注。
 - 考试模式：创建试卷、从图库选图制题、多矩形遮罩、发布考试、随机顺序作答和结果复盘。
+
+需要提示、确认或单行文本输入时统一使用 `src/app/app-dialog.tsx`，不要调用浏览器原生 `alert`、`confirm` 或 `prompt`。统一弹窗支持中英文按钮、`Esc` 取消、`Enter` 提交输入和 `Tab` 焦点循环。
 
 主要布局：
 

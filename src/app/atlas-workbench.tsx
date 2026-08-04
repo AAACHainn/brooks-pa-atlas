@@ -37,6 +37,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 
 import ExamMode from "@/app/exam-mode";
+import { useAppDialog } from "@/app/app-dialog";
 import IndexNavigatorPanel from "@/app/index-navigator-panel";
 
 type IndexTreeNode = {
@@ -206,12 +207,6 @@ type IndexAction =
   | { mode: "rename"; node: IndexTreeNode }
   | { mode: "delete"; node: IndexTreeNode }
   | { mode: "clear"; node: IndexTreeNode };
-type NoticeDialog = {
-  title: string;
-  message: string;
-  tone: "warning" | "error";
-};
-
 type TagSuggestionInputProps = {
   ariaLabel: string;
   className?: string;
@@ -270,6 +265,8 @@ const maxTagSuggestions = 8;
 const copy = {
   zh: {
     imageUnit: "张图片",
+    noticeTitle: "提示",
+    operationFailedTitle: "操作失败",
     refresh: "刷新",
     newIndex: "新建索引",
     addIndex: "添加索引",
@@ -321,6 +318,7 @@ const copy = {
     restoreFailed: "恢复失败，请确认 zip 文件有效后重试。",
     restoreConfirmMessage:
       "恢复会合并备份数据：相同图片会覆盖标题、备注、标签、OCR 和索引归属，不会删除当前系统中备份外的数据。是否继续？",
+    restoreConfirmTitle: "恢复备份？",
     backupTaskTitle: "备份进度",
     restoreTaskTitle: "恢复进度",
     taskPreparing: "正在准备任务",
@@ -401,6 +399,7 @@ const copy = {
     runOcr: "执行 OCR",
     ocrText: "OCR 文本",
     ocrOverwriteConfirm: "当前已有 OCR 文本。重新 OCR 会在完成后覆盖现有内容，是否继续？",
+    ocrOverwriteTitle: "覆盖现有 OCR 文本？",
     ocrUpdateFailed: "OCR 操作失败，请稍后重试。",
     noOcrText: "暂无 OCR 文本",
     size: "大小",
@@ -450,6 +449,8 @@ const copy = {
   },
   en: {
     imageUnit: "images",
+    noticeTitle: "Notice",
+    operationFailedTitle: "Action failed",
     refresh: "Refresh",
     newIndex: "New index",
     addIndex: "Add index",
@@ -503,6 +504,7 @@ const copy = {
     restoreFailed: "Restore failed. Please confirm the zip file is valid and try again.",
     restoreConfirmMessage:
       "Restore will merge backup data: matching images overwrite title, notes, tags, OCR, and index assignment, and data outside the backup will not be deleted. Continue?",
+    restoreConfirmTitle: "Restore backup?",
     backupTaskTitle: "Backup progress",
     restoreTaskTitle: "Restore progress",
     taskPreparing: "Preparing task",
@@ -586,6 +588,7 @@ const copy = {
     runOcr: "Run OCR",
     ocrText: "OCR text",
     ocrOverwriteConfirm: "This image already has OCR text. Running OCR again will overwrite it when completed. Continue?",
+    ocrOverwriteTitle: "Overwrite existing OCR text?",
     ocrUpdateFailed: "OCR update failed. Please try again.",
     noOcrText: "No OCR text",
     size: "Size",
@@ -2162,7 +2165,6 @@ export default function AtlasWorkbench() {
   const [undoingBatchId, setUndoingBatchId] = useState<string | null>(null);
   const [pendingDeleteImage, setPendingDeleteImage] = useState<ChartImage | null>(null);
   const [deletingImageId, setDeletingImageId] = useState<string | null>(null);
-  const [noticeDialog, setNoticeDialog] = useState<NoticeDialog | null>(null);
   const [indexContextMenu, setIndexContextMenu] = useState<IndexContextMenu | null>(null);
   const [indexAction, setIndexAction] = useState<IndexAction | null>(null);
   const [indexActionBusy, setIndexActionBusy] = useState(false);
@@ -2231,6 +2233,7 @@ export default function AtlasWorkbench() {
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const t = copy[locale];
+  const appDialog = useAppDialog({ confirm: t.confirm, cancel: t.cancel });
   const isBrowseMode = viewMode === "browse";
   const isExamMode = viewMode === "exam";
   const isManageMode = viewMode === "manage";
@@ -2846,7 +2849,7 @@ export default function AtlasWorkbench() {
       });
 
     if ((fileList?.length ?? 0) > 0 && nextFiles.length === 0) {
-      window.alert(t.noSupportedImages);
+      void appDialog.showAlert({ title: t.noticeTitle, message: t.noSupportedImages, tone: "warning" });
     }
 
     setFiles(nextFiles);
@@ -2950,7 +2953,7 @@ export default function AtlasWorkbench() {
     }
 
     if (!isSupportedDocumentFile(file)) {
-      window.alert(t.noSupportedDocuments);
+      await appDialog.showAlert({ title: t.noticeTitle, message: t.noSupportedDocuments, tone: "warning" });
       return;
     }
 
@@ -2976,8 +2979,9 @@ export default function AtlasWorkbench() {
       }
 
       if (typeof result.failed === "number" && result.failed > 0) {
-        window.alert(
-          `${t.documentImportCompletedWithErrors}\n${formatDocumentImportSummary(
+        await appDialog.showAlert({
+          title: t.documentImportCompletedWithErrors,
+          message: formatDocumentImportSummary(
             t.documentImportSummary,
             {
               imported: result.imported,
@@ -2985,13 +2989,18 @@ export default function AtlasWorkbench() {
               failed: result.failed,
               duplicate: result.duplicate,
             },
-          )}`,
-        );
+          ),
+          tone: "warning",
+        });
       }
 
       await refresh();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Document import failed.");
+      await appDialog.showAlert({
+        title: t.operationFailedTitle,
+        message: error instanceof Error ? error.message : "Document import failed.",
+        tone: "danger",
+      });
     } finally {
       setDocumentImporting(false);
       setDocumentImportJob(null);
@@ -3100,12 +3109,12 @@ export default function AtlasWorkbench() {
       });
 
       if (!response.ok) {
-        window.alert(t.reorderIndexFailed);
+        await appDialog.showAlert({ title: t.operationFailedTitle, message: t.reorderIndexFailed, tone: "danger" });
       }
 
       await refresh();
     } catch {
-      window.alert(t.reorderIndexFailed);
+      await appDialog.showAlert({ title: t.operationFailedTitle, message: t.reorderIndexFailed, tone: "danger" });
       await refresh();
     } finally {
       setReorderingIndex(false);
@@ -3153,10 +3162,10 @@ export default function AtlasWorkbench() {
       if (!response.ok) {
         const result = (await response.json().catch(() => null)) as { error?: string } | null;
         closeIndexAction(true);
-        setNoticeDialog({
+        void appDialog.showAlert({
           title: t.indexActionFailedTitle,
           message: result?.error ?? t.indexActionFailed,
-          tone: response.status === 409 ? "warning" : "error",
+          tone: response.status === 409 ? "warning" : "danger",
         });
         return;
       }
@@ -3183,10 +3192,10 @@ export default function AtlasWorkbench() {
       if (!response.ok) {
         const result = (await response.json().catch(() => null)) as { error?: string } | null;
         closeIndexAction(true);
-        setNoticeDialog({
+        void appDialog.showAlert({
           title: t.indexActionFailedTitle,
           message: result?.error ?? t.indexActionFailed,
-          tone: response.status === 409 ? "warning" : "error",
+          tone: response.status === 409 ? "warning" : "danger",
         });
         return;
       }
@@ -3221,11 +3230,11 @@ export default function AtlasWorkbench() {
       if (!response.ok) {
         const result = (await response.json().catch(() => null)) as { error?: string } | null;
         closeIndexAction(true);
-        setNoticeDialog({
+        void appDialog.showAlert({
           title:
             response.status === 409 ? t.clearIndexImagesBlockedTitle : t.clearIndexImagesFailedTitle,
           message: response.status === 409 ? t.clearIndexImagesBlockedByExam : result?.error ?? t.indexActionFailed,
-          tone: response.status === 409 ? "warning" : "error",
+          tone: response.status === 409 ? "warning" : "danger",
         });
         return;
       }
@@ -3296,10 +3305,10 @@ export default function AtlasWorkbench() {
 
       return true;
     } catch (error) {
-      setNoticeDialog({
+      void appDialog.showAlert({
         title: t.detailsSaveFailedTitle,
         message: error instanceof Error ? error.message : t.detailsSaveFailed,
-        tone: "error",
+        tone: "danger",
       });
       return false;
     } finally {
@@ -3376,7 +3385,7 @@ export default function AtlasWorkbench() {
       });
 
       if (!response.ok) {
-        window.alert(t.bulkTagUpdateFailed);
+        await appDialog.showAlert({ title: t.operationFailedTitle, message: t.bulkTagUpdateFailed, tone: "danger" });
         return;
       }
 
@@ -3410,8 +3419,13 @@ export default function AtlasWorkbench() {
       return;
     }
 
-    if (detailDraft.ocrText.trim() && !window.confirm(t.ocrOverwriteConfirm)) {
-      return;
+    if (detailDraft.ocrText.trim()) {
+      const confirmed = await appDialog.showConfirm({
+        title: t.ocrOverwriteTitle,
+        message: t.ocrOverwriteConfirm,
+        tone: "warning",
+      });
+      if (!confirmed) return;
     }
 
     setOcrRunningImageId(selectedImage.id);
@@ -3421,7 +3435,7 @@ export default function AtlasWorkbench() {
       });
 
       if (!response.ok) {
-        window.alert(t.ocrUpdateFailed);
+        await appDialog.showAlert({ title: t.operationFailedTitle, message: t.ocrUpdateFailed, tone: "danger" });
         return;
       }
 
@@ -3548,7 +3562,12 @@ export default function AtlasWorkbench() {
       return;
     }
 
-    if (!window.confirm(t.restoreConfirmMessage)) {
+    const confirmed = await appDialog.showConfirm({
+      title: t.restoreConfirmTitle,
+      message: t.restoreConfirmMessage,
+      tone: "warning",
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -3609,7 +3628,7 @@ export default function AtlasWorkbench() {
         method: "POST",
       });
       if (!response.ok) {
-        window.alert(t.undoFailed);
+        await appDialog.showAlert({ title: t.operationFailedTitle, message: t.undoFailed, tone: "danger" });
         return;
       }
 
@@ -3630,10 +3649,10 @@ export default function AtlasWorkbench() {
       });
       if (!response.ok) {
         setPendingDeleteImage(null);
-        setNoticeDialog({
+        void appDialog.showAlert({
           title: response.status === 409 ? t.deleteImageBlockedTitle : t.deleteImageFailedTitle,
           message: response.status === 409 ? t.deleteImageBlockedByExam : t.deleteImageFailed,
-          tone: response.status === 409 ? "warning" : "error",
+          tone: response.status === 409 ? "warning" : "danger",
         });
         return;
       }
@@ -3921,10 +3940,10 @@ export default function AtlasWorkbench() {
   async function saveCurrentImageChanges() {
     const annotationsSaved = await saveAnnotationsNow();
     if (!annotationsSaved) {
-      setNoticeDialog({
+      void appDialog.showAlert({
         title: t.annotationsSaveFailed,
         message: t.annotationsSaveFailed,
-        tone: "error",
+        tone: "danger",
       });
       return false;
     }
@@ -6024,51 +6043,7 @@ export default function AtlasWorkbench() {
           </div>
         </div>
       ) : null}
-      {noticeDialog ? (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"
-          role="alertdialog"
-          aria-modal="true"
-          aria-labelledby="notice-dialog-title"
-          aria-describedby="notice-dialog-message"
-          onClick={() => setNoticeDialog(null)}
-        >
-          <div
-            className="w-full max-w-md rounded-md bg-white p-5 shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-start gap-3">
-              <div
-                className={`grid h-10 w-10 shrink-0 place-items-center rounded-md border ${
-                  noticeDialog.tone === "warning"
-                    ? "border-amber-200 bg-amber-50 text-amber-700"
-                    : "border-rose-200 bg-rose-50 text-rose-700"
-                }`}
-              >
-                <AlertTriangle className="h-5 w-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <h2 id="notice-dialog-title" className="text-base font-semibold text-zinc-950">
-                  {noticeDialog.title}
-                </h2>
-                <p id="notice-dialog-message" className="mt-2 text-sm leading-6 text-zinc-600">
-                  {noticeDialog.message}
-                </p>
-              </div>
-            </div>
-            <div className="mt-5 flex justify-end">
-              <button
-                type="button"
-                autoFocus
-                onClick={() => setNoticeDialog(null)}
-                className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-950 bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800"
-              >
-                {t.confirm}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {appDialog.dialogElement}
       {pendingUndoBatch ? (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/50 p-6"

@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useAppDialog } from "@/app/app-dialog";
+
 type Locale = "zh" | "en";
 
 export type NavigatorIndexNode = {
@@ -112,6 +114,12 @@ const labels = {
     addOption: "添加选项",
     rename: "重命名",
     delete: "删除",
+    cancel: "取消",
+    confirm: "确认",
+    renameCategoryTitle: "重命名导航分类",
+    renameOptionTitle: "重命名分类选项",
+    deleteCategoryTitle: "删除导航分类？",
+    deleteOptionTitle: "删除分类选项？",
     close: "关闭",
     nodeSearch: "搜索索引节点名称或路径",
     selectedNodes: "已选节点",
@@ -169,6 +177,12 @@ const labels = {
     addOption: "Add option",
     rename: "Rename",
     delete: "Delete",
+    cancel: "Cancel",
+    confirm: "Confirm",
+    renameCategoryTitle: "Rename navigator category",
+    renameOptionTitle: "Rename category option",
+    deleteCategoryTitle: "Delete navigator category?",
+    deleteOptionTitle: "Delete category option?",
     close: "Close",
     nodeSearch: "Search index name or path",
     selectedNodes: "Selected nodes",
@@ -283,6 +297,7 @@ export default function IndexNavigatorPanel({
   const [expandedAssignmentNodeIds, setExpandedAssignmentNodeIds] = useState<Set<string>>(new Set());
   const [operationOptionIds, setOperationOptionIds] = useState<Set<string>>(new Set());
   const [assignmentCounts, setAssignmentCounts] = useState<Map<string, number>>(new Map());
+  const appDialog = useAppDialog({ confirm: t.confirm, cancel: t.cancel });
 
   const allNodes = useMemo(() => flattenNodes(nodes), [nodes]);
   const nodeById = useMemo(() => new Map(allNodes.map((node) => [node.id, node])), [allNodes]);
@@ -834,9 +849,18 @@ export default function IndexNavigatorPanel({
                             </span>
                             <button
                               type="button"
-                              onClick={() => {
-                                const name = window.prompt(t.rename, category.name);
-                                if (name?.trim()) void mutate("/api/index-navigator/categories", "PATCH", { id: category.id, name });
+                              onClick={async () => {
+                                const name = await appDialog.showPrompt({
+                                  title: t.renameCategoryTitle,
+                                  inputLabel: t.categoryName,
+                                  initialValue: category.name,
+                                  confirmLabel: t.rename,
+                                  required: true,
+                                });
+                                if (name && name !== category.name) {
+                                  void mutate("/api/index-navigator/categories", "PATCH", { id: category.id, name })
+                                    .catch(() => undefined);
+                                }
                               }}
                               className="grid h-7 w-7 place-items-center rounded-lg text-zinc-400 transition hover:bg-white hover:text-zinc-800"
                               title={t.rename}
@@ -845,9 +869,16 @@ export default function IndexNavigatorPanel({
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                if (window.confirm(t.confirmDeleteCategory)) {
-                                  void mutate("/api/index-navigator/categories", "DELETE", { id: category.id });
+                              onClick={async () => {
+                                const confirmed = await appDialog.showConfirm({
+                                  title: t.deleteCategoryTitle,
+                                  message: t.confirmDeleteCategory,
+                                  tone: "danger",
+                                  confirmLabel: t.delete,
+                                });
+                                if (confirmed) {
+                                  void mutate("/api/index-navigator/categories", "DELETE", { id: category.id })
+                                    .catch(() => undefined);
                                 }
                               }}
                               className="grid h-7 w-7 place-items-center rounded-lg text-zinc-400 transition hover:bg-rose-50 hover:text-rose-600"
@@ -914,9 +945,18 @@ export default function IndexNavigatorPanel({
                             </span>
                             <button
                               type="button"
-                              onClick={() => {
-                                const name = window.prompt(t.rename, option.name);
-                                if (name?.trim()) void mutate("/api/index-navigator/options", "PATCH", { id: option.id, name });
+                              onClick={async () => {
+                                const name = await appDialog.showPrompt({
+                                  title: t.renameOptionTitle,
+                                  inputLabel: t.optionName,
+                                  initialValue: option.name,
+                                  confirmLabel: t.rename,
+                                  required: true,
+                                });
+                                if (name && name !== option.name) {
+                                  void mutate("/api/index-navigator/options", "PATCH", { id: option.id, name })
+                                    .catch(() => undefined);
+                                }
                               }}
                               className="grid h-7 w-7 place-items-center rounded-lg text-zinc-400 transition hover:bg-white hover:text-zinc-800"
                               title={t.rename}
@@ -925,9 +965,16 @@ export default function IndexNavigatorPanel({
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                if (window.confirm(t.confirmDeleteOption)) {
-                                  void mutate("/api/index-navigator/options", "DELETE", { id: option.id });
+                              onClick={async () => {
+                                const confirmed = await appDialog.showConfirm({
+                                  title: t.deleteOptionTitle,
+                                  message: t.confirmDeleteOption,
+                                  tone: "danger",
+                                  confirmLabel: t.delete,
+                                });
+                                if (confirmed) {
+                                  void mutate("/api/index-navigator/options", "DELETE", { id: option.id })
+                                    .catch(() => undefined);
                                 }
                               }}
                               className="grid h-7 w-7 place-items-center rounded-lg text-zinc-400 transition hover:bg-rose-50 hover:text-rose-600"
@@ -1141,6 +1188,7 @@ export default function IndexNavigatorPanel({
           </div>
         </div>
       ) : null}
+      {appDialog.dialogElement}
     </div>
   );
 }

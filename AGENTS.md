@@ -430,6 +430,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 `GET /api/backups/export`
 
 - 导出 `brooks-pa-atlas-backup-YYYYMMDD-HHmmssZ.zip`。
+- 备份图片、导航关联和分类使用固定大小分页查询；按索引子树导出时通过索引关系和路径前缀筛选，避免大型图库触发 SQLite 查询参数上限。
 - zip 顶层包含 `manifest.json` 和 `images/<hash>.<ext>` 图片文件。
 - manifest 格式为 `brooks-pa-atlas.backup` v5，保存索引树、导航分类/选项/节点关联、图片元数据、标签、图片文字标注、试卷、题目、考试记录和 zip 内相对图片路径；恢复仍兼容 v1–v4。
 - 不保存 Windows 或 Linux 绝对路径，便于跨部署环境恢复。

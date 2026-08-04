@@ -23,6 +23,21 @@ import { cleanupUnusedTags, replaceImageTags } from "@/lib/tags";
 const backupFormat = "brooks-pa-atlas.backup";
 const backupVersion = 5;
 const imageZipPrefix = "images/";
+const backupQueryPageSize = 400;
+
+async function collectQueryPages<T>(
+  loadPage: (pagination: { skip: number; take: number }) => Promise<T[]>,
+) {
+  const results: T[] = [];
+
+  for (let skip = 0; ; skip += backupQueryPageSize) {
+    const page = await loadPage({ skip, take: backupQueryPageSize });
+    results.push(...page);
+    if (page.length < backupQueryPageSize) {
+      return results;
+    }
+  }
+}
 
 const ocrStatusSchema = z.enum(["PENDING", "RUNNING", "COMPLETED", "FAILED", "SKIPPED"]);
 const examPaperStatusSchema = z.enum(["DRAFT", "PUBLISHED"]);
@@ -505,36 +520,61 @@ export async function createBackupZip(options: BackupOptions = {}) {
         (index) => index.id === rootIndex.id || index.path.startsWith(`${rootIndex.path} / `),
       )
     : allIndexes;
-  const indexIds = new Set(indexes.map((index) => index.id));
-  const images = await prisma.chartImage.findMany({
-    where: rootIndex ? { indexNodeId: { in: [...indexIds] } } : undefined,
-    orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],
-    include: {
-      indexNode: true,
-      tags: { include: { tag: true } },
-      annotations: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
-    },
-  });
-  const navigatorAssignments = await prisma.indexNodeNavigatorOption.findMany({
-    where: { indexNodeId: { in: [...indexIds] } },
-    orderBy: [{ indexNodeId: "asc" }, { optionId: "asc" }],
-    include: { indexNode: true },
-  });
-  const includedNavigatorOptionIds = new Set(
-    navigatorAssignments.map((assignment) => assignment.optionId),
-  );
-  const navigatorCategories = await prisma.indexNavigatorCategory.findMany({
-    where: rootIndex
-      ? { options: { some: { id: { in: [...includedNavigatorOptionIds] } } } }
-      : undefined,
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-    include: {
-      options: {
-        where: rootIndex ? { id: { in: [...includedNavigatorOptionIds] } } : undefined,
-        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  const subtreePathPrefix = rootIndex ? `${rootIndex.path} / ` : null;
+  const subtreeAssignmentWhere = rootIndex && subtreePathPrefix
+    ? {
+        OR: [
+          { indexNodeId: rootIndex.id },
+          { indexNode: { path: { startsWith: subtreePathPrefix } } },
+        ],
+      }
+    : undefined;
+  const subtreeOptionWhere = subtreeAssignmentWhere
+    ? { nodeAssignments: { some: subtreeAssignmentWhere } }
+    : undefined;
+  const images = await collectQueryPages(({ skip, take }) =>
+    prisma.chartImage.findMany({
+      where: rootIndex && subtreePathPrefix
+        ? {
+            OR: [
+              { indexNodeId: rootIndex.id },
+              { indexNode: { path: { startsWith: subtreePathPrefix } } },
+            ],
+          }
+        : undefined,
+      orderBy: [{ originalName: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+      include: {
+        indexNode: true,
+        tags: { include: { tag: true } },
+        annotations: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
       },
-    },
-  });
+      skip,
+      take,
+    }),
+  );
+  const navigatorAssignments = await collectQueryPages(({ skip, take }) =>
+    prisma.indexNodeNavigatorOption.findMany({
+      where: subtreeAssignmentWhere,
+      orderBy: [{ indexNodeId: "asc" }, { optionId: "asc" }],
+      include: { indexNode: true },
+      skip,
+      take,
+    }),
+  );
+  const navigatorCategories = await collectQueryPages(({ skip, take }) =>
+    prisma.indexNavigatorCategory.findMany({
+      where: subtreeOptionWhere ? { options: { some: subtreeOptionWhere } } : undefined,
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
+      include: {
+        options: {
+          where: subtreeOptionWhere,
+          orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        },
+      },
+      skip,
+      take,
+    }),
+  );
   const [examPapers, examAttempts] = rootIndex
     ? [[], []] as const
     : await Promise.all([

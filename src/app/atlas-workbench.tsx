@@ -16,6 +16,7 @@ import {
   GripVertical,
   ImageIcon,
   Loader2,
+  Maximize2,
   PencilLine,
   Plus,
   RefreshCw,
@@ -61,6 +62,14 @@ type ChartImage = {
   tags: ImageTag[];
   annotations: ImageAnnotation[];
   indexNode: { id: string; name: string; path: string } | null;
+};
+
+type ImageDetailDraft = {
+  title: string;
+  notes: string;
+  ocrText: string;
+  indexNodeId: string;
+  tagNames: string[];
 };
 
 type ImageAnnotation = {
@@ -360,6 +369,10 @@ const copy = {
     unknown: "未知",
     hash: "Hash",
     noImageSelected: "请选择一张图片",
+    openLargeViewer: "大图查看",
+    backToImageGrid: "返回图片列表",
+    detailsSaveFailedTitle: "图片详情保存失败",
+    detailsSaveFailed: "图片详情保存失败，已停留在当前图片，请稍后重试。",
     duplicates: "重复",
     ocrFailedShort: "OCR 失败",
     browse: "浏览",
@@ -534,6 +547,10 @@ const copy = {
     unknown: "Unknown",
     hash: "Hash",
     noImageSelected: "No image selected",
+    openLargeViewer: "Open large viewer",
+    backToImageGrid: "Back to image grid",
+    detailsSaveFailedTitle: "Image details could not be saved",
+    detailsSaveFailed: "Image details could not be saved. You are still on the current image. Please try again.",
     duplicates: "duplicates",
     ocrFailedShort: "OCR failed",
     browse: "Browse",
@@ -1163,7 +1180,7 @@ function ocrTone(status: ChartImage["ocrStatus"]) {
   }
 }
 
-function detailDraftFromImage(image: ChartImage) {
+function detailDraftFromImage(image: ChartImage): ImageDetailDraft {
   return {
     title: image.title ?? "",
     notes: image.notes ?? "",
@@ -1171,6 +1188,19 @@ function detailDraftFromImage(image: ChartImage) {
     indexNodeId: image.indexNode?.id ?? "",
     tagNames: image.tags.map((tag) => tag.name),
   };
+}
+
+function detailDraftFingerprint(draft: ImageDetailDraft) {
+  return JSON.stringify({
+    title: draft.title,
+    notes: draft.notes,
+    ocrText: draft.ocrText,
+    indexNodeId: draft.indexNodeId,
+    tagNames: draft.tagNames
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" })),
+  });
 }
 
 function collapsibleIndexIds(node: IndexTreeNode) {
@@ -1652,6 +1682,8 @@ export default function AtlasWorkbench() {
   const [reorderingIndex, setReorderingIndex] = useState(false);
   const [imageViewerHeight, setImageViewerHeight] = useState(720);
   const [isResizingViewer, setIsResizingViewer] = useState(false);
+  const [isManageViewerOpen, setIsManageViewerOpen] = useState(false);
+  const [detailsSaving, setDetailsSaving] = useState(false);
   const [showBrowseThumbnails, setShowBrowseThumbnails] = useState(true);
   const [showBrowseAnnotations, setShowBrowseAnnotations] = useState(true);
   const [showBrowseNotes, setShowBrowseNotes] = useState(true);
@@ -1695,12 +1727,19 @@ export default function AtlasWorkbench() {
   const annotationSaveTimerRef = useRef<number | null>(null);
   const annotationStageRef = useRef<HTMLDivElement | null>(null);
   const viewerViewportRef = useRef<HTMLDivElement | null>(null);
+  const contentScrollRef = useRef<HTMLDivElement | null>(null);
+  const manageGridScrollTopRef = useRef(0);
+  const detailsSavingRef = useRef(false);
+  const detailDraftRef = useRef<ImageDetailDraft>(detailDraft);
+  const detailTagInputRef = useRef(detailTagInput);
+  const imageSelectionPromiseRef = useRef<Promise<boolean> | null>(null);
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const t = copy[locale];
   const isBrowseMode = viewMode === "browse";
   const isExamMode = viewMode === "exam";
   const isManageMode = viewMode === "manage";
+  const isLargeViewerActive = isBrowseMode || (isManageMode && isManageViewerOpen);
   const canReorderIndexes = isManageMode && isIndexReorderEnabled && !reorderingIndex;
   const documentImportButtonLabel =
     documentImporting && documentImportJob?.totalPages
@@ -1823,6 +1862,14 @@ export default function AtlasWorkbench() {
   }, [editingAnnotationId]);
 
   useEffect(() => {
+    detailDraftRef.current = detailDraft;
+  }, [detailDraft]);
+
+  useEffect(() => {
+    detailTagInputRef.current = detailTagInput;
+  }, [detailTagInput]);
+
+  useEffect(() => {
     const viewport = viewerViewportRef.current;
     if (!viewport) {
       return;
@@ -1861,7 +1908,7 @@ export default function AtlasWorkbench() {
         window.cancelAnimationFrame(animationFrame);
       }
     };
-  }, [selectedImageId]);
+  }, [isLargeViewerActive, selectedImageId]);
 
   useEffect(() => {
     if (!draggingAnnotation) {
@@ -2069,6 +2116,13 @@ export default function AtlasWorkbench() {
   const selectedImage = data?.images.find((image) => image.id === selectedImageId) ?? null;
   const selectedImageIndex =
     data?.images.findIndex((image) => image.id === selectedImageId) ?? -1;
+  useEffect(() => {
+    if (isManageViewerOpen && !selectedImage) {
+      setIsManageViewerOpen(false);
+      setIsEditingAnnotations(false);
+      setEditingAnnotationId(null);
+    }
+  }, [isManageViewerOpen, selectedImage]);
   const selectedBulkTagStats = useMemo(() => {
     const counts = new Map<string, { id: string; name: string; count: number }>();
 
@@ -2093,7 +2147,9 @@ export default function AtlasWorkbench() {
     : 0;
   const indexActionImageCount = indexAction ? indexBranchImageCount(indexAction.node) : 0;
   const canNavigateSelectedImage = (data?.images.length ?? 0) > 1;
-  const shouldShowImageGrid = isManageMode || (isBrowseMode && (showBrowseThumbnails || !selectedImage));
+  const shouldShowImageGrid =
+    (isManageMode && !isManageViewerOpen) ||
+    (isBrowseMode && (showBrowseThumbnails || !selectedImage));
   const isSelectedImageOcrBusy = selectedImage
     ? selectedImage.ocrStatus === "RUNNING" || ocrRunningImageId === selectedImage.id
     : false;
@@ -2174,7 +2230,7 @@ export default function AtlasWorkbench() {
 
   useEffect(() => {
     const images = data?.images ?? [];
-    if (!isBrowseMode || images.length < 2) {
+    if (!isLargeViewerActive || images.length < 2) {
       return;
     }
 
@@ -2189,7 +2245,12 @@ export default function AtlasWorkbench() {
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement ||
         (target instanceof HTMLElement && target.isContentEditable);
-      if (isEditing || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) {
+      if (
+        isEditing ||
+        detailsSavingRef.current ||
+        annotationsSaving ||
+        (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
+      ) {
         return;
       }
 
@@ -2197,14 +2258,14 @@ export default function AtlasWorkbench() {
       const direction = event.key === "ArrowLeft" ? -1 : 1;
       const currentIndex = selectedImageIndex >= 0 ? selectedImageIndex : 0;
       const nextImage = images[(currentIndex + direction + images.length) % images.length];
-      selectImage(nextImage);
+      void selectImage(nextImage);
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
     // Keyboard navigation should use the current image list and selected index only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.images, isBrowseMode, selectedImageIndex]);
+  }, [annotationsSaving, data?.images, isLargeViewerActive, selectedImageIndex]);
 
   function handleFiles(fileList: FileList | null) {
     files.forEach((item) => URL.revokeObjectURL(item.previewUrl));
@@ -2609,6 +2670,7 @@ export default function AtlasWorkbench() {
       }
 
       setSelectedImageId(null);
+      setIsManageViewerOpen(false);
       closeIndexAction(true);
       await refresh();
     } finally {
@@ -2616,17 +2678,80 @@ export default function AtlasWorkbench() {
     }
   }
 
+  async function saveImageDetails(image: ChartImage) {
+    const currentDraft = detailDraftRef.current;
+    const nextDraft: ImageDetailDraft = {
+      ...currentDraft,
+      tagNames: addTagName(currentDraft.tagNames, detailTagInputRef.current),
+    };
+
+    if (detailDraftFingerprint(nextDraft) === detailDraftFingerprint(detailDraftFromImage(image))) {
+      return true;
+    }
+
+    if (detailsSavingRef.current) {
+      return false;
+    }
+
+    detailsSavingRef.current = true;
+    setDetailsSaving(true);
+
+    try {
+      const response = await fetch(`/api/images/${image.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextDraft),
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { image?: ChartImage; error?: string }
+        | null;
+
+      if (!response.ok || !result?.image) {
+        throw new Error(result?.error ?? t.detailsSaveFailed);
+      }
+
+      setData((current) => {
+        if (!current) {
+          return current;
+        }
+
+        const tagsById = new Map(current.tags.map((tag) => [tag.id, tag]));
+        result.image!.tags.forEach((tag) => tagsById.set(tag.id, tag));
+
+        return {
+          ...current,
+          images: current.images.map((item) => (item.id === image.id ? result.image! : item)),
+          tags: [...tagsById.values()].sort((left, right) => left.name.localeCompare(right.name)),
+        };
+      });
+
+      if (selectedImageIdRef.current === image.id) {
+        const savedDraft = detailDraftFromImage(result.image);
+        detailDraftRef.current = savedDraft;
+        detailTagInputRef.current = "";
+        setDetailDraft(savedDraft);
+        setDetailTagInput("");
+      }
+
+      return true;
+    } catch (error) {
+      setNoticeDialog({
+        title: t.detailsSaveFailedTitle,
+        message: error instanceof Error ? error.message : t.detailsSaveFailed,
+        tone: "error",
+      });
+      return false;
+    } finally {
+      detailsSavingRef.current = false;
+      setDetailsSaving(false);
+    }
+  }
+
   async function saveDetails() {
-    if (!selectedImage) {
+    if (!selectedImage || !(await saveImageDetails(selectedImage))) {
       return;
     }
 
-    await fetch(`/api/images/${selectedImage.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(detailDraft),
-    });
-    setDetailTagInput("");
     await refresh();
   }
 
@@ -2895,6 +3020,7 @@ export default function AtlasWorkbench() {
 
       setBackupTask({ ...completed, phase: "completed" });
       setSelectedImageId(null);
+      setIsManageViewerOpen(false);
       await refresh();
     } catch (error) {
       setBackupTask((current) => ({
@@ -2926,6 +3052,7 @@ export default function AtlasWorkbench() {
 
       setPendingUndoBatchId(null);
       setSelectedImageId(null);
+      setIsManageViewerOpen(false);
       await refresh();
     } finally {
       setUndoingBatchId(null);
@@ -2950,6 +3077,7 @@ export default function AtlasWorkbench() {
 
       setPendingDeleteImage(null);
       setSelectedImageId(null);
+      setIsManageViewerOpen(false);
       await refresh();
     } finally {
       setDeletingImageId(null);
@@ -3015,7 +3143,7 @@ export default function AtlasWorkbench() {
     annotations = annotationDraftsRef.current,
   ) {
     if (!imageId || !annotationDirtyRef.current) {
-      return;
+      return true;
     }
 
     if (annotationSaveTimerRef.current) {
@@ -3071,8 +3199,10 @@ export default function AtlasWorkbench() {
           markAnnotationsDirty(annotationDraftsRef.current);
         }
       }
+      return true;
     } catch {
       setAnnotationSaveFailed(true);
+      return false;
     } finally {
       setAnnotationsSaving(false);
     }
@@ -3181,31 +3311,109 @@ export default function AtlasWorkbench() {
       if (!annotationDirtyRef.current) {
         hydrateAnnotationDrafts(result.image);
       }
-      setDetailDraft(detailDraftFromImage(result.image));
+      const loadedDraft = detailDraftFromImage(result.image);
+      detailDraftRef.current = loadedDraft;
+      setDetailDraft(loadedDraft);
     } catch {
       // Keep the atlas summary visible if the full detail request fails.
     }
   }
 
-  function selectImage(image: ChartImage) {
-    void saveAnnotationsNow();
+  function commitSelectedImage(image: ChartImage) {
+    const nextDraft = detailDraftFromImage(image);
     selectedImageIdRef.current = image.id;
+    detailDraftRef.current = nextDraft;
+    detailTagInputRef.current = "";
     setSelectedImageId(image.id);
-    setDetailDraft(detailDraftFromImage(image));
+    setDetailDraft(nextDraft);
     hydrateAnnotationDrafts(image);
     setDetailTagInput("");
     void loadImageDetails(image.id);
   }
 
-  function selectAdjacentImage(direction: -1 | 1) {
+  async function saveCurrentImageChanges() {
+    const annotationsSaved = await saveAnnotationsNow();
+    if (!annotationsSaved) {
+      setNoticeDialog({
+        title: t.annotationsSaveFailed,
+        message: t.annotationsSaveFailed,
+        tone: "error",
+      });
+      return false;
+    }
+
+    if (!isManageMode) {
+      return true;
+    }
+
+    const currentImage = data?.images.find((image) => image.id === selectedImageIdRef.current);
+    return currentImage ? saveImageDetails(currentImage) : true;
+  }
+
+  async function selectImage(image: ChartImage) {
+    const previousSelection = imageSelectionPromiseRef.current;
+    const selectionTask = (async () => {
+      if (previousSelection) {
+        if (!(await previousSelection)) {
+          return false;
+        }
+      }
+
+      if (image.id === selectedImageIdRef.current) {
+        return true;
+      }
+
+      if (!(await saveCurrentImageChanges())) {
+        return false;
+      }
+
+      commitSelectedImage(image);
+      return true;
+    })();
+
+    imageSelectionPromiseRef.current = selectionTask;
+    try {
+      return await selectionTask;
+    } finally {
+      if (imageSelectionPromiseRef.current === selectionTask) {
+        imageSelectionPromiseRef.current = null;
+      }
+    }
+  }
+
+  async function openManageViewerForImage(image: ChartImage) {
+    if (!(await selectImage(image))) {
+      return;
+    }
+
+    if (!isManageViewerOpen) {
+      manageGridScrollTopRef.current = contentScrollRef.current?.scrollTop ?? 0;
+    }
+    setIsManageViewerOpen(true);
+    window.requestAnimationFrame(() => contentScrollRef.current?.scrollTo({ top: 0 }));
+  }
+
+  function closeManageViewer() {
+    setIsManageViewerOpen(false);
+    setIsEditingAnnotations(false);
+    setEditingAnnotationId(null);
+    void saveAnnotationsNow();
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() =>
+        contentScrollRef.current?.scrollTo({ top: manageGridScrollTopRef.current }),
+      );
+    });
+  }
+
+  async function selectAdjacentImage(direction: -1 | 1) {
     const images = data?.images ?? [];
-    if (images.length < 2) {
+    if (images.length < 2 || detailsSavingRef.current || annotationsSaving) {
       return;
     }
 
     const currentIndex = selectedImageIndex >= 0 ? selectedImageIndex : 0;
     const nextIndex = (currentIndex + direction + images.length) % images.length;
-    selectImage(images[nextIndex]);
+    await selectImage(images[nextIndex]);
   }
 
   function selectIndex(id: string | null) {
@@ -3312,6 +3520,11 @@ export default function AtlasWorkbench() {
   }
 
   function setPersistedViewModeWithPagination(mode: ViewMode) {
+    setIsManageViewerOpen(false);
+    setIsEditingAnnotations(false);
+    setEditingAnnotationId(null);
+    void saveAnnotationsNow();
+
     if (mode !== "manage") {
       setIsIndexReorderEnabled(false);
       clearIndexDragState();
@@ -3806,7 +4019,10 @@ export default function AtlasWorkbench() {
             </div>
           ) : null}
 
-          <div className={`overflow-auto ${isExamMode ? "p-3 xl:h-screen" : "p-5 xl:h-[calc(100vh-65px)]"}`}>
+          <div
+            ref={contentScrollRef}
+            className={`overflow-auto ${isExamMode ? "p-3 xl:h-screen" : "p-5 xl:h-[calc(100vh-65px)]"}`}
+          >
             {dataError ? (
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                 <div className="min-w-0">
@@ -3831,7 +4047,7 @@ export default function AtlasWorkbench() {
               />
             ) : null}
 
-            {isManageMode ? (
+            {isManageMode && !isManageViewerOpen ? (
               <div className="mb-4 rounded-md border border-zinc-200 bg-white">
               <div className="flex min-h-12 items-center justify-between gap-3 px-3 py-2">
                 <div className="min-w-0">
@@ -3912,9 +4128,20 @@ export default function AtlasWorkbench() {
               </div>
             ) : null}
 
-            {isBrowseMode && selectedImage ? (
+            {isLargeViewerActive && selectedImage ? (
               <div className="mb-4 rounded-md border border-zinc-200 bg-white p-4">
                 <div className="mb-3 flex min-h-8 min-w-0 flex-wrap items-center gap-3">
+                  {isManageMode ? (
+                    <button
+                      type="button"
+                      onClick={closeManageViewer}
+                      className="inline-flex h-8 shrink-0 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                      aria-label={t.backToImageGrid}
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                      <span>{t.backToImageGrid}</span>
+                    </button>
+                  ) : null}
                   <div className="min-w-0 flex-1">
                     <h2 className="truncate text-base font-semibold" title={selectedImageTip}>
                       {selectedImage.title ?? selectedImage.originalName}
@@ -3937,16 +4164,24 @@ export default function AtlasWorkbench() {
                   <span className="min-w-0 max-w-[45%] truncate text-sm text-zinc-500" title={selectedImageTip}>
                     {selectedImage.indexNode?.path ?? t.unclassified}
                   </span>
+                  {detailsSaving ? (
+                    <span className="inline-flex h-8 shrink-0 items-center gap-2 text-xs font-medium text-zinc-500">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      {t.saving}
+                    </span>
+                  ) : null}
                   <div className="ml-auto flex h-8 shrink-0 items-center gap-1 rounded-md border border-zinc-200 bg-zinc-50 px-1">
-                    <button
-                      type="button"
-                      onClick={toggleBrowseThumbnails}
-                      className="inline-flex h-6 items-center gap-1 rounded px-2 text-xs font-medium text-zinc-600 hover:bg-white"
-                      title={showBrowseThumbnails ? t.hideThumbnails : t.showThumbnails}
-                    >
-                      <ImageIcon className="h-3.5 w-3.5" />
-                      <span>{showBrowseThumbnails ? t.hideThumbnails : t.showThumbnails}</span>
-                    </button>
+                    {isBrowseMode ? (
+                      <button
+                        type="button"
+                        onClick={toggleBrowseThumbnails}
+                        className="inline-flex h-6 items-center gap-1 rounded px-2 text-xs font-medium text-zinc-600 hover:bg-white"
+                        title={showBrowseThumbnails ? t.hideThumbnails : t.showThumbnails}
+                      >
+                        <ImageIcon className="h-3.5 w-3.5" />
+                        <span>{showBrowseThumbnails ? t.hideThumbnails : t.showThumbnails}</span>
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={toggleBrowseAnnotations}
@@ -3967,15 +4202,17 @@ export default function AtlasWorkbench() {
                       <PencilLine className="h-3.5 w-3.5" />
                       <span>{isEditingAnnotations ? t.stopEditAnnotations : t.editAnnotations}</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={toggleBrowseNotes}
-                      className="inline-flex h-6 items-center gap-1 rounded px-2 text-xs font-medium text-zinc-600 hover:bg-white"
-                      title={showBrowseNotes ? t.hideBrowseNotes : t.showBrowseNotes}
-                    >
-                      <FileText className="h-3.5 w-3.5" />
-                      <span>{showBrowseNotes ? t.hideBrowseNotes : t.showBrowseNotes}</span>
-                    </button>
+                    {isBrowseMode ? (
+                      <button
+                        type="button"
+                        onClick={toggleBrowseNotes}
+                        className="inline-flex h-6 items-center gap-1 rounded px-2 text-xs font-medium text-zinc-600 hover:bg-white"
+                        title={showBrowseNotes ? t.hideBrowseNotes : t.showBrowseNotes}
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        <span>{showBrowseNotes ? t.hideBrowseNotes : t.showBrowseNotes}</span>
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => adjustImageZoom(-imageZoomStep)}
@@ -4160,8 +4397,9 @@ export default function AtlasWorkbench() {
                     <>
                       <button
                         type="button"
-                        onClick={() => selectAdjacentImage(-1)}
-                        className="absolute left-3 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full border border-white/70 bg-zinc-950/55 text-white opacity-0 shadow-lg backdrop-blur transition hover:bg-zinc-950/75 focus-visible:opacity-100 group-hover:opacity-100"
+                        onClick={() => void selectAdjacentImage(-1)}
+                        disabled={detailsSaving || annotationsSaving}
+                        className="absolute left-3 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full border border-white/70 bg-zinc-950/55 text-white opacity-0 shadow-lg backdrop-blur transition hover:bg-zinc-950/75 focus-visible:opacity-100 group-hover:opacity-100 disabled:cursor-wait disabled:opacity-30"
                         aria-label={t.previousImage}
                         title={t.previousImageShortcut}
                       >
@@ -4169,8 +4407,9 @@ export default function AtlasWorkbench() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => selectAdjacentImage(1)}
-                        className="absolute right-3 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full border border-white/70 bg-zinc-950/55 text-white opacity-0 shadow-lg backdrop-blur transition hover:bg-zinc-950/75 focus-visible:opacity-100 group-hover:opacity-100"
+                        onClick={() => void selectAdjacentImage(1)}
+                        disabled={detailsSaving || annotationsSaving}
+                        className="absolute right-3 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full border border-white/70 bg-zinc-950/55 text-white opacity-0 shadow-lg backdrop-blur transition hover:bg-zinc-950/75 focus-visible:opacity-100 group-hover:opacity-100 disabled:cursor-wait disabled:opacity-30"
                         aria-label={t.nextImage}
                         title={t.nextImageShortcut}
                       >
@@ -4249,7 +4488,7 @@ export default function AtlasWorkbench() {
                     </label>
                   </div>
                 ) : null}
-                {showBrowseNotes ? (
+                {isBrowseMode && showBrowseNotes ? (
                   <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 p-3">
                     <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-zinc-600">
                       <FileText className="h-3.5 w-3.5" />
@@ -4375,7 +4614,12 @@ export default function AtlasWorkbench() {
                       ) : null}
                       <button
                         type="button"
-                        onClick={() => selectImage(image)}
+                        onClick={() => void selectImage(image)}
+                        onDoubleClick={() => {
+                          if (isManageMode) {
+                            void openManageViewerForImage(image);
+                          }
+                        }}
                         className="block w-full text-left"
                       >
                         <div className="aspect-[4/3] bg-zinc-100">
@@ -4395,6 +4639,17 @@ export default function AtlasWorkbench() {
                           </p>
                         </div>
                       </button>
+                      {isManageMode ? (
+                        <button
+                          type="button"
+                          onClick={() => void openManageViewerForImage(image)}
+                          className="absolute right-2 top-2 z-10 grid h-7 w-7 place-items-center rounded-md border border-zinc-200 bg-white/90 text-zinc-600 shadow-sm backdrop-blur hover:bg-white hover:text-zinc-950"
+                          title={t.openLargeViewer}
+                          aria-label={`${t.openLargeViewer}: ${image.title ?? image.originalName}`}
+                        >
+                          <Maximize2 className="h-3.5 w-3.5" />
+                        </button>
+                      ) : null}
                       {image.tags.length > 0 ? (
                         <div className="flex min-h-5 flex-wrap gap-1 px-3 pb-2">
                           {image.tags.slice(0, 2).map((tag) => (
@@ -4463,12 +4718,21 @@ export default function AtlasWorkbench() {
 
           {selectedImage ? (
             <div className="overflow-auto p-4 xl:h-[calc(100vh-65px)]">
-              <div className="mb-4 aspect-[4/3] overflow-hidden rounded-md border border-zinc-200 bg-zinc-100">
+              <div className="group relative mb-4 aspect-[4/3] overflow-hidden rounded-md border border-zinc-200 bg-zinc-100">
                 <img
                   src={`/api/images/${selectedImage.id}/file`}
                   alt={selectedImage.title ?? selectedImage.originalName}
                   className="h-full w-full object-contain"
                 />
+                <button
+                  type="button"
+                  onClick={() => void openManageViewerForImage(selectedImage)}
+                  className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-md border border-white/70 bg-zinc-950/60 text-white opacity-0 shadow-md backdrop-blur transition hover:bg-zinc-950/80 focus-visible:opacity-100 group-hover:opacity-100"
+                  title={t.openLargeViewer}
+                  aria-label={t.openLargeViewer}
+                >
+                  <Maximize2 className="h-4 w-4" />
+                </button>
               </div>
 
               <div className="space-y-3">
@@ -4561,10 +4825,11 @@ export default function AtlasWorkbench() {
                 <button
                   type="button"
                   onClick={() => void saveDetails()}
-                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800"
+                  disabled={detailsSaving}
+                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-zinc-950 px-4 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-wait disabled:opacity-60"
                 >
-                  <CheckCircle2 className="h-4 w-4" />
-                  <span>{t.save}</span>
+                  {detailsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  <span>{detailsSaving ? t.saving : t.save}</span>
                 </button>
                 <button
                   type="button"

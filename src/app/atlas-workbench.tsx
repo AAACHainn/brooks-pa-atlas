@@ -4026,13 +4026,13 @@ export default function AtlasWorkbench() {
     setSelectedBulkImageIds(new Set());
   }
 
-  function changeNavigatorSelection(ids: Set<string>) {
+  const changeNavigatorSelection = useCallback((ids: Set<string>) => {
     setSelectedNavigatorOptionIds(ids);
     setSelectedIndexId(null);
     setLocatedIndexId(null);
     setImageGridPage(1);
     setSelectedBulkImageIds(new Set());
-  }
+  }, []);
 
   function selectNavigatorResult(indexId: string) {
     const ancestorIds = ancestorIndexIdsForSelection(data?.tree ?? [], indexId);

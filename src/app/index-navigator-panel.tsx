@@ -5,7 +5,9 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  FolderTree,
   GripVertical,
+  Layers3,
   Loader2,
   PencilLine,
   Plus,
@@ -75,8 +77,11 @@ type Props = {
 const labels = {
   zh: {
     title: "索引导航器",
+    subtitle: "组合属性，快速定位目录",
     selected: "已选条件",
     matched: "匹配目录",
+    filterRule: "同一分类内任选，分类之间同时满足",
+    resultTitle: "目录结果",
     expand: "展开导航器",
     collapse: "收起导航器",
     settings: "导航器设置",
@@ -93,6 +98,14 @@ const labels = {
     next: "下一页",
     taxonomy: "分类与选项",
     assignments: "批量配置",
+    categoriesTitle: "导航分类",
+    categoriesHelp: "拖动调整分类顺序，点击分类后管理右侧选项。",
+    optionsTitle: "分类选项",
+    optionsHelp: "选项用于描述索引节点，可拖动调整展示顺序。",
+    noCategories: "还没有分类，请先创建一个分类。",
+    chooseCategory: "请选择左侧分类后添加选项。",
+    nodePanelTitle: "选择索引节点",
+    assignmentPanelTitle: "选择导航属性",
     categoryName: "新分类名称",
     optionName: "新选项名称",
     addCategory: "添加分类",
@@ -121,8 +134,11 @@ const labels = {
   },
   en: {
     title: "Index navigator",
+    subtitle: "Combine attributes to find indexes",
     selected: "Selected filters",
     matched: "Matched indexes",
+    filterRule: "OR within a category, AND across categories",
+    resultTitle: "Index results",
     expand: "Expand navigator",
     collapse: "Collapse navigator",
     settings: "Navigator settings",
@@ -139,6 +155,14 @@ const labels = {
     next: "Next",
     taxonomy: "Categories & options",
     assignments: "Bulk assignment",
+    categoriesTitle: "Navigator categories",
+    categoriesHelp: "Drag to reorder categories, then select one to manage its options.",
+    optionsTitle: "Category options",
+    optionsHelp: "Options describe index nodes and can be reordered by dragging.",
+    noCategories: "No categories yet. Create the first category above.",
+    chooseCategory: "Select a category on the left before adding options.",
+    nodePanelTitle: "Select index nodes",
+    assignmentPanelTitle: "Select navigator attributes",
     categoryName: "New category name",
     optionName: "New option name",
     addCategory: "Add category",
@@ -471,34 +495,50 @@ export default function IndexNavigatorPanel({
     });
   }
 
+  const hasNavigatorQuery = selectedOptionIds.size > 0 || Boolean(nodeQuery.trim());
+  const matchedResultCount = hasNavigatorQuery ? (data?.pagination.total ?? 0) : 0;
+
   return (
-    <div className="border-b border-zinc-200 bg-white">
-      <div className="flex min-h-11 items-center gap-2 px-5 py-2">
+    <div className="border-b border-zinc-200 bg-white shadow-[0_1px_0_rgba(0,0,0,0.02)]">
+      <div
+        className={`flex min-h-12 items-center gap-2 px-4 py-2 transition-colors sm:px-5 ${
+          expanded ? "bg-gradient-to-r from-cyan-50/80 via-white to-white" : "bg-white hover:bg-zinc-50/70"
+        }`}
+      >
         <button
           type="button"
           onClick={toggleExpanded}
-          className="inline-flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-medium text-zinc-700"
+          className="group inline-flex min-w-0 flex-1 items-center gap-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-500"
           title={expanded ? t.collapse : t.expand}
         >
-          <SlidersHorizontal className="h-4 w-4 shrink-0 text-cyan-700" />
-          <span>{t.title}</span>
-          {selectedOptionIds.size > 0 ? (
-            <span className="rounded-full bg-cyan-50 px-2 py-0.5 text-[11px] text-cyan-800">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-cyan-100 bg-cyan-50 text-cyan-700 shadow-sm">
+            <SlidersHorizontal className="h-4 w-4" />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold text-zinc-800">{t.title}</span>
+            <span className="hidden truncate text-[11px] text-zinc-500 sm:block">{t.subtitle}</span>
+          </span>
+          <span className="ml-1 inline-flex shrink-0 items-center gap-1.5">
+            <span
+              className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                selectedOptionIds.size > 0 ? "bg-cyan-100 text-cyan-800" : "bg-zinc-100 text-zinc-500"
+              }`}
+            >
               {t.selected} {selectedOptionIds.size}
             </span>
-          ) : null}
-          {(selectedOptionIds.size > 0 || nodeQuery.trim()) && data ? (
-            <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-600">
-              {t.matched} {data.pagination.total}
+            <span className="hidden rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-zinc-600 ring-1 ring-zinc-200 sm:inline-flex">
+              {t.matched} {matchedResultCount}
             </span>
-          ) : null}
-          <ChevronDown className={`ml-auto h-4 w-4 transition ${expanded ? "rotate-180" : ""}`} />
+          </span>
+          <span className="ml-auto grid h-7 w-7 place-items-center rounded-full text-zinc-400 transition group-hover:bg-white group-hover:text-zinc-700">
+            <ChevronDown className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          </span>
         </button>
         {selectedOptionIds.size > 0 ? (
           <button
             type="button"
             onClick={() => onSelectionChange(new Set())}
-            className="h-7 rounded px-2 text-xs text-zinc-500 hover:bg-zinc-100"
+            className="h-8 shrink-0 rounded-lg px-2.5 text-xs font-medium text-zinc-500 transition hover:bg-white hover:text-zinc-800 hover:shadow-sm"
           >
             {t.clear}
           </button>
@@ -510,7 +550,7 @@ export default function IndexNavigatorPanel({
               setSettingsTab("taxonomy");
               setSettingsOpen(true);
             }}
-            className="grid h-8 w-8 place-items-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-500 shadow-sm outline-none transition hover:border-cyan-200 hover:text-cyan-700 focus-visible:ring-2 focus-visible:ring-cyan-500"
             title={t.settings}
           >
             <Settings2 className="h-4 w-4" />
@@ -519,54 +559,88 @@ export default function IndexNavigatorPanel({
       </div>
 
       {expanded ? (
-        <div className="border-t border-zinc-100 px-5 py-4">
-          {error ? <p className="mb-3 rounded bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p> : null}
+        <div className="border-t border-cyan-100/70 bg-zinc-50/70 px-4 py-4 sm:px-5">
+          {error ? (
+            <p className="mb-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
+          ) : null}
           {(data?.categories.length ?? 0) === 0 ? (
-            <div className="rounded-md border border-dashed border-zinc-300 bg-zinc-50 p-5 text-center">
-              <p className="text-sm font-semibold text-zinc-800">{t.emptyTitle}</p>
+            <div className="rounded-xl border border-dashed border-zinc-300 bg-white px-5 py-7 text-center shadow-sm">
+              <span className="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-cyan-50 text-cyan-700">
+                <Layers3 className="h-5 w-5" />
+              </span>
+              <p className="mt-3 text-sm font-semibold text-zinc-800">{t.emptyTitle}</p>
               <p className="mt-1 text-xs text-zinc-500">{isManageMode ? t.emptyManage : t.emptyBrowse}</p>
               {isManageMode ? (
                 <button
                   type="button"
                   onClick={() => setSettingsOpen(true)}
-                  className="mt-3 h-8 rounded-md bg-zinc-950 px-3 text-xs font-medium text-white"
+                  className="mt-4 h-9 rounded-lg bg-zinc-900 px-4 text-xs font-medium text-white shadow-sm transition hover:bg-zinc-800"
                 >
                   {t.start}
                 </button>
               ) : null}
             </div>
           ) : (
-            <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)]">
-              <div className="space-y-3">
-                {data?.categories.map((category) => (
-                  <div key={category.id} className="grid gap-2 sm:grid-cols-[140px_1fr]">
-                    <div className="truncate pt-1.5 text-xs font-semibold text-zinc-600" title={category.name}>
-                      {category.name}
+            <div className="grid gap-3 2xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.75fr)]">
+              <section className="min-w-0 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-center gap-2 border-b border-zinc-100 pb-3">
+                  <span className="grid h-7 w-7 place-items-center rounded-lg bg-cyan-50 text-cyan-700">
+                    <Layers3 className="h-3.5 w-3.5" />
+                  </span>
+                  <p className="text-xs font-medium text-zinc-600">{t.filterRule}</p>
+                </div>
+                <div className="space-y-2.5">
+                  {data?.categories.map((category) => (
+                    <div
+                      key={category.id}
+                      className="grid gap-2 rounded-lg bg-zinc-50/80 px-3 py-2.5 sm:grid-cols-[minmax(100px,140px)_1fr]"
+                    >
+                      <div className="flex min-w-0 items-center gap-2" title={category.name}>
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-500" />
+                        <span className="truncate text-xs font-semibold text-zinc-700">{category.name}</span>
+                        <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] text-zinc-400 ring-1 ring-zinc-200">
+                          {category.options.length}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {category.options.map((option) => {
+                          const selected = selectedOptionIds.has(option.id);
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              aria-pressed={selected}
+                              onClick={() => toggleFilter(option.id)}
+                              className={`inline-flex min-h-7 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
+                                selected
+                                  ? "border-cyan-700 bg-cyan-700 text-white shadow-sm"
+                                  : "border-zinc-200 bg-white text-zinc-600 shadow-[0_1px_0_rgba(0,0,0,0.03)] hover:border-cyan-200 hover:text-cyan-800"
+                              }`}
+                              title={`${option.assignmentCount} ${t.assigned}`}
+                            >
+                              {selected ? <Check className="h-3 w-3" /> : null}
+                              <span>{option.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {category.options.map((option) => {
-                        const selected = selectedOptionIds.has(option.id);
-                        return (
-                          <button
-                            key={option.id}
-                            type="button"
-                            onClick={() => toggleFilter(option.id)}
-                            className={`rounded-md border px-2.5 py-1 text-xs transition ${
-                              selected
-                                ? "border-cyan-700 bg-cyan-700 text-white"
-                                : "border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50"
-                            }`}
-                            title={`${option.assignmentCount} ${t.assigned}`}
-                          >
-                            {option.name}
-                          </button>
-                        );
-                      })}
-                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="min-w-0 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm">
+                <div className="mb-2 flex items-center justify-between gap-2 px-1">
+                  <div className="flex items-center gap-2">
+                    <span className="grid h-7 w-7 place-items-center rounded-lg bg-zinc-100 text-zinc-600">
+                      <FolderTree className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="text-xs font-semibold text-zinc-700">{t.resultTitle}</span>
                   </div>
-                ))}
-              </div>
-              <div className="min-w-0 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                  <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-500">
+                    {matchedResultCount}
+                  </span>
+                </div>
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
                   <input
@@ -575,7 +649,7 @@ export default function IndexNavigatorPanel({
                       setNodeQuery(event.target.value);
                       setResultPage(1);
                     }}
-                    className="h-8 w-full rounded-md border border-zinc-200 bg-white pl-8 pr-3 text-xs outline-none focus:border-zinc-500"
+                    className="h-9 w-full rounded-lg border border-zinc-200 bg-zinc-50/70 pl-8 pr-3 text-xs outline-none transition focus:border-cyan-400 focus:bg-white focus:ring-2 focus:ring-cyan-100"
                     placeholder={t.resultSearch}
                   />
                 </div>
@@ -583,31 +657,38 @@ export default function IndexNavigatorPanel({
                   <button
                     type="button"
                     onClick={() => onSelectionChange(new Set(selectedOptionIds))}
-                    className="mt-2 w-full rounded-md border border-cyan-200 bg-cyan-50 px-2 py-1.5 text-left text-xs font-medium text-cyan-800 hover:bg-cyan-100"
+                    className="mt-2 w-full rounded-lg border border-cyan-200 bg-cyan-50 px-2.5 py-2 text-left text-xs font-medium text-cyan-800 transition hover:bg-cyan-100"
                   >
                     {t.allMatched}
                   </button>
                 ) : null}
-                <div className="mt-2 max-h-52 space-y-1 overflow-y-auto">
+                <div className="mt-2 min-h-16 max-h-52 space-y-1 overflow-y-auto pr-0.5">
                   {data?.results.map((result) => (
                     <button
                       key={result.id}
                       type="button"
                       onClick={() => onSelectResult(result.id)}
-                      className={`w-full rounded-md px-2 py-2 text-left hover:bg-white ${
-                        selectedIndexId === result.id ? "bg-white ring-1 ring-cyan-500" : ""
+                      className={`w-full rounded-lg border px-2.5 py-2 text-left transition ${
+                        selectedIndexId === result.id
+                          ? "border-cyan-200 bg-cyan-50 shadow-sm"
+                          : "border-transparent hover:border-zinc-200 hover:bg-zinc-50"
                       }`}
                       title={result.path}
                     >
                       <div className="flex items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-800">{result.name}</span>
-                        <span className="shrink-0 text-[11px] text-zinc-400">{result.imageCount}</span>
+                        <ChevronRight className={`h-3 w-3 shrink-0 ${selectedIndexId === result.id ? "text-cyan-600" : "text-zinc-300"}`} />
+                        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-zinc-800">{result.name}</span>
+                        <span className="shrink-0 rounded-full bg-white px-1.5 py-0.5 text-[10px] text-zinc-500 ring-1 ring-zinc-200">
+                          {result.imageCount}
+                        </span>
                       </div>
-                      <p className="mt-0.5 truncate text-[11px] text-zinc-500">{result.path}</p>
+                      <p className="mt-1 truncate pl-5 text-[10px] text-zinc-400">{result.path}</p>
                     </button>
                   ))}
                   {!loading && data?.results.length === 0 ? (
-                    <p className="px-2 py-4 text-center text-xs text-zinc-400">{t.chooseCondition}</p>
+                    <div className="grid min-h-16 place-items-center rounded-lg border border-dashed border-zinc-200 bg-zinc-50/60 px-3 text-center">
+                      <p className="text-[11px] leading-5 text-zinc-400">{t.chooseCondition}</p>
+                    </div>
                   ) : null}
                 </div>
                 {data && data.pagination.totalPages > 1 ? (
@@ -618,7 +699,7 @@ export default function IndexNavigatorPanel({
                         type="button"
                         disabled={data.pagination.page <= 1}
                         onClick={() => setResultPage((page) => Math.max(1, page - 1))}
-                        className="grid h-7 w-7 place-items-center rounded border border-zinc-200 bg-white disabled:opacity-40"
+                        className="grid h-7 w-7 place-items-center rounded-lg border border-zinc-200 bg-white transition hover:border-cyan-200 hover:text-cyan-700 disabled:opacity-40"
                         title={t.previous}
                       >
                         <ChevronLeft className="h-3.5 w-3.5" />
@@ -627,7 +708,7 @@ export default function IndexNavigatorPanel({
                         type="button"
                         disabled={data.pagination.page >= data.pagination.totalPages}
                         onClick={() => setResultPage((page) => page + 1)}
-                        className="grid h-7 w-7 place-items-center rounded border border-zinc-200 bg-white disabled:opacity-40"
+                        className="grid h-7 w-7 place-items-center rounded-lg border border-zinc-200 bg-white transition hover:border-cyan-200 hover:text-cyan-700 disabled:opacity-40"
                         title={t.next}
                       >
                         <ChevronRight className="h-3.5 w-3.5" />
@@ -635,7 +716,7 @@ export default function IndexNavigatorPanel({
                     </div>
                   </div>
                 ) : null}
-              </div>
+              </section>
             </div>
           )}
         </div>
@@ -643,188 +724,251 @@ export default function IndexNavigatorPanel({
 
       {settingsOpen ? (
         <div
-          className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/55 p-4"
+          className="fixed inset-0 z-50 grid place-items-center bg-zinc-950/45 p-3 backdrop-blur-[2px] sm:p-5"
           role="dialog"
           aria-modal="true"
           onClick={() => !busy && setSettingsOpen(false)}
         >
           <div
-            className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-md bg-white shadow-2xl"
+            className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-white/70 bg-white shadow-2xl shadow-zinc-950/20"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
-              <div>
-                <h2 className="text-base font-semibold text-zinc-950">{t.settings}</h2>
-                <p className="mt-0.5 text-xs text-zinc-500">{t.selectNodesHint}</p>
+            <div className="flex items-center justify-between border-b border-zinc-200 bg-gradient-to-r from-cyan-50/80 via-white to-white px-5 py-4 sm:px-6">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-cyan-100 bg-white text-cyan-700 shadow-sm">
+                  <Settings2 className="h-5 w-5" />
+                </span>
+                <div className="min-w-0">
+                  <h2 className="truncate text-base font-semibold text-zinc-950">{t.settings}</h2>
+                  <p className="mt-0.5 truncate text-xs text-zinc-500">{t.selectNodesHint}</p>
+                </div>
               </div>
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => setSettingsOpen(false)}
-                className="grid h-9 w-9 place-items-center rounded-md border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-zinc-200 bg-white text-zinc-500 shadow-sm transition hover:border-zinc-300 hover:text-zinc-900"
                 title={t.close}
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="flex border-b border-zinc-200 px-5 pt-3">
+            <div className="border-b border-zinc-200 bg-white px-5 py-3 sm:px-6">
+              <div className="inline-flex rounded-xl bg-zinc-100 p-1">
               {(["taxonomy", "assignments"] as const).map((tab) => (
                 <button
                   key={tab}
                   type="button"
                   onClick={() => setSettingsTab(tab)}
-                  className={`border-b-2 px-4 py-2 text-sm font-medium ${
-                    settingsTab === tab ? "border-zinc-950 text-zinc-950" : "border-transparent text-zinc-500"
+                  className={`rounded-lg px-4 py-2 text-sm font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-500 ${
+                    settingsTab === tab
+                      ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200"
+                      : "text-zinc-500 hover:text-zinc-800"
                   }`}
                 >
                   {tab === "taxonomy" ? t.taxonomy : t.assignments}
                 </button>
               ))}
+              </div>
             </div>
-            {error ? <p className="mx-5 mt-3 rounded bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p> : null}
-            <div className="min-h-0 flex-1 overflow-auto p-5">
+            {error ? (
+              <p className="mx-5 mt-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700 sm:mx-6">{error}</p>
+            ) : null}
+            <div className="min-h-0 flex-1 overflow-auto bg-zinc-50/70 p-4 sm:p-6">
               {settingsTab === "taxonomy" ? (
-                <div className="grid gap-5 lg:grid-cols-2">
-                  <div className="rounded-md border border-zinc-200 p-4">
-                    <div className="flex gap-2">
-                      <input
-                        value={categoryInput}
-                        onChange={(event) => setCategoryInput(event.target.value)}
-                        className="h-9 min-w-0 flex-1 rounded-md border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-500"
-                        placeholder={t.categoryName}
-                      />
-                      <button
-                        type="button"
-                        disabled={busy || !categoryInput.trim()}
-                        onClick={() => void addCategory()}
-                        className="grid h-9 w-9 place-items-center rounded-md bg-zinc-950 text-white disabled:opacity-50"
-                        title={t.addCategory}
-                      >
-                        <Plus className="h-4 w-4" />
-                      </button>
-                    </div>
-                    <div className="mt-4 space-y-1">
-                      {data?.categories.map((category) => (
-                        <div
-                          key={category.id}
-                          draggable={!busy}
-                          onDragStart={() => setDraggedCategoryId(category.id)}
-                          onDragOver={(event) => event.preventDefault()}
-                          onDrop={() => void reorderCategories(category.id)}
-                          className={`flex items-center gap-2 rounded-md border px-2 py-2 ${
-                            selectedCategoryId === category.id ? "border-cyan-500 bg-cyan-50" : "border-zinc-200"
-                          }`}
-                        >
-                          <GripVertical className="h-4 w-4 cursor-grab text-zinc-400" />
-                          <button
-                            type="button"
-                            onClick={() => setSelectedCategoryId(category.id)}
-                            className="min-w-0 flex-1 truncate text-left text-sm font-medium"
-                          >
-                            {category.name}
-                          </button>
-                          <span className="text-[11px] text-zinc-400">{category.assignmentCount}</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const name = window.prompt(t.rename, category.name);
-                              if (name?.trim()) void mutate("/api/index-navigator/categories", "PATCH", { id: category.id, name });
-                            }}
-                            className="grid h-7 w-7 place-items-center rounded hover:bg-white"
-                            title={t.rename}
-                          >
-                            <PencilLine className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (window.confirm(t.confirmDeleteCategory)) {
-                                void mutate("/api/index-navigator/categories", "DELETE", { id: category.id });
-                              }
-                            }}
-                            className="grid h-7 w-7 place-items-center rounded text-rose-600 hover:bg-rose-50"
-                            title={t.delete}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm">
+                    <div className="border-b border-zinc-100 px-4 py-3.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-zinc-900">{t.categoriesTitle}</h3>
+                          <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t.categoriesHelp}</p>
                         </div>
-                      ))}
+                        <span className="rounded-full bg-cyan-50 px-2 py-1 text-[11px] font-medium text-cyan-700">
+                          {data?.categories.length ?? 0}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                  <div className="rounded-md border border-zinc-200 p-4">
-                    <div className="flex gap-2">
-                      <input
-                        value={optionInput}
-                        onChange={(event) => setOptionInput(event.target.value)}
-                        disabled={!selectedCategory}
-                        className="h-9 min-w-0 flex-1 rounded-md border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-500 disabled:bg-zinc-50"
-                        placeholder={t.optionName}
-                      />
-                      <button
-                        type="button"
-                        disabled={busy || !selectedCategory || !optionInput.trim()}
-                        onClick={() => void addOption()}
-                        className="grid h-9 w-9 place-items-center rounded-md bg-zinc-950 text-white disabled:opacity-50"
-                        title={t.addOption}
-                      >
-                        <Plus className="h-4 w-4" />
-                      </button>
-                    </div>
-                    <div className="mt-4 space-y-1">
-                      {selectedCategory?.options.map((option) => (
-                        <div
-                          key={option.id}
-                          draggable={!busy}
-                          onDragStart={() => setDraggedOptionId(option.id)}
-                          onDragOver={(event) => event.preventDefault()}
-                          onDrop={() => void reorderOptions(option.id)}
-                          className="flex items-center gap-2 rounded-md border border-zinc-200 px-2 py-2"
+                    <div className="p-4">
+                      <div className="flex gap-2">
+                        <input
+                          value={categoryInput}
+                          onChange={(event) => setCategoryInput(event.target.value)}
+                          className="h-10 min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50/60 px-3 text-sm outline-none transition focus:border-cyan-400 focus:bg-white focus:ring-2 focus:ring-cyan-100"
+                          placeholder={t.categoryName}
+                        />
+                        <button
+                          type="button"
+                          disabled={busy || !categoryInput.trim()}
+                          onClick={() => void addCategory()}
+                          className="grid h-10 w-10 place-items-center rounded-lg bg-zinc-900 text-white shadow-sm transition hover:bg-zinc-800 disabled:opacity-40"
+                          title={t.addCategory}
                         >
-                          <GripVertical className="h-4 w-4 cursor-grab text-zinc-400" />
-                          <span className="min-w-0 flex-1 truncate text-sm">{option.name}</span>
-                          <span className="text-[11px] text-zinc-400">{option.assignmentCount}</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const name = window.prompt(t.rename, option.name);
-                              if (name?.trim()) void mutate("/api/index-navigator/options", "PATCH", { id: option.id, name });
-                            }}
-                            className="grid h-7 w-7 place-items-center rounded hover:bg-zinc-50"
-                            title={t.rename}
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <div className="mt-4 max-h-[52vh] space-y-1.5 overflow-y-auto pr-1">
+                        {data?.categories.map((category) => (
+                          <div
+                            key={category.id}
+                            draggable={!busy}
+                            onDragStart={() => setDraggedCategoryId(category.id)}
+                            onDragOver={(event) => event.preventDefault()}
+                            onDrop={() => void reorderCategories(category.id)}
+                            className={`group flex items-center gap-2 rounded-lg border px-2 py-2 transition ${
+                              selectedCategoryId === category.id
+                                ? "border-cyan-200 bg-cyan-50 shadow-sm"
+                                : "border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
+                            }`}
                           >
-                            <PencilLine className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (window.confirm(t.confirmDeleteOption)) {
-                                void mutate("/api/index-navigator/options", "DELETE", { id: option.id });
-                              }
-                            }}
-                            className="grid h-7 w-7 place-items-center rounded text-rose-600 hover:bg-rose-50"
-                            title={t.delete}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      ))}
+                            <GripVertical className="h-4 w-4 cursor-grab text-zinc-300 group-hover:text-zinc-500" />
+                            <button
+                              type="button"
+                              onClick={() => setSelectedCategoryId(category.id)}
+                              className="min-w-0 flex-1 truncate text-left text-sm font-medium text-zinc-800"
+                            >
+                              {category.name}
+                            </button>
+                            <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] text-zinc-500 ring-1 ring-zinc-200">
+                              {category.assignmentCount}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const name = window.prompt(t.rename, category.name);
+                                if (name?.trim()) void mutate("/api/index-navigator/categories", "PATCH", { id: category.id, name });
+                              }}
+                              className="grid h-7 w-7 place-items-center rounded-lg text-zinc-400 transition hover:bg-white hover:text-zinc-800"
+                              title={t.rename}
+                            >
+                              <PencilLine className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (window.confirm(t.confirmDeleteCategory)) {
+                                  void mutate("/api/index-navigator/categories", "DELETE", { id: category.id });
+                                }
+                              }}
+                              className="grid h-7 w-7 place-items-center rounded-lg text-zinc-400 transition hover:bg-rose-50 hover:text-rose-600"
+                              title={t.delete}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                        {(data?.categories.length ?? 0) === 0 ? (
+                          <p className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-8 text-center text-xs text-zinc-400">
+                            {t.noCategories}
+                          </p>
+                        ) : null}
+                      </div>
                     </div>
-                  </div>
+                  </section>
+
+                  <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm">
+                    <div className="border-b border-zinc-100 px-4 py-3.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-zinc-900">{t.optionsTitle}</h3>
+                          <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t.optionsHelp}</p>
+                        </div>
+                        <span className="rounded-full bg-zinc-100 px-2 py-1 text-[11px] font-medium text-zinc-500">
+                          {selectedCategory?.options.length ?? 0}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="p-4">
+                      <div className="flex gap-2">
+                        <input
+                          value={optionInput}
+                          onChange={(event) => setOptionInput(event.target.value)}
+                          disabled={!selectedCategory}
+                          className="h-10 min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50/60 px-3 text-sm outline-none transition focus:border-cyan-400 focus:bg-white focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          placeholder={t.optionName}
+                        />
+                        <button
+                          type="button"
+                          disabled={busy || !selectedCategory || !optionInput.trim()}
+                          onClick={() => void addOption()}
+                          className="grid h-10 w-10 place-items-center rounded-lg bg-cyan-700 text-white shadow-sm transition hover:bg-cyan-800 disabled:opacity-40"
+                          title={t.addOption}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <div className="mt-4 max-h-[52vh] space-y-1.5 overflow-y-auto pr-1">
+                        {selectedCategory?.options.map((option) => (
+                          <div
+                            key={option.id}
+                            draggable={!busy}
+                            onDragStart={() => setDraggedOptionId(option.id)}
+                            onDragOver={(event) => event.preventDefault()}
+                            onDrop={() => void reorderOptions(option.id)}
+                            className="group flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-2 py-2 transition hover:border-cyan-200 hover:bg-cyan-50/40"
+                          >
+                            <GripVertical className="h-4 w-4 cursor-grab text-zinc-300 group-hover:text-zinc-500" />
+                            <span className="min-w-0 flex-1 truncate text-sm font-medium text-zinc-700">{option.name}</span>
+                            <span className="rounded-full bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500">
+                              {option.assignmentCount}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const name = window.prompt(t.rename, option.name);
+                                if (name?.trim()) void mutate("/api/index-navigator/options", "PATCH", { id: option.id, name });
+                              }}
+                              className="grid h-7 w-7 place-items-center rounded-lg text-zinc-400 transition hover:bg-white hover:text-zinc-800"
+                              title={t.rename}
+                            >
+                              <PencilLine className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (window.confirm(t.confirmDeleteOption)) {
+                                  void mutate("/api/index-navigator/options", "DELETE", { id: option.id });
+                                }
+                              }}
+                              className="grid h-7 w-7 place-items-center rounded-lg text-zinc-400 transition hover:bg-rose-50 hover:text-rose-600"
+                              title={t.delete}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                        {!selectedCategory ? (
+                          <p className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-8 text-center text-xs text-zinc-400">
+                            {t.chooseCategory}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </section>
                 </div>
               ) : (
-                <div className="grid min-h-[480px] gap-5 lg:grid-cols-[minmax(300px,0.9fr)_minmax(0,1.1fr)]">
-                  <div className="rounded-md border border-zinc-200 p-4">
+                <div className="grid min-h-[500px] gap-4 lg:grid-cols-[minmax(320px,0.92fr)_minmax(0,1.08fr)]">
+                  <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-zinc-900">{t.nodePanelTitle}</h3>
+                        <p className="mt-1 text-[11px] text-zinc-500">{t.selectNodesHint}</p>
+                      </div>
+                      <span className="rounded-full bg-cyan-50 px-2 py-1 text-[11px] font-medium text-cyan-700">
+                        {selectedNodeIds.size}
+                      </span>
+                    </div>
                     <div className="relative">
                       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
                       <input
                         value={nodeSearch}
                         onChange={(event) => setNodeSearch(event.target.value)}
-                        className="h-9 w-full rounded-md border border-zinc-200 pl-9 pr-3 text-sm outline-none focus:border-zinc-500"
+                        className="h-10 w-full rounded-lg border border-zinc-200 bg-zinc-50/60 pl-9 pr-3 text-sm outline-none transition focus:border-cyan-400 focus:bg-white focus:ring-2 focus:ring-cyan-100"
                         placeholder={t.nodeSearch}
                       />
                     </div>
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-xs text-zinc-500">
+                      <p className="text-[11px] text-zinc-500">
                         {t.selectedNodes}: {selectedNodeIds.size} · {t.totalNodes}: {allNodes.length}
                       </p>
                       <div className="flex items-center gap-1">
@@ -836,7 +980,7 @@ export default function IndexNavigatorPanel({
                               new Set(allNodes.filter((node) => node.children.length > 0).map((node) => node.id)),
                             )
                           }
-                          className="h-7 rounded px-2 text-[11px] text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          className="h-7 rounded-lg px-2 text-[11px] font-medium text-cyan-700 transition hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           {t.expandAllNodes}
                         </button>
@@ -844,13 +988,13 @@ export default function IndexNavigatorPanel({
                           type="button"
                           disabled={Boolean(normalizedNodeSearch)}
                           onClick={() => setExpandedAssignmentNodeIds(new Set())}
-                          className="h-7 rounded px-2 text-[11px] text-zinc-600 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                          className="h-7 rounded-lg px-2 text-[11px] font-medium text-zinc-500 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           {t.collapseAllNodes}
                         </button>
                       </div>
                     </div>
-                    <div className="mt-3 max-h-[430px] space-y-1 overflow-y-auto">
+                    <div className="mt-2 max-h-[390px] space-y-0.5 overflow-y-auto rounded-lg border border-zinc-100 bg-zinc-50/40 p-1.5">
                       {visibleAssignmentNodes.map((node) => {
                         const hasChildren = node.children.length > 0;
                         const isNodeExpanded = Boolean(normalizedNodeSearch) || expandedAssignmentNodeIds.has(node.id);
@@ -864,7 +1008,11 @@ export default function IndexNavigatorPanel({
                         return (
                         <div
                           key={node.id}
-                          className="flex items-center rounded-md py-1 pr-2 text-sm hover:bg-zinc-50"
+                          className={`flex items-center rounded-lg py-1 pr-2 text-sm transition ${
+                            subtreeSelected || subtreePartiallySelected
+                              ? "bg-cyan-50/80 text-zinc-900"
+                              : "hover:bg-white hover:shadow-sm"
+                          }`}
                           style={{ paddingLeft: 6 + node.depth * 14 }}
                           title={node.path}
                         >
@@ -873,7 +1021,7 @@ export default function IndexNavigatorPanel({
                               type="button"
                               disabled={Boolean(normalizedNodeSearch)}
                               onClick={() => toggleAssignmentNode(node.id)}
-                              className="mr-1 grid h-6 w-6 shrink-0 place-items-center rounded text-zinc-500 hover:bg-zinc-200 disabled:cursor-default"
+                              className="mr-1 grid h-6 w-6 shrink-0 place-items-center rounded-lg text-zinc-400 transition hover:bg-white hover:text-zinc-700 disabled:cursor-default"
                               title={`${isNodeExpanded ? t.collapseNode : t.expandNode}: ${node.name}`}
                               aria-label={`${isNodeExpanded ? t.collapseNode : t.expandNode}: ${node.name}`}
                             >
@@ -897,10 +1045,12 @@ export default function IndexNavigatorPanel({
                                   return next;
                                 });
                               }}
-                              className="h-4 w-4 shrink-0 accent-cyan-700"
+                              className="h-4 w-4 shrink-0 rounded accent-cyan-700"
                             />
                             <span className="min-w-0 flex-1 truncate">{node.name}</span>
-                            <span className="text-[11px] text-zinc-400">{node.imageCount}</span>
+                            <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] text-zinc-400 ring-1 ring-zinc-200">
+                              {node.imageCount}
+                            </span>
                           </label>
                         </div>
                         );
@@ -910,12 +1060,23 @@ export default function IndexNavigatorPanel({
                       ) : null}
                     </div>
                   </div>
-                  <div className="rounded-md border border-zinc-200 p-4">
-                    <h3 className="text-sm font-semibold text-zinc-800">{t.optionOperation}</h3>
-                    <div className="mt-3 space-y-4">
+                  <div className="flex flex-col rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-center justify-between gap-3 border-b border-zinc-100 pb-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-zinc-900">{t.assignmentPanelTitle}</h3>
+                        <p className="mt-1 text-[11px] text-zinc-500">{t.optionOperation}</p>
+                      </div>
+                      <span className="rounded-full bg-zinc-100 px-2 py-1 text-[11px] font-medium text-zinc-500">
+                        {operationOptionIds.size}
+                      </span>
+                    </div>
+                    <div className="mt-3 flex-1 space-y-3 overflow-y-auto">
                       {data?.categories.map((category) => (
-                        <div key={category.id}>
-                          <p className="text-xs font-semibold text-zinc-500">{category.name}</p>
+                        <div key={category.id} className="rounded-lg bg-zinc-50/80 p-3">
+                          <p className="flex items-center gap-2 text-xs font-semibold text-zinc-600">
+                            <span className="h-1.5 w-1.5 rounded-full bg-cyan-500" />
+                            {category.name}
+                          </p>
                           <div className="mt-2 flex flex-wrap gap-2">
                             {category.options.map((option) => {
                               const selected = operationOptionIds.has(option.id);
@@ -924,6 +1085,7 @@ export default function IndexNavigatorPanel({
                                 <button
                                   key={option.id}
                                   type="button"
+                                  aria-pressed={selected}
                                   onClick={() => {
                                     setOperationOptionIds((current) => {
                                       const next = new Set(current);
@@ -932,13 +1094,19 @@ export default function IndexNavigatorPanel({
                                       return next;
                                     });
                                   }}
-                                  className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs ${
-                                    selected ? "border-cyan-700 bg-cyan-700 text-white" : "border-zinc-200 text-zinc-600"
+                                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+                                    selected
+                                      ? "border-cyan-700 bg-cyan-700 text-white shadow-sm"
+                                      : "border-zinc-200 bg-white text-zinc-600 hover:border-cyan-200 hover:text-cyan-800"
                                   }`}
                                 >
                                   {selected ? <Check className="h-3 w-3" /> : null}
                                   <span>{option.name}</span>
-                                  {selectedNodeIds.size > 0 ? <span className="opacity-70">{count}/{selectedNodeIds.size}</span> : null}
+                                  {selectedNodeIds.size > 0 ? (
+                                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${selected ? "bg-white/15" : "bg-zinc-100 text-zinc-400"}`}>
+                                      {count}/{selectedNodeIds.size}
+                                    </span>
+                                  ) : null}
                                 </button>
                               );
                             })}
@@ -946,12 +1114,12 @@ export default function IndexNavigatorPanel({
                         </div>
                       ))}
                     </div>
-                    <div className="mt-6 flex flex-wrap gap-2 border-t border-zinc-200 pt-4">
+                    <div className="mt-4 flex flex-wrap gap-2 border-t border-zinc-200 pt-4">
                       <button
                         type="button"
                         disabled={busy || selectedNodeIds.size === 0 || operationOptionIds.size === 0}
                         onClick={() => void updateAssignments("add")}
-                        className="inline-flex h-9 items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white disabled:opacity-50"
+                        className="inline-flex h-10 items-center gap-2 rounded-lg bg-cyan-700 px-4 text-sm font-medium text-white shadow-sm transition hover:bg-cyan-800 disabled:opacity-40"
                       >
                         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                         {busy ? t.saving : t.addToNodes}
@@ -960,7 +1128,7 @@ export default function IndexNavigatorPanel({
                         type="button"
                         disabled={busy || selectedNodeIds.size === 0 || operationOptionIds.size === 0}
                         onClick={() => void updateAssignments("remove")}
-                        className="inline-flex h-9 items-center gap-2 rounded-md border border-rose-300 bg-white px-4 text-sm font-medium text-rose-700 disabled:opacity-50"
+                        className="inline-flex h-10 items-center gap-2 rounded-lg border border-rose-200 bg-white px-4 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:opacity-40"
                       >
                         <Trash2 className="h-4 w-4" />
                         {t.removeFromNodes}

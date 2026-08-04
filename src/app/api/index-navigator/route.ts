@@ -14,7 +14,7 @@ export async function GET(request: Request) {
 
   try {
     const [categories, result] = await Promise.all([
-      getNavigatorCatalog(),
+      getNavigatorCatalog(optionIds),
       getNavigatorResults(optionIds, nodeQuery, requestedPage, pageSize),
     ]);
     return NextResponse.json({ categories, ...result });

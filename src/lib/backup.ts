@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { access, mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 
 import * as yauzl from "yauzl";
 import * as yazl from "yazl";
@@ -170,6 +171,7 @@ type BackupImage = z.infer<typeof backupImageSchema>;
 type PreparedImage = {
   image: BackupImage;
   fullPath: string;
+  mode: number;
 };
 
 type RestoreStats = {
@@ -195,6 +197,17 @@ type RestoreOptions = {
 type BackupOptions = {
   indexId?: string | null;
   onImageProgress?: (progress: { processedImages: number; totalImages: number }) => void;
+  onPackingProgress?: (progress: { processedBytes: number; totalBytes: number }) => void;
+};
+
+type LazyZipFile = yazl.ZipFile & {
+  addReadStreamLazy: (
+    metadataPath: string,
+    options: { mode: number; mtime: Date; size: number },
+    getReadStream: (
+      callback: (error: Error | null, stream?: Readable) => void,
+    ) => void,
+  ) => void;
 };
 
 type ZipSource = Buffer | { filePath: string };
@@ -622,6 +635,7 @@ export async function createBackupZip(options: BackupOptions = {}) {
     const imagePath = `${imageZipPrefix}${image.hash}${ext}`;
     preparedImages.push({
       fullPath,
+      mode: fileStat.mode,
       image: {
         originalName: image.originalName,
         mimeType: image.mimeType,
@@ -749,14 +763,40 @@ export async function createBackupZip(options: BackupOptions = {}) {
     },
   };
 
-  const zipFile = new yazl.ZipFile();
+  // yazl 3.3 exposes this API at runtime, but its bundled legacy declaration omits it.
+  const zipFile = new yazl.ZipFile() as LazyZipFile;
   zipFile.addBuffer(Buffer.from(JSON.stringify(manifest, null, 2)), "manifest.json", {
     mtime: new Date(),
   });
 
+  const totalBytes = preparedImages.reduce((sum, item) => sum + item.image.sizeBytes, 0);
+  let processedBytes = 0;
+  let lastReportedBytes = 0;
+  const progressStepBytes = Math.max(256 * 1024, Math.floor(totalBytes / 1000));
+  options.onPackingProgress?.({ processedBytes, totalBytes });
+
   for (const item of preparedImages) {
-    zipFile.addFile(item.fullPath, item.image.imagePath, {
+    zipFile.addReadStreamLazy(item.image.imagePath, {
       mtime: parseDate(item.image.updatedAt) ?? new Date(),
+      mode: item.mode,
+      size: item.image.sizeBytes,
+    }, (callback: (error: Error | null, stream?: Readable) => void) => {
+      const source = createReadStream(item.fullPath);
+      const progressStream = new Transform({
+        transform(chunk, _encoding, done) {
+          processedBytes += chunk.length;
+          if (
+            processedBytes >= totalBytes ||
+            processedBytes - lastReportedBytes >= progressStepBytes
+          ) {
+            lastReportedBytes = processedBytes;
+            options.onPackingProgress?.({ processedBytes, totalBytes });
+          }
+          done(null, chunk);
+        },
+      });
+      source.once("error", (error) => progressStream.destroy(error));
+      callback(null, source.pipe(progressStream));
     });
   }
 

@@ -17,8 +17,11 @@ type BackupJob = {
   kind: "backup";
   status: JobStatus;
   phase: string;
+  progressPercent: number;
   processedImages: number;
   totalImages: number;
+  processedBytes: number;
+  totalBytes: number;
   error: string | null;
   result: BackupJobResult | null;
   createdAt: number;
@@ -30,6 +33,7 @@ type RestoreJob = {
   kind: "restore";
   status: JobStatus;
   phase: string;
+  progressPercent: number;
   processedImages: number;
   totalImages: number;
   error: string | null;
@@ -85,8 +89,11 @@ function publicJob(job: BackupTaskJob) {
     kind: job.kind,
     status: job.status,
     phase: job.phase,
+    progressPercent: job.progressPercent,
     processedImages: job.processedImages,
     totalImages: job.totalImages,
+    processedBytes: job.kind === "backup" ? job.processedBytes : null,
+    totalBytes: job.kind === "backup" ? job.totalBytes : null,
     error: job.error,
     fileName: job.kind === "backup" ? job.result?.fileName ?? null : null,
     stats: job.kind === "restore" ? job.result : null,
@@ -110,8 +117,11 @@ export function startBackupJob(options: BackupJobOptions = {}) {
     kind: "backup",
     status: "running",
     phase: "preparing",
+    progressPercent: 0,
     processedImages: 0,
     totalImages: 0,
+    processedBytes: 0,
+    totalBytes: 0,
     error: null,
     result: null,
     createdAt: now(),
@@ -130,6 +140,15 @@ export function startBackupJob(options: BackupJobOptions = {}) {
           job.totalImages = progress.totalImages;
           touch(job);
         },
+        onPackingProgress(progress) {
+          job.phase = "packing";
+          job.processedBytes = progress.processedBytes;
+          job.totalBytes = progress.totalBytes;
+          job.progressPercent = progress.totalBytes > 0
+            ? Math.min(99, Math.floor((progress.processedBytes / progress.totalBytes) * 100))
+            : 0;
+          touch(job);
+        },
       });
 
       job.phase = "packing";
@@ -143,6 +162,7 @@ export function startBackupJob(options: BackupJobOptions = {}) {
       const buffer = await streamToBuffer(backup.stream);
       job.status = "completed";
       job.phase = "completed";
+      job.progressPercent = 100;
       job.result = {
         fileName: backup.fileName,
         buffer,
@@ -180,6 +200,7 @@ export function startRestoreJob(buffer: Buffer) {
     kind: "restore",
     status: "running",
     phase: "reading-zip",
+    progressPercent: 0,
     processedImages: 0,
     totalImages: 0,
     error: null,
@@ -208,12 +229,16 @@ export function startRestoreJob(buffer: Buffer) {
           job.phase = "restoring-images";
           job.processedImages = progress.processedImages;
           job.totalImages = progress.totalImages;
+          job.progressPercent = progress.totalImages > 0
+            ? Math.min(99, Math.round((progress.processedImages / progress.totalImages) * 100))
+            : 0;
           touch(job);
         },
       });
 
       job.status = "completed";
       job.phase = "completed";
+      job.progressPercent = 100;
       job.result = stats;
       touch(job);
     } catch (error) {
@@ -239,6 +264,7 @@ export function startRestoreJobFromFile(filePath: string) {
     kind: "restore",
     status: "running",
     phase: "reading-zip",
+    progressPercent: 0,
     processedImages: 0,
     totalImages: 0,
     error: null,
@@ -267,12 +293,16 @@ export function startRestoreJobFromFile(filePath: string) {
           job.phase = "restoring-images";
           job.processedImages = progress.processedImages;
           job.totalImages = progress.totalImages;
+          job.progressPercent = progress.totalImages > 0
+            ? Math.min(99, Math.round((progress.processedImages / progress.totalImages) * 100))
+            : 0;
           touch(job);
         },
       });
 
       job.status = "completed";
       job.phase = "completed";
+      job.progressPercent = 100;
       job.result = stats;
       touch(job);
     } catch (error) {

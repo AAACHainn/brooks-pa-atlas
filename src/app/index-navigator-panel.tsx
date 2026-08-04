@@ -39,6 +39,7 @@ type NavigatorOption = {
   name: string;
   sortOrder: number;
   assignmentCount: number;
+  matchCount: number;
 };
 
 type NavigatorCategory = {
@@ -82,7 +83,7 @@ const labels = {
     subtitle: "组合属性，快速定位目录",
     selected: "已选条件",
     matched: "匹配目录",
-    filterRule: "同一分类内任选，分类之间同时满足",
+    filterRule: "每个分类单选，分类之间同时满足",
     resultTitle: "目录结果",
     expand: "展开导航器",
     collapse: "收起导航器",
@@ -139,13 +140,15 @@ const labels = {
     confirmDeleteCategory: "删除该分类会同时删除其选项和所有节点关联。是否继续？",
     confirmDeleteOption: "删除该选项会同时删除所有节点关联。是否继续？",
     assigned: "已配置",
+    matches: "个匹配目录",
+    unavailable: "与当前已选分类组合后没有匹配目录",
   },
   en: {
     title: "Index navigator",
     subtitle: "Combine attributes to find indexes",
     selected: "Selected filters",
     matched: "Matched indexes",
-    filterRule: "OR within a category, AND across categories",
+    filterRule: "Choose one per category; categories are combined with AND",
     resultTitle: "Index results",
     expand: "Expand navigator",
     collapse: "Collapse navigator",
@@ -202,6 +205,8 @@ const labels = {
     confirmDeleteCategory: "Deleting this category also removes its options and node assignments. Continue?",
     confirmDeleteOption: "Deleting this option also removes all node assignments. Continue?",
     assigned: "assigned",
+    matches: "matched indexes",
+    unavailable: "No indexes match this option with the selected categories",
   },
 } as const;
 
@@ -332,9 +337,18 @@ export default function IndexNavigatorPanel({
           ? current
           : next.categories[0]?.id ?? null,
       );
-      const available = new Set(next.categories.flatMap((category) => category.options.map((option) => option.id)));
-      if ([...selectedOptionIds].some((id) => !available.has(id))) {
-        onSelectionChange(new Set([...selectedOptionIds].filter((id) => available.has(id))));
+      const normalizedSelection = new Set<string>();
+      for (const category of next.categories) {
+        const selectedInCategory = category.options.find((option) =>
+          selectedOptionIds.has(option.id),
+        );
+        if (selectedInCategory) normalizedSelection.add(selectedInCategory.id);
+      }
+      if (
+        normalizedSelection.size !== selectedOptionIds.size ||
+        [...normalizedSelection].some((id) => !selectedOptionIds.has(id))
+      ) {
+        onSelectionChange(normalizedSelection);
       }
       setError(null);
     } catch (loadError) {
@@ -414,10 +428,14 @@ export default function IndexNavigatorPanel({
     });
   }
 
-  function toggleFilter(optionId: string) {
+  function toggleFilter(option: NavigatorOption) {
+    const selected = selectedOptionIds.has(option.id);
+    if (!selected && option.matchCount === 0) return;
     const next = new Set(selectedOptionIds);
-    if (next.has(optionId)) next.delete(optionId);
-    else next.add(optionId);
+    const category = data?.categories.find((candidate) => candidate.id === option.categoryId);
+    category?.options.forEach((candidate) => next.delete(candidate.id));
+    if (!selected) next.add(option.id);
+    setLoading(true);
     setResultPage(1);
     onSelectionChange(next);
   }
@@ -620,21 +638,39 @@ export default function IndexNavigatorPanel({
                       <div className="flex flex-wrap gap-1.5">
                         {category.options.map((option) => {
                           const selected = selectedOptionIds.has(option.id);
+                          const unavailable = !selected && option.matchCount === 0;
                           return (
                             <button
                               key={option.id}
                               type="button"
+                              aria-label={option.name}
                               aria-pressed={selected}
-                              onClick={() => toggleFilter(option.id)}
+                              disabled={loading || unavailable}
+                              onClick={() => toggleFilter(option)}
                               className={`inline-flex min-h-7 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
                                 selected
                                   ? "border-cyan-700 bg-cyan-700 text-white shadow-sm"
-                                  : "border-zinc-200 bg-white text-zinc-600 shadow-[0_1px_0_rgba(0,0,0,0.03)] hover:border-cyan-200 hover:text-cyan-800"
+                                  : unavailable
+                                    ? "cursor-not-allowed border-zinc-100 bg-zinc-100 text-zinc-300"
+                                    : "border-zinc-200 bg-white text-zinc-600 shadow-[0_1px_0_rgba(0,0,0,0.03)] hover:border-cyan-200 hover:text-cyan-800 disabled:cursor-wait disabled:opacity-60"
                               }`}
-                              title={`${option.assignmentCount} ${t.assigned}`}
+                              title={
+                                unavailable
+                                  ? t.unavailable
+                                  : `${option.matchCount} ${t.matches} · ${option.assignmentCount} ${t.assigned}`
+                              }
                             >
                               {selected ? <Check className="h-3 w-3" /> : null}
                               <span>{option.name}</span>
+                              {selectedOptionIds.size > 0 ? (
+                                <span
+                                  className={`text-[10px] ${
+                                    selected ? "text-cyan-100" : unavailable ? "text-zinc-300" : "text-zinc-400"
+                                  }`}
+                                >
+                                  {option.matchCount}
+                                </span>
+                              ) : null}
                             </button>
                           );
                         })}

@@ -177,8 +177,11 @@ type BackupJobSnapshot = {
   kind: "backup" | "restore";
   status: "running" | "completed" | "failed";
   phase: string;
+  progressPercent?: number;
   processedImages: number;
   totalImages: number;
+  processedBytes?: number | null;
+  totalBytes?: number | null;
   error: string | null;
   fileName: string | null;
   stats: RestoreStats | null;
@@ -1179,8 +1182,16 @@ function applyIndexSiblingOrder(
 }
 
 function formatBytes(value: number) {
+  if (value <= 0) {
+    return "0 KB";
+  }
+
   if (value < 1024 * 1024) {
     return `${Math.max(1, Math.round(value / 1024))} KB`;
+  }
+
+  if (value >= 1024 * 1024 * 1024) {
+    return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
   }
 
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
@@ -1631,9 +1642,15 @@ function formatDocumentImportSummary(
     .replace("{duplicate}", String(result.duplicate));
 }
 
-function backupJobPercent(job: Pick<BackupJobSnapshot, "processedImages" | "status" | "totalImages">) {
+function backupJobPercent(
+  job: Pick<BackupJobSnapshot, "processedImages" | "progressPercent" | "status" | "totalImages">,
+) {
   if (job.status === "completed") {
     return 100;
+  }
+
+  if (typeof job.progressPercent === "number") {
+    return Math.max(0, Math.min(99, job.progressPercent));
   }
 
   if (job.totalImages <= 0) {
@@ -3480,8 +3497,11 @@ export default function AtlasWorkbench() {
       kind: "backup",
       status: "running",
       phase: "preparing",
+      progressPercent: 0,
       processedImages: 0,
       totalImages: indexNode ? indexBranchImageCount(indexNode) : data?.stats.imageCount ?? 0,
+      processedBytes: 0,
+      totalBytes: 0,
       error: null,
       fileName: null,
       stats: null,
@@ -3524,8 +3544,11 @@ export default function AtlasWorkbench() {
         kind: "backup",
         status: "failed",
         phase: "failed",
+        progressPercent: current?.progressPercent ?? 0,
         processedImages: current?.processedImages ?? 0,
         totalImages: current?.totalImages ?? data?.stats.imageCount ?? 0,
+        processedBytes: current?.processedBytes ?? 0,
+        totalBytes: current?.totalBytes ?? 0,
         error: error instanceof Error ? error.message : t.backupFailed,
         fileName: current?.fileName ?? null,
         stats: null,
@@ -5744,7 +5767,9 @@ export default function AtlasWorkbench() {
               <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
                 <span>
                   {backupTask.totalImages > 0
-                    ? `${backupTask.processedImages}/${backupTask.totalImages} ${t.imageUnit}`
+                    ? backupTask.kind === "backup" && backupTask.phase === "packing" && backupTask.totalBytes
+                      ? `${formatBytes(backupTask.processedBytes ?? 0)} / ${formatBytes(backupTask.totalBytes)}`
+                      : `${backupTask.processedImages}/${backupTask.totalImages} ${t.imageUnit}`
                     : t.taskPreparing}
                 </span>
                 {backupTask.status === "running" ? <span>{t.taskKeepWorking}</span> : null}

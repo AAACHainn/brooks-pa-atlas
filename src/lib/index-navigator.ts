@@ -13,16 +13,58 @@ export function cleanNavigatorName(value: string) {
   return value.trim().replace(/\s+/g, " ");
 }
 
-export async function getNavigatorCatalog() {
+export async function getNavigatorCatalog(selectedOptionIds: string[] = []) {
   const categories = await prisma.indexNavigatorCategory.findMany({
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     include: {
       options: {
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-        include: { _count: { select: { nodeAssignments: true } } },
+        include: {
+          _count: { select: { nodeAssignments: true } },
+          nodeAssignments: { select: { indexNodeId: true } },
+        },
       },
     },
   });
+
+  const optionById = new Map(
+    categories.flatMap((category) =>
+      category.options.map((option) => [option.id, option] as const),
+    ),
+  );
+  const selectedIdsByCategory = new Map<string, Set<string>>();
+  for (const optionId of new Set(selectedOptionIds.filter(Boolean))) {
+    const option = optionById.get(optionId);
+    if (!option) continue;
+    const ids = selectedIdsByCategory.get(option.categoryId) ?? new Set<string>();
+    ids.add(option.id);
+    selectedIdsByCategory.set(option.categoryId, ids);
+  }
+
+  const optionIdsByNode = new Map<string, Set<string>>();
+  for (const category of categories) {
+    for (const option of category.options) {
+      for (const assignment of option.nodeAssignments) {
+        const ids = optionIdsByNode.get(assignment.indexNodeId) ?? new Set<string>();
+        ids.add(option.id);
+        optionIdsByNode.set(assignment.indexNodeId, ids);
+      }
+    }
+  }
+
+  function matchedNodeCount(candidate: { id: string; categoryId: string }) {
+    let count = 0;
+    for (const nodeOptionIds of optionIdsByNode.values()) {
+      if (!nodeOptionIds.has(candidate.id)) continue;
+      const matchesOtherCategories = [...selectedIdsByCategory].every(
+        ([categoryId, selectedIds]) =>
+          categoryId === candidate.categoryId ||
+          [...selectedIds].some((optionId) => nodeOptionIds.has(optionId)),
+      );
+      if (matchesOtherCategories) count += 1;
+    }
+    return count;
+  }
 
   return categories.map((category) => ({
     id: category.id,
@@ -38,6 +80,7 @@ export async function getNavigatorCatalog() {
       name: option.name,
       sortOrder: option.sortOrder,
       assignmentCount: option._count.nodeAssignments,
+      matchCount: matchedNodeCount(option),
     })),
   }));
 }
@@ -154,10 +197,18 @@ export async function navigatorImageWhere(
   }
 
   const roots = minimalMatchedPaths(matchedNodes);
+  // Keep all descendant paths inside one relation filter. Expanding one relation
+  // branch per node makes Prisma generate enough SQLite joins to hit its 64-table limit.
   return {
-    OR: roots.flatMap((node) => [
-      { indexNodeId: node.id },
-      { indexNode: { path: { startsWith: `${node.path} /` } } },
-    ]),
+    OR: [
+      { indexNodeId: { in: roots.map((node) => node.id) } },
+      {
+        indexNode: {
+          OR: roots.map((node) => ({
+            path: { startsWith: `${node.path} /` },
+          })),
+        },
+      },
+    ],
   };
 }

@@ -16,11 +16,12 @@ import {
   parseMaskRects,
 } from "@/lib/exam";
 import { imageAnnotationPayloadSchema } from "@/lib/image-annotations";
+import { normalizeNavigatorName } from "@/lib/index-navigator";
 import { absoluteImagePath, getLibraryRoot, sanitizeFileName } from "@/lib/storage";
 import { cleanupUnusedTags, replaceImageTags } from "@/lib/tags";
 
 const backupFormat = "brooks-pa-atlas.backup";
-const backupVersion = 4;
+const backupVersion = 5;
 const imageZipPrefix = "images/";
 
 const ocrStatusSchema = z.enum(["PENDING", "RUNNING", "COMPLETED", "FAILED", "SKIPPED"]);
@@ -116,14 +117,36 @@ const backupExamAttemptSchema = z.object({
   answers: z.array(backupExamAttemptAnswerSchema),
 });
 
+const backupNavigatorOptionSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  sortOrder: z.number().int(),
+});
+
+const backupNavigatorCategorySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  sortOrder: z.number().int(),
+  options: z.array(backupNavigatorOptionSchema),
+});
+
+const backupNavigatorSchema = z.object({
+  categories: z.array(backupNavigatorCategorySchema),
+  assignments: z.array(z.object({
+    indexPath: z.string().min(1),
+    optionId: z.string().min(1),
+  })),
+});
+
 const backupManifestSchema = z.object({
   format: z.literal(backupFormat),
-  version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(backupVersion)]),
+  version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(backupVersion)]),
   exportedAt: z.string(),
   indexes: z.array(backupIndexSchema),
   images: z.array(backupImageSchema),
   exams: z.array(backupExamPaperSchema).optional().default([]),
   examAttempts: z.array(backupExamAttemptSchema).optional().default([]),
+  navigator: backupNavigatorSchema.optional().default({ categories: [], assignments: [] }),
 });
 
 type BackupManifest = z.infer<typeof backupManifestSchema>;
@@ -142,6 +165,9 @@ type RestoreStats = {
   filesRestored: number;
   examPapersRestored: number;
   examAttemptsRestored: number;
+  navigatorCategoriesRestored: number;
+  navigatorOptionsRestored: number;
+  navigatorAssignmentsRestored: number;
 };
 
 type RestoreLogMetadata = Record<string, boolean | number | string | null | undefined>;
@@ -386,6 +412,42 @@ async function readManifestAndEntryNames(source: ZipSource) {
     }
   }
 
+  if (manifest.version >= 5) {
+    const indexPaths = new Set(manifest.indexes.map((index) => index.path));
+    const categoryIds = new Set<string>();
+    const optionIds = new Set<string>();
+    const assignmentKeys = new Set<string>();
+
+    for (const category of manifest.navigator.categories) {
+      if (categoryIds.has(category.id)) {
+        throw new Error(`Duplicate navigator category id: ${category.id}`);
+      }
+      categoryIds.add(category.id);
+      for (const option of category.options) {
+        if (optionIds.has(option.id)) {
+          throw new Error(`Duplicate navigator option id: ${option.id}`);
+        }
+        optionIds.add(option.id);
+      }
+    }
+
+    for (const assignment of manifest.navigator.assignments) {
+      if (!indexPaths.has(assignment.indexPath)) {
+        throw new Error(`Navigator assignment references a missing index: ${assignment.indexPath}`);
+      }
+      if (!optionIds.has(assignment.optionId)) {
+        throw new Error(`Navigator assignment references a missing option: ${assignment.optionId}`);
+      }
+      const assignmentKey = `${assignment.indexPath}\u0000${assignment.optionId}`;
+      if (assignmentKeys.has(assignmentKey)) {
+        throw new Error(
+          `Duplicate navigator assignment: ${assignment.indexPath} -> ${assignment.optionId}`,
+        );
+      }
+      assignmentKeys.add(assignmentKey);
+    }
+  }
+
   return manifest;
 }
 
@@ -451,6 +513,26 @@ export async function createBackupZip(options: BackupOptions = {}) {
       indexNode: true,
       tags: { include: { tag: true } },
       annotations: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+    },
+  });
+  const navigatorAssignments = await prisma.indexNodeNavigatorOption.findMany({
+    where: { indexNodeId: { in: [...indexIds] } },
+    orderBy: [{ indexNodeId: "asc" }, { optionId: "asc" }],
+    include: { indexNode: true },
+  });
+  const includedNavigatorOptionIds = new Set(
+    navigatorAssignments.map((assignment) => assignment.optionId),
+  );
+  const navigatorCategories = await prisma.indexNavigatorCategory.findMany({
+    where: rootIndex
+      ? { options: { some: { id: { in: [...includedNavigatorOptionIds] } } } }
+      : undefined,
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    include: {
+      options: {
+        where: rootIndex ? { id: { in: [...includedNavigatorOptionIds] } } : undefined,
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      },
     },
   });
   const [examPapers, examAttempts] = rootIndex
@@ -608,6 +690,23 @@ export async function createBackupZip(options: BackupOptions = {}) {
             isCorrect: answer.isCorrect,
           })),
         })),
+    navigator: {
+      categories: navigatorCategories.map((category) => ({
+        id: category.id,
+        name: category.name,
+        sortOrder: category.sortOrder,
+        options: category.options.map((option) => ({
+          id: option.id,
+          name: option.name,
+          sortOrder: option.sortOrder,
+        })),
+      })),
+      assignments: navigatorAssignments.map((assignment) => ({
+        indexPath:
+          exportPathByOriginalPath.get(assignment.indexNode.path) ?? assignment.indexNode.path,
+        optionId: assignment.optionId,
+      })),
+    },
   };
 
   const zipFile = new yazl.ZipFile();
@@ -642,6 +741,8 @@ async function restoreBackupSource(
     exportedAt: manifest.exportedAt,
     indexes: manifest.indexes.length,
     images: manifest.images.length,
+    navigatorCategories: manifest.navigator.categories.length,
+    navigatorAssignments: manifest.navigator.assignments.length,
   });
 
   const stats: RestoreStats = {
@@ -652,6 +753,9 @@ async function restoreBackupSource(
     filesRestored: 0,
     examPapersRestored: 0,
     examAttemptsRestored: 0,
+    navigatorCategoriesRestored: 0,
+    navigatorOptionsRestored: 0,
+    navigatorAssignmentsRestored: 0,
   };
   const indexIdByPath = new Map<string, string>();
   const sortedIndexes = [...manifest.indexes].sort((left, right) => {
@@ -843,6 +947,84 @@ async function restoreBackupSource(
     imagesUpdated: stats.imagesUpdated,
     filesRestored: stats.filesRestored,
   });
+
+  if (manifest.version >= 5) {
+    log("navigator restore started", {
+      categories: manifest.navigator.categories.length,
+      assignments: manifest.navigator.assignments.length,
+    });
+    await prisma.$transaction(async (tx) => {
+      const restoredOptionIdByBackupId = new Map<string, string>();
+
+      for (const category of manifest.navigator.categories) {
+        const normalizedName = normalizeNavigatorName(category.name);
+        const existingCategory = await tx.indexNavigatorCategory.findUnique({
+          where: { normalizedName },
+        });
+        const restoredCategory = existingCategory
+          ? await tx.indexNavigatorCategory.update({
+              where: { id: existingCategory.id },
+              data: { name: category.name, sortOrder: category.sortOrder },
+            })
+          : await tx.indexNavigatorCategory.create({
+              data: { name: category.name, normalizedName, sortOrder: category.sortOrder },
+            });
+        stats.navigatorCategoriesRestored += 1;
+
+        for (const option of category.options) {
+          const optionNormalizedName = normalizeNavigatorName(option.name);
+          const existingOption = await tx.indexNavigatorOption.findUnique({
+            where: {
+              categoryId_normalizedName: {
+                categoryId: restoredCategory.id,
+                normalizedName: optionNormalizedName,
+              },
+            },
+          });
+          const restoredOption = existingOption
+            ? await tx.indexNavigatorOption.update({
+                where: { id: existingOption.id },
+                data: { name: option.name, sortOrder: option.sortOrder },
+              })
+            : await tx.indexNavigatorOption.create({
+                data: {
+                  categoryId: restoredCategory.id,
+                  name: option.name,
+                  normalizedName: optionNormalizedName,
+                  sortOrder: option.sortOrder,
+                },
+              });
+          restoredOptionIdByBackupId.set(option.id, restoredOption.id);
+          stats.navigatorOptionsRestored += 1;
+        }
+      }
+
+      const restoredIndexIds = [...indexIdByPath.values()];
+      if (restoredIndexIds.length > 0) {
+        await tx.indexNodeNavigatorOption.deleteMany({
+          where: { indexNodeId: { in: restoredIndexIds } },
+        });
+      }
+
+      for (const assignment of manifest.navigator.assignments) {
+        const indexNodeId = indexIdByPath.get(assignment.indexPath);
+        const optionId = restoredOptionIdByBackupId.get(assignment.optionId);
+        if (!indexNodeId) {
+          throw new Error(`Navigator assignment references a missing restored index: ${assignment.indexPath}`);
+        }
+        if (!optionId) {
+          throw new Error(`Navigator assignment references a missing restored option: ${assignment.optionId}`);
+        }
+        await tx.indexNodeNavigatorOption.create({ data: { indexNodeId, optionId } });
+        stats.navigatorAssignmentsRestored += 1;
+      }
+    });
+    log("navigator restore completed", {
+      navigatorCategoriesRestored: stats.navigatorCategoriesRestored,
+      navigatorOptionsRestored: stats.navigatorOptionsRestored,
+      navigatorAssignmentsRestored: stats.navigatorAssignmentsRestored,
+    });
+  }
 
   if (manifest.version >= 2 && manifest.exams.length > 0) {
     const imagesByHash = new Map(

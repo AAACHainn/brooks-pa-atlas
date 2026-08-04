@@ -105,6 +105,7 @@ npm run db:init
 - `src/app/layout.tsx`：根布局、字体和 metadata。
 - `src/app/globals.css`：Tailwind v4 入口和全局 CSS。
 - `src/app/atlas-workbench.tsx`：主工作台客户端组件，绝大多数前端交互在这里。
+- `src/app/index-navigator-panel.tsx`：统一索引节点导航器和管理设置弹窗。
 - `src/app/exam-mode.tsx`：考试模式客户端组件，包含试卷管理、制题、遮罩、考试和结果复盘。
 - `src/app/api/atlas/route.ts`：工作台聚合查询接口。
 - `src/app/api/exam/**/route.ts`：考试模式 API，负责试卷、题目、发布、考试记录和提交评分。
@@ -124,13 +125,17 @@ npm run db:init
 - `src/app/api/images/[id]/route.ts`：读取完整图片详情，更新或删除单张图片。
 - `src/app/api/images/[id]/annotations/route.ts`：替换保存单张图片的浏览模式文字标注。
 - `src/app/api/images/tags/route.ts`：批量给指定图片添加或移除标签。
+- `src/app/api/images/selection-summary/route.ts`：读取跨页已选图片的标签摘要。
 - `src/app/api/images/route.ts`：分页查询图库图片，供考试模式选择已有图片。
+- `src/app/api/index-navigator/**/route.ts`：导航分类、选项、目录结果和节点关联接口。
 - `src/app/api/images/[id]/file/route.ts`：读取图库内图片文件并返回给浏览器。
 - `src/app/api/ocr/images/[id]/route.ts`：把单张图片放入 OCR 队列。
 - `src/app/api/ocr/retry/route.ts`：重试失败 OCR。
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
 - `src/lib/backup.ts`：备份 manifest、zip 导出、zip 校验和合并恢复逻辑。
 - `src/lib/index-tree.ts`：索引树创建、路径补全、树形查询。
+- `src/lib/index-navigator.ts`：导航目录匹配、同类 OR/跨类 AND 和图片子树范围 helper。
+- `src/lib/atlas-images.ts`：工作台图片的全局自然排序和服务端分页 helper。
 - `src/lib/import-images.ts`：把已得到的图片 buffer 保存为图库图片并创建 `ChartImage` / `ImportItem`。
 - `src/lib/document-importers.ts`：资料导入 importer 的最小接口。
 - `src/lib/document-import-jobs.ts`：资料导入后台任务状态，供前端轮询进度。
@@ -167,6 +172,9 @@ npm run db:init
 主要模型：
 
 - `IndexNode`：无限层级索引节点，字段包括 `name`、`parentId`、`depth`、`path`、`sortOrder`。
+- `IndexNavigatorCategory`：导航分类，保存名称、大小写无关规范化名称和排序。
+- `IndexNavigatorOption`：分类下的导航选项，保存名称、规范化名称和排序。
+- `IndexNodeNavigatorOption`：索引节点与导航选项的多对多关联。
 - `ChartImage`：图片主表，保存图库路径、原始文件名、mime type、大小、尺寸、hash、标题、备注、OCR 文本、OCR 状态、所属索引、导入批次。
 - `ImageAnnotation`：浏览模式图片文字标注，保存相对图片坐标、宽度、高度、文字、字号、颜色和排序；标注完成编辑后不渲染背景或边框，图片删除时级联删除标注。
 - `Tag`：可复用自由标签，保存展示名和大小写无关的规范化名称。
@@ -195,6 +203,7 @@ npm run db:init
 - `ChartImage.libraryPath` 唯一，数据库只保存应用图库内的相对路径。
 - `ImageAnnotation.chartImageId` 删除级联到 `ChartImage`，标注不会阻止图片删除；但图片被考试题引用时仍禁止删除图片。
 - `IndexNode` 在同一父节点下 `name` 唯一。
+- 导航分类名称全局大小写无关唯一；导航选项名称在同一分类内大小写无关唯一；节点或选项删除时级联清理关联。
 - `ImportItem.chartImageId` 唯一，一张已入库图片最多对应一个导入 item 记录。
 - `ExamQuestion` 复用已有 `ChartImage`，不重复上传图片；图片被试题引用时禁止删除，避免发布试卷和历史记录断图。
 - 发布后的 `ExamPaper` 内容锁定；修改应通过复制为新草稿等后续能力处理。
@@ -213,13 +222,14 @@ npm run db:init
 
 - 左侧：索引树、全部图片入口、语言切换、刷新、侧栏折叠、浏览/管理模式切换。
 - 桌面端左侧栏可拖动边缘调整宽度，宽度会写入 `localStorage`，刷新或折叠后重新展开时继续沿用。
-- 中间：搜索栏、导入表格或图库浏览区域、概览、图片网格。
+- 中间：搜索栏、可折叠索引导航器、导入表格或图库浏览区域、概览、图片网格。
 - 右侧：管理模式下的图片详情编辑面板；浏览模式下是大图查看体验。
 
 浏览模式特性：
 
 - 左侧目录 + 右侧图片浏览。
 - 顶部搜索可与目录筛选、标签多选筛选组合；多个精确标签使用交集语义。
+- 索引导航器可与关键词、标签和具体目录取交集；同一导航分类内按 OR，不同分类间按 AND。
 - 选中图片后显示大图查看器。
 - 查看器固定高度并可拖动调整，缩放范围 `50%` 到 `220%`。
 - 放大后在查看器内部滚动，不撑大整页。
@@ -241,6 +251,7 @@ npm run db:init
 - 可以通过“导入资料”导入 PDF；系统会按 PDF 文件名创建容器索引，按内置书签目录创建子索引，并把每页转换后的 PNG 图片挂到对应节点。
 - 可以导出备份 zip，包含所有索引、图片文件、标题、备注、图片文字标注、OCR 文本和 OCR 状态等元数据。
 - 可以导入备份 zip 进行恢复；恢复使用合并覆盖模式，相同 SHA-256 hash 的图片更新元数据和索引归属，不创建重复图片，也不删除当前系统里备份外的数据。
+- 索引导航器仅管理模式可编辑；支持分类/选项增删改排序、批量配置节点，以及从索引树右键编辑单节点属性。
 - 可以创建当前选中索引下的新子索引。
 - 图片详情支持编辑标题、备注、所属索引。
 - 图片详情支持动态添加和移除标签，点击保存后与其他详情一起落库。
@@ -251,7 +262,7 @@ npm run db:init
 - 单张图片可从详情面板手动执行 OCR；如果已有 OCR 文本，前端会先确认覆盖。OCR 失败可重试。
 - 最近导入批次可撤销，撤销前必须二次确认。
 - 概览区可折叠。
-- 图片网格有客户端分页，避免一次渲染过多图片导致打开缓慢。
+- 图片网格使用服务端分页，页面大小支持 `25 / 50 / 100 / 200`；管理大图可跨页连续切换，跨页勾选最多 1000 张。
 
 考试模式特性：
 
@@ -354,17 +365,16 @@ npm run db:init
 
 ## 11. 图片列表、分页和排序
 
-`GET /api/atlas` 当前限制返回最多 `200` 张图片。服务端查询按 `originalName`、`createdAt` 排序，返回前又使用 `Intl.Collator` 做自然排序，避免 `1.jpg`、`2.jpg`、`10.jpg` 这类名称出现字典序错乱。
+`GET /api/atlas` 使用服务端分页。为保持 `1.jpg`、`2.jpg`、`10.jpg` 的全库自然数字顺序，服务端先查询匹配图片的轻量字段，使用 `Intl.Collator` 全局排序并截取当前页，再查询该页完整详情。
 
 考试模式选图使用 `GET /api/images?q=&indexId=&page=&pageSize=`，支持分页查询，不受 `/api/atlas` 200 张返回上限影响；关键词搜索也会匹配标签名称。
 
-前端图片网格分页：
+工作台图片网格分页：
 
 - 默认每页 `50` 张。
 - 可选每页 `25 / 50 / 100 / 200`。
 - 切换搜索、索引、模式或每页数量时回到第一页。
-
-注意：这仍是前端分页，不是真正的后端分页。大图库下如果需要浏览超过 `/api/atlas` 返回上限的完整结果，后续应改造 API 参数和数据库分页。
+- 管理模式可跨页勾选图片，最多 `1000` 张；图片大图查看器在当前页首尾可自动加载相邻服务端页。
 
 ## 12. 图片存储规则
 
@@ -399,22 +409,29 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 `GET /api/atlas`
 
-- 参数：`q`、`indexId`、`tagId`；`tagId` 可重复传递。
-- 返回：索引树、图片列表、最近导入批次、统计信息。
+- 参数：`q`、`indexId`、`tagId`、`navigatorOptionId`、`page`、`pageSize`；`tagId` 和 `navigatorOptionId` 可重复传递。
+- 返回：索引树、当前页图片、分页信息、最近导入批次、统计信息。
 - 索引筛选包含所选节点及其后代路径。
 - 搜索覆盖 `originalName`、`title`、`notes`、`ocrText`、图片文字标注、`indexNode.path` 和标签名称。
 - 参数 `tagId` 可叠加精确标签筛选条件；重复传递多个 `tagId` 时按 AND 组合，只返回同时包含全部所选标签的图片。
-- 图片列表当前 `take: 200`。
+- 导航选项同分类按 OR、不同分类按 AND；只检查节点直接关联，匹配节点的全部后代图片会纳入结果并去重。
 - OCR 文本和错误会截断返回，避免接口太大。
+
+`GET /api/index-navigator`
+
+- 返回分类、选项、关联节点数量，以及可选的分页目录结果。
+- 参数：重复 `optionId`、`nodeQ`、`resultPage`；没有选项和目录关键词时不枚举全部索引。
+- 分类、选项 CRUD 和排序使用 `/api/index-navigator/categories`、`/api/index-navigator/options`。
+- `GET/PATCH /api/index-navigator/assignments` 读取和批量修改节点关联，单次最多 `1000` 个节点。
 
 `GET /api/backups/export`
 
 - 导出 `brooks-pa-atlas-backup-YYYYMMDD-HHmmssZ.zip`。
 - zip 顶层包含 `manifest.json` 和 `images/<hash>.<ext>` 图片文件。
-- manifest 格式为 `brooks-pa-atlas.backup` v4，保存索引树、图片元数据、标签、图片文字标注、试卷、题目、考试记录和 zip 内相对图片路径；恢复仍兼容 v1、v2 和 v3。
+- manifest 格式为 `brooks-pa-atlas.backup` v5，保存索引树、导航分类/选项/节点关联、图片元数据、标签、图片文字标注、试卷、题目、考试记录和 zip 内相对图片路径；恢复仍兼容 v1–v4。
 - 不保存 Windows 或 Linux 绝对路径，便于跨部署环境恢复。
 - 导出前会校验数据库中每张图片的图库文件存在；如果缺失则返回错误，不生成不完整备份。
-- 全量备份包含考试数据；按索引子树导出时仍只导出该索引下的索引和图片，不导出试卷，避免试卷引用缺失图片。
+- 全量备份包含考试和全部导航数据；按索引子树导出时只导出该子树索引、图片、节点导航关联及实际引用的分类/选项，不导出试卷。
 
 `POST /api/backups/restore?mode=merge`
 
@@ -425,9 +442,10 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 按 SHA-256 hash 恢复图片；相同 hash 更新元数据和索引归属，不创建重复图片。
 - 如果相同 hash 的数据库记录存在但图库文件丢失，会从备份重新写入当前环境图库目录并更新 `libraryPath`。
 - 不删除当前系统中备份外的索引、图片或文件；不恢复旧 `ImportBatch` / `ImportItem` 历史。
-- v2、v3 和 v4 恢复会通过图片 SHA-256 hash 重新映射试题图片；缺失图片时拒绝恢复对应考试数据，避免断开的题目引用。
-- v3 和 v4 恢复会覆盖备份内图片的标签；恢复旧版 v1 / v2 备份时保留当前系统中已有图片的标签。
-- v4 恢复会覆盖备份内图片的文字标注；恢复旧版 v1 / v2 / v3 备份时保留当前系统中已有图片的文字标注。
+- v2–v5 恢复会通过图片 SHA-256 hash 重新映射试题图片；缺失图片时拒绝恢复对应考试数据，避免断开的题目引用。
+- v3–v5 恢复会覆盖备份内图片的标签；恢复旧版 v1 / v2 备份时保留当前系统中已有图片的标签。
+- v4–v5 恢复会覆盖备份内图片的文字标注；恢复旧版 v1–v3 备份时保留当前系统中已有图片的文字标注。
+- v5 导航恢复在事务内按规范化名称合并分类和选项，并以备份内容覆盖备份内节点的关联；备份外数据不删除。恢复 v1–v4 时保留目标系统现有导航数据。
 
 考试 API：
 
@@ -603,7 +621,7 @@ https://github.com/AAACHainn/brooks-pa-atlas.git
 
 ## 18. 已知限制和后续方向
 
-- `/api/atlas` 图片列表仍限制 `take: 200`；当前分页是前端分页，后续大图库应做真正的后端分页。
+- `/api/atlas` 已使用服务端分页，但为保持全库自然数字排序，每次仍会读取全部匹配图片的轻量排序字段；极大图库可后续考虑持久化自然排序键。
 - 搜索由数据库 `contains` 完成，后续可考虑全文索引或更强搜索。
 - OCR 默认使用 `chi_sim+eng` 中英混合识别；部署机器需要安装对应 Tesseract 语言包，或用 `BROOKS_OCR_LANG` 改成已安装语言组合。
 - 索引节点支持创建、重命名、删除空索引、清空图片、展开/收起和 `sortOrder` 字段更新，但尚未实现拖拽移动和完整排序 UI。

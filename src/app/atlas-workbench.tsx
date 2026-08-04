@@ -37,6 +37,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 
 import ExamMode from "@/app/exam-mode";
+import IndexNavigatorPanel from "@/app/index-navigator-panel";
 
 type IndexTreeNode = {
   id: string;
@@ -141,6 +142,12 @@ type AtlasData = {
     unclassifiedCount: number;
     ocr: Record<string, number>;
   };
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
 };
 
 type SelectedFile = {
@@ -159,6 +166,9 @@ type RestoreStats = {
   filesRestored: number;
   examPapersRestored?: number;
   examAttemptsRestored?: number;
+  navigatorCategoriesRestored?: number;
+  navigatorOptionsRestored?: number;
+  navigatorAssignmentsRestored?: number;
 };
 
 type BackupJobSnapshot = {
@@ -2131,7 +2141,12 @@ export default function AtlasWorkbench() {
   const [detailTagInput, setDetailTagInput] = useState("");
   const [ocrRunningImageId, setOcrRunningImageId] = useState<string | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(() => new Set());
+  const [selectedNavigatorOptionIds, setSelectedNavigatorOptionIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [requestedNavigatorEditNode, setRequestedNavigatorEditNode] = useState<IndexTreeNode | null>(null);
   const [selectedBulkImageIds, setSelectedBulkImageIds] = useState<Set<string>>(() => new Set());
+  const [selectedBulkTagStats, setSelectedBulkTagStats] = useState<Array<ImageTag & { count: number }>>([]);
   const [bulkTagInput, setBulkTagInput] = useState("");
   const [bulkRemoveTagId, setBulkRemoveTagId] = useState("");
   const [bulkTagsBusy, setBulkTagsBusy] = useState(false);
@@ -2212,6 +2227,7 @@ export default function AtlasWorkbench() {
   const detailDraftRef = useRef<ImageDetailDraft>(detailDraft);
   const detailTagInputRef = useRef(detailTagInput);
   const imageSelectionPromiseRef = useRef<Promise<boolean> | null>(null);
+  const pendingPageImageNavigationRef = useRef<{ direction: -1 | 1; page: number } | null>(null);
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const t = copy[locale];
@@ -2270,6 +2286,11 @@ export default function AtlasWorkbench() {
     for (const tagId of selectedTagIds) {
       params.append("tagId", tagId);
     }
+    for (const optionId of selectedNavigatorOptionIds) {
+      params.append("navigatorOptionId", optionId);
+    }
+    params.set("page", String(imageGridPage));
+    params.set("pageSize", String(imageGridPageSize));
 
     try {
       const response = await fetch(`/api/atlas?${params.toString()}`, { cache: "no-store" });
@@ -2279,6 +2300,7 @@ export default function AtlasWorkbench() {
 
       const nextData = (await response.json()) as AtlasData;
       setData(nextData);
+      setImageGridPage(nextData.pagination.page);
       const availableTagIds = new Set(nextData.tags.map((tag) => tag.id));
       if ([...selectedTagIds].some((tagId) => !availableTagIds.has(tagId))) {
         setSelectedTagIds(new Set([...selectedTagIds].filter((tagId) => availableTagIds.has(tagId))));
@@ -2287,7 +2309,7 @@ export default function AtlasWorkbench() {
     } catch (error) {
       setDataError(error instanceof Error ? error.message : String(error));
     }
-  }, [query, selectedIndexId, selectedTagIds]);
+  }, [imageGridPage, imageGridPageSize, query, selectedIndexId, selectedNavigatorOptionIds, selectedTagIds]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2338,6 +2360,37 @@ export default function AtlasWorkbench() {
 
     return () => window.clearTimeout(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    if (selectedBulkImageIds.size === 0) {
+      setSelectedBulkTagStats([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void fetch("/api/images/selection-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageIds: [...selectedBulkImageIds] }),
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          const result = (await response.json()) as {
+            tags?: Array<ImageTag & { count: number }>;
+          };
+          if (response.ok) {
+            setSelectedBulkTagStats(result.tags ?? []);
+          }
+        })
+        .catch(() => undefined);
+    }, 120);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [selectedBulkImageIds]);
 
   useEffect(() => {
     selectedImageIdRef.current = selectedImageId;
@@ -2636,28 +2689,23 @@ export default function AtlasWorkbench() {
   const selectedImageIndex =
     data?.images.findIndex((image) => image.id === selectedImageId) ?? -1;
   useEffect(() => {
-    if (isManageViewerOpen && !selectedImage) {
+    if (isManageViewerOpen && !selectedImage && !pendingPageImageNavigationRef.current) {
       setIsManageViewerOpen(false);
       setIsEditingAnnotations(false);
       setEditingAnnotationId(null);
     }
   }, [isManageViewerOpen, selectedImage]);
-  const selectedBulkTagStats = useMemo(() => {
-    const counts = new Map<string, { id: string; name: string; count: number }>();
 
-    for (const image of data?.images ?? []) {
-      if (!selectedBulkImageIds.has(image.id)) {
-        continue;
-      }
-
-      for (const tag of image.tags) {
-        const current = counts.get(tag.id);
-        counts.set(tag.id, { ...tag, count: (current?.count ?? 0) + 1 });
-      }
+  useEffect(() => {
+    const pending = pendingPageImageNavigationRef.current;
+    if (!pending || data?.pagination.page !== pending.page || data.images.length === 0) {
+      return;
     }
-
-    return [...counts.values()].sort((left, right) => left.name.localeCompare(right.name));
-  }, [data?.images, selectedBulkImageIds]);
+    pendingPageImageNavigationRef.current = null;
+    commitSelectedImage(pending.direction === 1 ? data.images[0] : data.images[data.images.length - 1]);
+    // commitSelectedImage is stable for a completed page response.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.images, data?.pagination.page]);
   const selectedAnnotation =
     annotationDrafts.find((annotation) => annotation.id === editingAnnotationId) ?? null;
   const pendingUndoBatch = data?.batches.find((batch) => batch.id === pendingUndoBatchId) ?? null;
@@ -2665,7 +2713,7 @@ export default function AtlasWorkbench() {
     ? indexBranchImageCount(indexContextMenu.node)
     : 0;
   const indexActionImageCount = indexAction ? indexBranchImageCount(indexAction.node) : 0;
-  const canNavigateSelectedImage = (data?.images.length ?? 0) > 1;
+  const canNavigateSelectedImage = (data?.pagination.total ?? 0) > 1;
   const shouldShowImageGrid =
     (isManageMode && !isManageViewerOpen) ||
     (isBrowseMode && (showBrowseThumbnails || !selectedImage));
@@ -2709,14 +2757,11 @@ export default function AtlasWorkbench() {
   const importStartIndex = (importCurrentPage - 1) * importPageSize;
   const importPageFiles = files.slice(importStartIndex, importStartIndex + importPageSize);
   const importEndIndex = importStartIndex + importPageFiles.length;
-  const imageGridTotal = data?.images.length ?? 0;
-  const imageGridTotalPages = Math.max(1, Math.ceil(imageGridTotal / imageGridPageSize));
-  const imageGridCurrentPage = Math.min(imageGridPage, imageGridTotalPages);
+  const imageGridTotal = data?.pagination.total ?? 0;
+  const imageGridTotalPages = data?.pagination.totalPages ?? 1;
+  const imageGridCurrentPage = data?.pagination.page ?? imageGridPage;
   const imageGridStartIndex = (imageGridCurrentPage - 1) * imageGridPageSize;
-  const imageGridPageImages = (data?.images ?? []).slice(
-    imageGridStartIndex,
-    imageGridStartIndex + imageGridPageSize,
-  );
+  const imageGridPageImages = data?.images ?? [];
   const imageGridEndIndex = imageGridStartIndex + imageGridPageImages.length;
   const imageStageSize = useMemo(() => {
     if (
@@ -2774,10 +2819,7 @@ export default function AtlasWorkbench() {
       }
 
       event.preventDefault();
-      const direction = event.key === "ArrowLeft" ? -1 : 1;
-      const currentIndex = selectedImageIndex >= 0 ? selectedImageIndex : 0;
-      const nextImage = images[(currentIndex + direction + images.length) % images.length];
-      void selectImage(nextImage);
+      void selectAdjacentImage(event.key === "ArrowLeft" ? -1 : 1);
     }
 
     window.addEventListener("keydown", handleKeyDown);
@@ -3308,7 +3350,7 @@ export default function AtlasWorkbench() {
       const next = new Set(current);
       if (next.has(imageId)) {
         next.delete(imageId);
-      } else {
+      } else if (next.size < 1000) {
         next.add(imageId);
       }
 
@@ -3486,6 +3528,7 @@ export default function AtlasWorkbench() {
         `索引：新建 ${stats.indexesCreated}，更新 ${stats.indexesUpdated}`,
         `图片：新建 ${stats.imagesCreated}，更新 ${stats.imagesUpdated}`,
         `文件：恢复 ${stats.filesRestored}`,
+        `导航器：分类 ${stats.navigatorCategoriesRestored ?? 0}，选项 ${stats.navigatorOptionsRestored ?? 0}，节点关联 ${stats.navigatorAssignmentsRestored ?? 0}`,
         `试卷：恢复 ${stats.examPapersRestored ?? 0}，考试记录 ${stats.examAttemptsRestored ?? 0}`,
       ].join("\n");
     }
@@ -3495,6 +3538,7 @@ export default function AtlasWorkbench() {
       `Indexes: ${stats.indexesCreated} created, ${stats.indexesUpdated} updated`,
       `Images: ${stats.imagesCreated} created, ${stats.imagesUpdated} updated`,
       `Files restored: ${stats.filesRestored}`,
+      `Navigator: ${stats.navigatorCategoriesRestored ?? 0} categories, ${stats.navigatorOptionsRestored ?? 0} options, ${stats.navigatorAssignmentsRestored ?? 0} assignments`,
       `Exams restored: ${stats.examPapersRestored ?? 0}, attempts ${stats.examAttemptsRestored ?? 0}`,
     ].join("\n");
   }
@@ -3952,13 +3996,27 @@ export default function AtlasWorkbench() {
 
   async function selectAdjacentImage(direction: -1 | 1) {
     const images = data?.images ?? [];
-    if (images.length < 2 || detailsSavingRef.current || annotationsSaving) {
+    if ((data?.pagination.total ?? 0) < 2 || images.length === 0 || detailsSavingRef.current || annotationsSaving) {
       return;
     }
 
     const currentIndex = selectedImageIndex >= 0 ? selectedImageIndex : 0;
-    const nextIndex = (currentIndex + direction + images.length) % images.length;
-    await selectImage(images[nextIndex]);
+    const nextIndex = currentIndex + direction;
+    if (nextIndex >= 0 && nextIndex < images.length) {
+      await selectImage(images[nextIndex]);
+      return;
+    }
+
+    if (!(await saveCurrentImageChanges())) {
+      return;
+    }
+    const currentPage = data?.pagination.page ?? 1;
+    const totalPages = data?.pagination.totalPages ?? 1;
+    const targetPage = direction === 1
+      ? currentPage >= totalPages ? 1 : currentPage + 1
+      : currentPage <= 1 ? totalPages : currentPage - 1;
+    pendingPageImageNavigationRef.current = { direction, page: targetPage };
+    setImageGridPage(targetPage);
   }
 
   function selectIndex(id: string | null) {
@@ -3966,6 +4024,30 @@ export default function AtlasWorkbench() {
     setLocatedIndexId(null);
     setImageGridPage(1);
     setSelectedBulkImageIds(new Set());
+  }
+
+  function changeNavigatorSelection(ids: Set<string>) {
+    setSelectedNavigatorOptionIds(ids);
+    setSelectedIndexId(null);
+    setLocatedIndexId(null);
+    setImageGridPage(1);
+    setSelectedBulkImageIds(new Set());
+  }
+
+  function selectNavigatorResult(indexId: string) {
+    const ancestorIds = ancestorIndexIdsForSelection(data?.tree ?? [], indexId);
+    setCollapsedIndexIds((current) => {
+      const next = new Set(current);
+      ancestorIds.forEach((id) => next.delete(id));
+      persistCollapsedIndexIds(next);
+      return next;
+    });
+    selectIndex(indexId);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById(`atlas-index-node-${indexId}`)?.scrollIntoView({ block: "nearest" });
+      });
+    });
   }
 
   function viewLocatedIndexImages() {
@@ -4487,6 +4569,20 @@ export default function AtlasWorkbench() {
                 </>
               ) : null}
             </div>
+          ) : null}
+
+          {!isExamMode ? (
+            <IndexNavigatorPanel
+              locale={locale}
+              isManageMode={isManageMode}
+              nodes={data?.tree ?? []}
+              selectedIndexId={selectedIndexId}
+              selectedOptionIds={selectedNavigatorOptionIds}
+              onSelectionChange={changeNavigatorSelection}
+              onSelectResult={selectNavigatorResult}
+              requestedEditNode={requestedNavigatorEditNode}
+              onRequestedEditNodeHandled={() => setRequestedNavigatorEditNode(null)}
+            />
           ) : null}
 
           {isManageMode && files.length > 0 ? (
@@ -5672,6 +5768,17 @@ export default function AtlasWorkbench() {
           >
             <ChevronRight className="h-4 w-4" />
             <span>{t.collapseLeafIndexes}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRequestedNavigatorEditNode(indexContextMenu.node);
+              setIndexContextMenu(null);
+            }}
+            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-zinc-700 hover:bg-zinc-100"
+          >
+            <TagIcon className="h-4 w-4" />
+            <span>{locale === "zh" ? "编辑导航属性" : "Edit navigator attributes"}</span>
           </button>
           <button
             type="button"

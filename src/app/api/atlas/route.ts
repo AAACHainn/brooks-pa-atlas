@@ -1,16 +1,14 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@/generated/prisma/client";
 
 import { prisma } from "@/lib/db";
+import { findAtlasImagePage } from "@/lib/atlas-images";
 import { serializeImageAnnotation } from "@/lib/image-annotations";
 import { getIndexTree } from "@/lib/index-tree";
+import { navigatorImageWhere } from "@/lib/index-navigator";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const imageNameCollator = new Intl.Collator(undefined, {
-  numeric: true,
-  sensitivity: "base",
-});
 
 function snippet(value: string | null | undefined, length = 180) {
   if (!value) {
@@ -25,14 +23,31 @@ export async function GET(request: Request) {
   const query = url.searchParams.get("q")?.trim();
   const indexId = url.searchParams.get("indexId")?.trim();
   const tagIds = [...new Set(url.searchParams.getAll("tagId").map((tagId) => tagId.trim()).filter(Boolean))];
+  const navigatorOptionIds = [
+    ...new Set(
+      url.searchParams.getAll("navigatorOptionId").map((id) => id.trim()).filter(Boolean),
+    ),
+  ];
+  const requestedPage = Math.max(1, Number(url.searchParams.get("page")) || 1);
+  const requestedPageSize = Number(url.searchParams.get("pageSize")) || 50;
+  const pageSize = [25, 50, 100, 200].includes(requestedPageSize) ? requestedPageSize : 50;
 
   const selectedNode = indexId
     ? await prisma.indexNode.findUnique({ where: { id: indexId } })
     : null;
 
-  const images = await prisma.chartImage.findMany({
-    where: {
-      AND: [
+  let navigatorWhere: Prisma.ChartImageWhereInput | null = null;
+  try {
+    navigatorWhere = await navigatorImageWhere(navigatorOptionIds);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Invalid navigator filter." },
+      { status: 400 },
+    );
+  }
+
+  const imageWhere: Prisma.ChartImageWhereInput = {
+    AND: [
         selectedNode
           ? {
               OR: [
@@ -55,24 +70,10 @@ export async function GET(request: Request) {
             }
           : {},
         ...tagIds.map((tagId) => ({ tags: { some: { tagId } } })),
+        ...(navigatorWhere ? [navigatorWhere] : []),
       ],
-    },
-    orderBy: [{ originalName: "asc" }, { createdAt: "asc" }],
-    take: 200,
-    include: {
-      indexNode: true,
-      tags: { include: { tag: true } },
-      annotations: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
-    },
-  });
-  const sortedImages = [...images].sort((left, right) => {
-    const nameComparison = imageNameCollator.compare(left.originalName, right.originalName);
-    if (nameComparison !== 0) {
-      return nameComparison;
-    }
-
-    return left.createdAt.getTime() - right.createdAt.getTime();
-  });
+  };
+  const { images, pagination } = await findAtlasImagePage(imageWhere, requestedPage, pageSize);
 
   const [tree, batches, stats, tags] = await Promise.all([
     getIndexTree(),
@@ -101,7 +102,7 @@ export async function GET(request: Request) {
     tree,
     batches,
     tags,
-    images: sortedImages.map((image) => ({
+    images: images.map((image) => ({
       id: image.id,
       originalName: image.originalName,
       title: image.title,
@@ -133,5 +134,6 @@ export async function GET(request: Request) {
       unclassifiedCount: await prisma.chartImage.count({ where: { indexNodeId: null } }),
       ocr: Object.fromEntries(stats.map((item) => [item.ocrStatus, item._count._all])),
     },
+    pagination,
   });
 }

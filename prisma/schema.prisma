@@ -70,6 +70,7 @@ model IndexNode {
 
   images      ChartImage[]
   importItems ImportItem[]
+  navigatorOptions IndexNodeNavigatorOption[]
 
   @@index([parentId])
   @@index([path])
@@ -107,6 +108,47 @@ model ChartImage {
   @@index([importBatchId])
   @@index([ocrStatus])
   @@index([originalName])
+}
+
+model IndexNavigatorCategory {
+  id             String   @id @default(cuid())
+  name           String
+  normalizedName String   @unique
+  sortOrder      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  options IndexNavigatorOption[]
+
+  @@index([sortOrder])
+}
+
+model IndexNavigatorOption {
+  id             String   @id @default(cuid())
+  categoryId     String
+  name           String
+  normalizedName String
+  sortOrder      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  category       IndexNavigatorCategory      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  nodeAssignments IndexNodeNavigatorOption[]
+
+  @@unique([categoryId, normalizedName])
+  @@index([categoryId, sortOrder])
+}
+
+model IndexNodeNavigatorOption {
+  indexNodeId String
+  optionId    String
+  createdAt   DateTime @default(now())
+
+  indexNode IndexNode            @relation(fields: [indexNodeId], references: [id], onDelete: Cascade)
+  option    IndexNavigatorOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@id([indexNodeId, optionId])
+  @@index([optionId])
 }
 
 model ImageAnnotation {

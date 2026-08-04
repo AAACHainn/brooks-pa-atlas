@@ -108,7 +108,7 @@ const labels = {
     expandNode: "展开节点",
     collapseNode: "收起节点",
     noNodes: "没有匹配的索引节点。",
-    selectNodesHint: "选择一个或多个索引节点。父节点不会自动包含后代。",
+    selectNodesHint: "选择父节点会同时选择全部后代；取消父节点也会取消全部后代。",
     optionOperation: "选择要批量操作的选项",
     addToNodes: "添加到所选节点",
     removeFromNodes: "从所选节点移除",
@@ -154,7 +154,7 @@ const labels = {
     expandNode: "Expand node",
     collapseNode: "Collapse node",
     noNodes: "No matching index nodes.",
-    selectNodesHint: "Select one or more nodes. Selecting a parent does not include descendants.",
+    selectNodesHint: "Selecting or clearing a parent also selects or clears all descendants.",
     optionOperation: "Choose options to update",
     addToNodes: "Add to selected nodes",
     removeFromNodes: "Remove from selected nodes",
@@ -171,6 +171,25 @@ const expandedStorageKey = "brooks-pa-atlas.indexNavigatorExpanded";
 
 function flattenNodes(nodes: NavigatorIndexNode[]): NavigatorIndexNode[] {
   return nodes.flatMap((node) => [node, ...flattenNodes(node.children)]);
+}
+
+function collectSubtreeNodeIds(
+  nodes: NavigatorIndexNode[],
+  target: Map<string, string[]>,
+): string[] {
+  return nodes.flatMap((node) => {
+    const ids = [node.id, ...collectSubtreeNodeIds(node.children, target)];
+    target.set(node.id, ids);
+    return ids;
+  });
+}
+
+function chunkItems<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function filterNodeTree(nodes: NavigatorIndexNode[], term: string): NavigatorIndexNode[] {
@@ -243,6 +262,11 @@ export default function IndexNavigatorPanel({
 
   const allNodes = useMemo(() => flattenNodes(nodes), [nodes]);
   const nodeById = useMemo(() => new Map(allNodes.map((node) => [node.id, node])), [allNodes]);
+  const subtreeNodeIds = useMemo(() => {
+    const result = new Map<string, string[]>();
+    collectSubtreeNodeIds(nodes, result);
+    return result;
+  }, [nodes]);
   const selectedCategory = data?.categories.find((category) => category.id === selectedCategoryId) ?? null;
 
   useEffect(() => {
@@ -310,22 +334,37 @@ export default function IndexNavigatorPanel({
     if (!settingsOpen || settingsTab !== "assignments" || selectedNodeIds.size === 0) {
       return;
     }
-    const params = new URLSearchParams();
-    selectedNodeIds.forEach((id) => params.append("nodeId", id));
-    void fetch(`/api/index-navigator/assignments?${params}`, { cache: "no-store" })
-      .then(async (response) => {
+    let cancelled = false;
+    void Promise.all(
+      chunkItems([...selectedNodeIds], 1000).map(async (nodeIds) => {
+        const response = await fetch("/api/index-navigator/assignments", {
+          method: "POST",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nodeIds }),
+        });
         const payload = (await response.json()) as {
           nodes?: Array<{ nodeId: string; optionIds: string[] }>;
           error?: string;
         };
         if (!response.ok) throw new Error(payload.error ?? `${response.status}`);
+        return payload.nodes ?? [];
+      }),
+    )
+      .then((batches) => {
+        if (cancelled) return;
         const counts = new Map<string, number>();
-        payload.nodes?.forEach((node) =>
+        batches.flat().forEach((node) =>
           node.optionIds.forEach((optionId) => counts.set(optionId, (counts.get(optionId) ?? 0) + 1)),
         );
         setAssignmentCounts(counts);
       })
-      .catch((assignmentError) => setError(assignmentError instanceof Error ? assignmentError.message : t.loadFailed));
+      .catch((assignmentError) => {
+        if (!cancelled) setError(assignmentError instanceof Error ? assignmentError.message : t.loadFailed);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [revision, selectedNodeIds, settingsOpen, settingsTab, t.loadFailed]);
 
   function toggleExpanded() {
@@ -393,12 +432,26 @@ export default function IndexNavigatorPanel({
 
   async function updateAssignments(mode: "add" | "remove") {
     if (selectedNodeIds.size === 0 || operationOptionIds.size === 0) return;
-    await mutate("/api/index-navigator/assignments", "PATCH", {
-      nodeIds: [...selectedNodeIds],
-      addOptionIds: mode === "add" ? [...operationOptionIds] : [],
-      removeOptionIds: mode === "remove" ? [...operationOptionIds] : [],
-    });
-    setOperationOptionIds(new Set());
+    setBusy(true);
+    try {
+      for (const nodeIds of chunkItems([...selectedNodeIds], 1000)) {
+        await jsonRequest("/api/index-navigator/assignments", {
+          method: "PATCH",
+          body: JSON.stringify({
+            nodeIds,
+            addOptionIds: mode === "add" ? [...operationOptionIds] : [],
+            removeOptionIds: mode === "remove" ? [...operationOptionIds] : [],
+          }),
+        });
+      }
+      setOperationOptionIds(new Set());
+      setRevision((current) => current + 1);
+      setError(null);
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : t.updateFailed);
+    } finally {
+      setBusy(false);
+    }
   }
 
   const normalizedNodeSearch = nodeSearch.trim().toLowerCase();
@@ -439,7 +492,6 @@ export default function IndexNavigatorPanel({
               {t.matched} {data.pagination.total}
             </span>
           ) : null}
-          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-400" /> : null}
           <ChevronDown className={`ml-auto h-4 w-4 transition ${expanded ? "rotate-180" : ""}`} />
         </button>
         {selectedOptionIds.size > 0 ? (
@@ -802,6 +854,13 @@ export default function IndexNavigatorPanel({
                       {visibleAssignmentNodes.map((node) => {
                         const hasChildren = node.children.length > 0;
                         const isNodeExpanded = Boolean(normalizedNodeSearch) || expandedAssignmentNodeIds.has(node.id);
+                        const nodeSubtreeIds = subtreeNodeIds.get(node.id) ?? [node.id];
+                        const selectedSubtreeCount = nodeSubtreeIds.reduce(
+                          (count, nodeId) => count + (selectedNodeIds.has(nodeId) ? 1 : 0),
+                          0,
+                        );
+                        const subtreeSelected = selectedSubtreeCount === nodeSubtreeIds.length;
+                        const subtreePartiallySelected = selectedSubtreeCount > 0 && !subtreeSelected;
                         return (
                         <div
                           key={node.id}
@@ -826,12 +885,15 @@ export default function IndexNavigatorPanel({
                           <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-0.5">
                             <input
                               type="checkbox"
-                              checked={selectedNodeIds.has(node.id)}
+                              checked={subtreeSelected}
+                              ref={(input) => {
+                                if (input) input.indeterminate = subtreePartiallySelected;
+                              }}
                               onChange={() => {
                                 setSelectedNodeIds((current) => {
                                   const next = new Set(current);
-                                  if (next.has(node.id)) next.delete(node.id);
-                                  else if (next.size < 1000) next.add(node.id);
+                                  if (subtreeSelected) nodeSubtreeIds.forEach((nodeId) => next.delete(nodeId));
+                                  else nodeSubtreeIds.forEach((nodeId) => next.add(nodeId));
                                   return next;
                                 });
                               }}

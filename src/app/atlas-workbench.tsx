@@ -187,6 +187,15 @@ type BackupJobSnapshot = {
   stats: RestoreStats | null;
 };
 
+type BackupRecord = {
+  id: string;
+  fileName: string;
+  sizeBytes: number;
+  createdAt: string;
+  imageCount: number;
+  indexId: string | null;
+};
+
 type DocumentImportJobSnapshot = {
   id: string;
   kind: string;
@@ -313,8 +322,24 @@ const copy = {
     importDocuments: "导入资料",
     importingDocuments: "导入资料中",
     runImportOcr: "导入后 OCR",
-    backupData: "备份",
+    backupData: "备份管理",
     backingUp: "备份中",
+    createBackup: "生成完整备份",
+    backupListTitle: "备份列表",
+    backupListDescription: "备份先保存在服务器磁盘中，需要时再单独下载。",
+    backupListEmpty: "还没有可用备份。",
+    backupListLoading: "正在读取备份记录",
+    backupListFailed: "读取备份列表失败，请稍后重试。",
+    backupDelete: "删除",
+    backupDeleteTitle: "删除此备份？",
+    backupDeleteMessage: "服务器上的 zip 备份文件和记录会被删除，操作无法撤销。",
+    backupDeleteFailed: "删除备份失败，请稍后重试。",
+    backupDownload: "下载",
+    backupImages: "张图片",
+    backupCreated: "备份已生成，可从备份列表下载。",
+    backupScopeAll: "完整图库",
+    backupScopeIndex: "索引子树",
+    refreshBackupList: "刷新",
     restoreData: "恢复",
     restoring: "恢复中",
     backupFailed: "备份失败，请稍后重试。",
@@ -499,8 +524,24 @@ const copy = {
     importDocuments: "Import materials",
     importingDocuments: "Importing materials",
     runImportOcr: "Run OCR after import",
-    backupData: "Backup",
+    backupData: "Backups",
     backingUp: "Backing up",
+    createBackup: "Create full backup",
+    backupListTitle: "Backup list",
+    backupListDescription: "Backups are saved on the server first and downloaded separately when needed.",
+    backupListEmpty: "No backups are available yet.",
+    backupListLoading: "Loading backup records",
+    backupListFailed: "Could not load backups. Please try again.",
+    backupDelete: "Delete",
+    backupDeleteTitle: "Delete this backup?",
+    backupDeleteMessage: "The zip file and its record will be removed from the server. This cannot be undone.",
+    backupDeleteFailed: "Could not delete the backup. Please try again.",
+    backupDownload: "Download",
+    backupImages: "images",
+    backupCreated: "Backup created. It is ready in the backup list.",
+    backupScopeAll: "Full library",
+    backupScopeIndex: "Index subtree",
+    refreshBackupList: "Refresh",
     restoreData: "Restore",
     restoring: "Restoring",
     backupFailed: "Backup failed. Please try again.",
@@ -1622,11 +1663,6 @@ function TagFilterSelector({
   );
 }
 
-function backupFileNameFromHeader(value: string | null) {
-  const match = value?.match(/filename="?([^"]+)"?/);
-  return match?.[1] ?? `brooks-pa-atlas-backup-${new Date().toISOString().slice(0, 10)}.zip`;
-}
-
 function isSupportedDocumentFile(file: File) {
   return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
 }
@@ -1650,7 +1686,7 @@ function backupJobPercent(
   }
 
   if (typeof job.progressPercent === "number") {
-    return Math.max(0, Math.min(99, job.progressPercent));
+    return Math.max(0, Math.min(100, job.progressPercent));
   }
 
   if (job.totalImages <= 0) {
@@ -2149,6 +2185,11 @@ export default function AtlasWorkbench() {
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [backupTask, setBackupTask] = useState<BackupJobSnapshot | null>(null);
+  const [isBackupManagerOpen, setIsBackupManagerOpen] = useState(false);
+  const [backupRecords, setBackupRecords] = useState<BackupRecord[]>([]);
+  const [backupRecordsLoading, setBackupRecordsLoading] = useState(false);
+  const [backupRecordsError, setBackupRecordsError] = useState<string | null>(null);
+  const [deletingBackupId, setDeletingBackupId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [newIndexName, setNewIndexName] = useState("");
   const [detailDraft, setDetailDraft] = useState({
@@ -3489,7 +3530,65 @@ export default function AtlasWorkbench() {
     }
   }
 
-  async function downloadBackup(indexNode?: IndexTreeNode) {
+  async function loadBackupRecords() {
+    setBackupRecordsLoading(true);
+    setBackupRecordsError(null);
+    try {
+      const response = await fetch("/api/backups/records", { cache: "no-store" });
+      const result = (await response.json().catch(() => null)) as
+        | { error?: string; records?: BackupRecord[] }
+        | null;
+      if (!response.ok || !result?.records) {
+        throw new Error(result?.error ?? t.backupListFailed);
+      }
+      setBackupRecords(result.records);
+    } catch (error) {
+      setBackupRecordsError(error instanceof Error ? error.message : t.backupListFailed);
+    } finally {
+      setBackupRecordsLoading(false);
+    }
+  }
+
+  function openBackupManager() {
+    setIsBackupManagerOpen(true);
+    void loadBackupRecords();
+  }
+
+  function downloadBackupRecord(record: BackupRecord) {
+    const anchor = document.createElement("a");
+    anchor.href = `/api/backups/records/${record.id}`;
+    anchor.download = record.fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }
+
+  async function deleteStoredBackup(record: BackupRecord) {
+    const confirmed = await appDialog.showConfirm({
+      title: t.backupDeleteTitle,
+      message: `${t.backupDeleteMessage}\n\n${record.fileName}`,
+      tone: "danger",
+    });
+    if (!confirmed) return;
+
+    setDeletingBackupId(record.id);
+    try {
+      const response = await fetch(`/api/backups/records/${record.id}`, { method: "DELETE" });
+      const result = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (!response.ok) throw new Error(result?.error ?? t.backupDeleteFailed);
+      setBackupRecords((current) => current.filter((item) => item.id !== record.id));
+    } catch (error) {
+      await appDialog.showAlert({
+        title: t.operationFailedTitle,
+        message: error instanceof Error ? error.message : t.backupDeleteFailed,
+        tone: "danger",
+      });
+    } finally {
+      setDeletingBackupId(null);
+    }
+  }
+
+  async function createBackup(indexNode?: IndexTreeNode) {
     setIndexContextMenu(null);
     setBackingUp(true);
     setBackupTask({
@@ -3522,22 +3621,9 @@ export default function AtlasWorkbench() {
         throw new Error(completed.error ?? t.backupFailed);
       }
 
-      setBackupTask({ ...completed, phase: "downloading" });
-      const response = await fetch(`/api/backups/export/jobs/${completed.id}/file`, { cache: "no-store" });
-      if (!response.ok) {
-        throw new Error(t.backupFailed);
-      }
-
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = completed.fileName ?? backupFileNameFromHeader(response.headers.get("Content-Disposition"));
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
       setBackupTask({ ...completed, phase: "completed" });
+      await loadBackupRecords();
+      setIsBackupManagerOpen(true);
     } catch (error) {
       setBackupTask((current) => ({
         id: current?.id ?? "backup-failed",
@@ -4582,12 +4668,12 @@ export default function AtlasWorkbench() {
                   </label>
                   <button
                     type="button"
-                    onClick={() => void downloadBackup()}
-                    disabled={backingUp || restoring || documentImporting}
+                    onClick={openBackupManager}
+                    disabled={restoring || documentImporting}
                     className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {backingUp ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                    <span>{backingUp ? t.backingUp : t.backupData}</span>
+                    <FolderOpen className="h-4 w-4" />
+                    <span>{t.backupData}</span>
                   </button>
                   <button
                     type="button"
@@ -5788,6 +5874,124 @@ export default function AtlasWorkbench() {
           </div>
         </div>
       ) : null}
+      {isBackupManagerOpen ? (
+        <div
+          className="fixed inset-0 z-40 grid place-items-center bg-zinc-950/50 p-4 sm:p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="backup-list-title"
+          onClick={() => setIsBackupManagerOpen(false)}
+        >
+          <div
+            className="flex max-h-[min(46rem,calc(100vh-2rem))] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-zinc-200 px-5 py-4">
+              <div>
+                <h2 id="backup-list-title" className="text-base font-semibold text-zinc-950">
+                  {t.backupListTitle}
+                </h2>
+                <p className="mt-1 text-sm text-zinc-500">{t.backupListDescription}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBackupManagerOpen(false)}
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-zinc-500 hover:bg-zinc-100"
+                aria-label={t.taskDismiss}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => void createBackup()}
+                disabled={backingUp || restoring || documentImporting}
+                className="inline-flex h-9 items-center gap-2 rounded-md bg-cyan-800 px-4 text-sm font-medium text-white hover:bg-cyan-900 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {backingUp ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                <span>{backingUp ? t.backingUp : t.createBackup}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void loadBackupRecords()}
+                disabled={backupRecordsLoading}
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <RefreshCw className={`h-4 w-4 ${backupRecordsLoading ? "animate-spin" : ""}`} />
+                <span>{t.refreshBackupList}</span>
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {backupRecordsError ? (
+                <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                  {backupRecordsError}
+                </div>
+              ) : backupRecordsLoading && backupRecords.length === 0 ? (
+                <div className="grid min-h-48 place-items-center text-sm text-zinc-500">
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {t.backupListLoading}
+                  </span>
+                </div>
+              ) : backupRecords.length === 0 ? (
+                <div className="grid min-h-48 place-items-center rounded-md border border-dashed border-zinc-300 text-sm text-zinc-500">
+                  {t.backupListEmpty}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {backupRecords.map((record) => (
+                    <div
+                      key={record.id}
+                      className="flex flex-col gap-3 rounded-md border border-zinc-200 p-4 sm:flex-row sm:items-center"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-zinc-950" title={record.fileName}>
+                          {record.fileName}
+                        </p>
+                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500">
+                          <span>
+                            {new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
+                              dateStyle: "medium",
+                              timeStyle: "medium",
+                            }).format(new Date(record.createdAt))}
+                          </span>
+                          <span>{formatBytes(record.sizeBytes)}</span>
+                          <span>{record.imageCount} {t.backupImages}</span>
+                          <span>{record.indexId ? t.backupScopeIndex : t.backupScopeAll}</span>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => downloadBackupRecord(record)}
+                          className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+                        >
+                          <Download className="h-4 w-4" />
+                          <span>{t.backupDownload}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteStoredBackup(record)}
+                          disabled={deletingBackupId === record.id}
+                          className="inline-flex h-9 items-center gap-2 rounded-md border border-rose-200 bg-white px-3 text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {deletingBackupId === record.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
+                          <span>{t.backupDelete}</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {indexContextMenu && isManageMode ? (
         <div
           className="fixed z-40 w-56 rounded-md border border-zinc-200 bg-white p-1 text-sm shadow-xl"
@@ -5796,7 +6000,7 @@ export default function AtlasWorkbench() {
         >
           <button
             type="button"
-            onClick={() => void downloadBackup(indexContextMenu.node)}
+            onClick={() => void createBackup(indexContextMenu.node)}
             disabled={backingUp}
             className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent"
           >

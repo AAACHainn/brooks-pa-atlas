@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Readable } from "node:stream";
 
 import { createBackupZip } from "@/lib/backup";
 import { attachmentContentDisposition } from "@/lib/download-response";
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const backup = await createBackupZip({ indexId: url.searchParams.get("indexId") });
 
-    return new Response(backup.stream, {
+    return new Response(Readable.toWeb(backup.stream) as ReadableStream<Uint8Array>, {
       headers: {
         "Content-Type": "application/zip",
         "Content-Disposition": attachmentContentDisposition(backup.fileName),

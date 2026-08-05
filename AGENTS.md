@@ -115,6 +115,7 @@ npm run db:init
 - `src/app/api/exam/papers/import/route.ts`：从轻量 JSON 导入试卷为草稿，按图片 hash 映射当前图库图片。
 - `src/lib/exam-paper-transfer.ts`：试卷导出/导入 JSON manifest schema 和序列化逻辑。
 - `src/app/api/backups/export/route.ts`：导出跨平台备份 zip。
+- `src/app/api/backups/records/**/route.ts`：列出、流式下载和删除服务器上持久保存的备份记录。
 - `src/app/api/backups/restore/route.ts`：导入备份 zip 并以合并覆盖模式恢复。
 - `src/app/api/import/route.ts`：分块批量导入接口。
 - `src/app/api/import/documents/route.ts`：通用资料导入同步接口，当前注册 PDF importer。
@@ -252,7 +253,8 @@ npm run db:init
 - 管理大图中切换图片前会自动保存尚未提交的标题、标签、索引、备注、OCR 文本和图片文字标注；保存失败时停留在当前图片并提示错误。
 - 导入图片、文件夹或资料时可以选择是否在导入后 OCR；默认不 OCR，导入图片会标记为 `SKIPPED`。
 - 可以通过“导入资料”导入 PDF；系统会按 PDF 文件名创建容器索引，按内置书签目录创建子索引，并把每页转换后的 PNG 图片挂到对应节点。
-- 可以导出备份 zip，包含所有索引、图片文件、标题、备注、图片文字标注、OCR 文本和 OCR 状态等元数据。
+- 备份与下载分为两步：生成的 zip 会先持久保存到服务器备份列表，列表展示时间、大小和图片数，用户之后可以单独下载或逐条删除。
+- 备份 zip 包含所有索引、图片文件、标题、备注、图片文字标注、OCR 文本和 OCR 状态等元数据。
 - 可以导入备份 zip 进行恢复；恢复使用合并覆盖模式，相同 SHA-256 hash 的图片更新元数据和索引归属，不创建重复图片，也不删除当前系统里备份外的数据。
 - 索引导航器仅管理模式可编辑；支持分类/选项增删改排序、树形批量配置节点，以及从索引树右键编辑单节点属性。批量配置勾选或取消父节点时会同步作用于全部后代，部分后代选中时父节点显示半选状态。
 - 可以创建当前选中索引下的新子索引。
@@ -436,12 +438,15 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 不保存 Windows 或 Linux 绝对路径，便于跨部署环境恢复。
 - 导出前会校验数据库中每张图片的图库文件存在；如果缺失则返回错误，不生成不完整备份。
 - 后台导出任务的百分比在图片校验阶段保持为 `0%`，进入 zip 打包后按实际已读取图片字节数递增，完成后才到 `100%`；前端打包阶段同步显示“已处理字节 / 总字节”，不再把图片校验数量误当成整体备份进度。
+- 后台导出把 zip 流和小型 JSON 元数据文件写入 `data/library/backups/`，不把完整备份保存在 Node.js 内存；完成后的文件不会随后台任务过期而删除，会一直保留到用户在备份列表中明确删除。
+- `GET /api/backups/records` 返回持久备份列表；`GET/HEAD /api/backups/records/[id]` 从磁盘流式下载并支持 HTTP Range；`DELETE /api/backups/records/[id]` 逐个明确路径删除该记录的 zip 和 JSON 元数据文件。旧的任务下载路由继续兼容。
 - 全量备份包含考试和全部导航数据；按索引子树导出时只导出该子树索引、图片、节点导航关联及实际引用的分类/选项，不导出试卷。
 
 `POST /api/backups/restore?mode=merge`
 
-- 接收 `multipart/form-data`，字段名为 `backup`。
+- 大文件恢复接收以 zip 文件作为原始 request body 的请求；前端和后台任务接口不使用 `request.formData()` / `arrayBuffer()`。`multipart/form-data` 会返回 `415`，避免整份 zip 被框架解析到内存。
 - 目前只支持 `merge` 合并覆盖模式。
+- 上传内容先流式写入单个临时 zip，恢复结束后再按明确路径删除；zip 内图片逐条流式解压、计算 SHA-256 和写入临时文件，不按图片或整包创建大 Buffer。manifest 单独读取并限制为 64MB，因此主要内存占用不随 zip 文件总大小增长。
 - 恢复前校验 zip entry，拒绝绝对路径、反斜杠、`.`、`..` 和 manifest 未声明的文件。
 - 按 manifest 深度恢复索引；已存在同父节点同名索引时复用并更新路径、深度和排序。
 - 按 SHA-256 hash 恢复图片；相同 hash 更新元数据和索引归属，不创建重复图片。

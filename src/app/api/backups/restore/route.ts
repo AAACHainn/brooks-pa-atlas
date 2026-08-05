@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { mkdir, stat, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 
 import { NextResponse } from "next/server";
 
-import { restoreBackupZip } from "@/lib/backup";
+import { restoreBackupZipFromFile } from "@/lib/backup";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +25,26 @@ function errorCauseMessage(error: unknown) {
 
   const cause = error.cause;
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+async function saveRequestBodyToTempFile(request: Request, restoreId: string) {
+  if (!request.body) throw new Error("Backup zip file is required.");
+  const uploadDir = path.join(tmpdir(), "brooks-pa-atlas-restore");
+  await mkdir(uploadDir, { recursive: true });
+  const filePath = path.join(uploadDir, `${restoreId}.zip`);
+
+  try {
+    await pipeline(
+      Readable.fromWeb(request.body as unknown as NodeReadableStream<Uint8Array>),
+      createWriteStream(filePath, { flags: "wx" }),
+    );
+    const fileStat = await stat(filePath);
+    if (fileStat.size === 0) throw new Error("Backup zip file is required.");
+    return filePath;
+  } catch (error) {
+    await unlink(filePath).catch(() => {});
+    throw error;
+  }
 }
 
 export async function POST(request: Request) {
@@ -41,42 +68,24 @@ export async function POST(request: Request) {
     );
   }
 
+  if (contentType.toLowerCase().startsWith("multipart/form-data")) {
+    return NextResponse.json(
+      {
+        error: "Large backup restore requires the zip file as the raw request body.",
+        restoreId,
+      },
+      { status: 415 },
+    );
+  }
+
+  let filePath: string | null = null;
   try {
-    let buffer: Buffer;
+    console.info(`[backup-restore:${restoreId}] streaming raw zip body to disk`);
+    filePath = await saveRequestBodyToTempFile(request, restoreId);
+    const fileStat = await stat(filePath);
+    console.info(`[backup-restore:${restoreId}] backup file saved`, { bytes: fileStat.size });
 
-    if (contentType.toLowerCase().startsWith("multipart/form-data")) {
-      console.info(`[backup-restore:${restoreId}] parsing multipart form`);
-      const formData = await request.formData();
-      const file = formData.get("backup");
-
-      if (!(file instanceof File)) {
-        console.warn(`[backup-restore:${restoreId}] missing backup file`);
-        return NextResponse.json(
-          { error: "Backup zip file is required.", restoreId },
-          { status: 400 },
-        );
-      }
-
-      console.info(`[backup-restore:${restoreId}] backup file received`, {
-        name: file.name,
-        size: file.size,
-        type: file.type || "(empty)",
-      });
-
-      buffer = Buffer.from(await file.arrayBuffer());
-    } else {
-      console.info(`[backup-restore:${restoreId}] reading raw zip body`);
-      buffer = Buffer.from(await request.arrayBuffer());
-    }
-
-    if (buffer.length === 0) {
-      console.warn(`[backup-restore:${restoreId}] empty backup body`);
-      return NextResponse.json({ error: "Backup zip file is required.", restoreId }, { status: 400 });
-    }
-
-    console.info(`[backup-restore:${restoreId}] backup file loaded`, { bytes: buffer.length });
-
-    const stats = await restoreBackupZip(buffer, {
+    const stats = await restoreBackupZipFromFile(filePath, {
       log(message, metadata) {
         console.info(`[backup-restore:${restoreId}] ${message}`, metadata ?? {});
       },
@@ -94,5 +103,7 @@ export async function POST(request: Request) {
       { error: restoreErrorMessage(error), restoreId },
       { status: 400 },
     );
+  } finally {
+    if (filePath) await unlink(filePath).catch(() => {});
   }
 }

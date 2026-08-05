@@ -1,8 +1,9 @@
-import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { access, mkdir, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
+import { access, mkdir, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
-import { Readable, Transform } from "node:stream";
+import { Readable, Transform, Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import * as yauzl from "yauzl";
 import * as yazl from "yazl";
@@ -25,6 +26,7 @@ const backupFormat = "brooks-pa-atlas.backup";
 const backupVersion = 5;
 const imageZipPrefix = "images/";
 const backupQueryPageSize = 400;
+const maxManifestBytes = 64 * 1024 * 1024;
 
 async function collectQueryPages<T>(
   loadPage: (pagination: { skip: number; take: number }) => Promise<T[]>,
@@ -271,10 +273,6 @@ function libraryRelativePath(fullPath: string) {
   return path.relative(/*turbopackIgnore: true*/ process.cwd(), fullPath).replace(/\\/g, "/");
 }
 
-function hashBuffer(buffer: Buffer) {
-  return createHash("sha256").update(buffer).digest("hex");
-}
-
 function assertSafeZipEntryName(entryName: string) {
   if (
     !entryName ||
@@ -346,12 +344,19 @@ function openReadStream(zipFile: yauzl.ZipFile, entry: yauzl.Entry) {
   });
 }
 
-function readStreamToBuffer(stream: Readable) {
+function readStreamToBuffer(stream: Readable, maxBytes = Number.POSITIVE_INFINITY) {
   return new Promise<Buffer>((resolve, reject) => {
     const chunks: Buffer[] = [];
+    let totalBytes = 0;
 
     stream.on("data", (chunk: Buffer | string) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buffer.length;
+      if (totalBytes > maxBytes) {
+        stream.destroy(new Error(`Backup manifest exceeds ${maxBytes} bytes.`));
+        return;
+      }
+      chunks.push(buffer);
     });
     stream.on("error", reject);
     stream.on("end", () => resolve(Buffer.concat(chunks)));
@@ -404,7 +409,13 @@ async function readManifestAndEntryNames(source: ZipSource) {
     entryNames.add(entry.fileName);
 
     if (entry.fileName === "manifest.json") {
-      manifestState.buffer = await readStreamToBuffer(await openReadStream(zipFile, entry));
+      if (entry.uncompressedSize > maxManifestBytes) {
+        throw new Error(`Backup manifest exceeds ${maxManifestBytes} bytes.`);
+      }
+      manifestState.buffer = await readStreamToBuffer(
+        await openReadStream(zipFile, entry),
+        maxManifestBytes,
+      );
     }
   });
 
@@ -500,20 +511,75 @@ async function currentImageFileExists(libraryPath: string | null | undefined) {
   }
 }
 
-async function saveRestoredImage(image: BackupImage, buffer: Buffer) {
+function restoredImageTarget(image: BackupImage) {
   const ext = path.posix.extname(image.imagePath).toLowerCase() || ".img";
   const createdAt = parseDate(image.createdAt) ?? new Date();
   const yearMonth = createdAt.toISOString().slice(0, 7);
   const folder = path.join(getLibraryRoot(), yearMonth);
-  await mkdir(folder, { recursive: true });
 
   const safeName =
     sanitizeFileName(path.basename(image.originalName, path.extname(image.originalName))) || "chart";
   const fileName = `${safeName}-${image.hash.slice(0, 16)}${ext}`;
-  const fullPath = path.join(folder, fileName);
-  await writeFile(fullPath, buffer);
+  const fullPath = path.join(/* turbopackIgnore: true */ folder, fileName);
 
-  return libraryRelativePath(fullPath);
+  return { folder, fullPath, libraryPath: libraryRelativePath(fullPath) };
+}
+
+async function validateAndMaybeSaveRestoredImage(
+  image: BackupImage,
+  source: Readable,
+  shouldSave: boolean,
+) {
+  const hash = createHash("sha256");
+  let sizeBytes = 0;
+  const verifier = new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      sizeBytes += chunk.length;
+      if (sizeBytes > image.sizeBytes) {
+        done(new Error(`Image size mismatch: ${image.imagePath}`));
+        return;
+      }
+      hash.update(chunk);
+      done(null, chunk);
+    },
+  });
+  const target = restoredImageTarget(image);
+  const tempPath = `${target.fullPath}.restore-${randomUUID()}.tmp`;
+
+  try {
+    if (shouldSave) {
+      await mkdir(target.folder, { recursive: true });
+      await pipeline(source, verifier, createWriteStream(tempPath, { flags: "wx" }));
+    } else {
+      await pipeline(
+        source,
+        verifier,
+        new Writable({
+          write(_chunk, _encoding, done) {
+            done();
+          },
+        }),
+      );
+    }
+
+    const actualHash = hash.digest("hex");
+    if (actualHash !== image.hash) {
+      throw new Error(`Image hash mismatch: ${image.imagePath}`);
+    }
+    if (sizeBytes !== image.sizeBytes) {
+      throw new Error(`Image size mismatch: ${image.imagePath}`);
+    }
+
+    if (shouldSave) {
+      await rename(tempPath, target.fullPath);
+    }
+    return { libraryPath: target.libraryPath, sizeBytes };
+  } catch (error) {
+    if (shouldSave) {
+      await unlink(tempPath).catch(() => {});
+    }
+    throw error;
+  }
 }
 
 export async function createBackupZip(options: BackupOptions = {}) {
@@ -765,7 +831,7 @@ export async function createBackupZip(options: BackupOptions = {}) {
 
   // yazl 3.3 exposes this API at runtime, but its bundled legacy declaration omits it.
   const zipFile = new yazl.ZipFile() as LazyZipFile;
-  zipFile.addBuffer(Buffer.from(JSON.stringify(manifest, null, 2)), "manifest.json", {
+  zipFile.addBuffer(Buffer.from(JSON.stringify(manifest)), "manifest.json", {
     mtime: new Date(),
   });
 
@@ -806,7 +872,7 @@ export async function createBackupZip(options: BackupOptions = {}) {
     fileName: rootIndex
       ? `brooks-pa-atlas-${sanitizeFileName(rootIndex.name) || "index"}-${timestampForFileName()}.zip`
       : `brooks-pa-atlas-backup-${timestampForFileName()}.zip`,
-    stream: Readable.toWeb(zipFile.outputStream) as ReadableStream<Uint8Array>,
+    stream: zipFile.outputStream as Readable,
   };
 }
 
@@ -906,21 +972,18 @@ async function restoreBackupSource(
     processedImages += 1;
 
     try {
-      const imageBuffer = await readStreamToBuffer(await openReadStream(zipFile, entry));
-      const actualHash = hashBuffer(imageBuffer);
-
-      if (actualHash !== image.hash) {
-        throw new Error(`Image hash mismatch: ${image.imagePath}`);
-      }
-
-      if (imageBuffer.length !== image.sizeBytes) {
+      if (entry.uncompressedSize !== image.sizeBytes) {
         throw new Error(`Image size mismatch: ${image.imagePath}`);
       }
 
       const existing = await prisma.chartImage.findUnique({ where: { hash: image.hash } });
       const existingFileOk = await currentImageFileExists(existing?.libraryPath);
-      const libraryPath =
-        existingFileOk && existing ? existing.libraryPath : await saveRestoredImage(image, imageBuffer);
+      const restoredFile = await validateAndMaybeSaveRestoredImage(
+        image,
+        await openReadStream(zipFile, entry),
+        !existingFileOk,
+      );
+      const libraryPath = existingFileOk && existing ? existing.libraryPath : restoredFile.libraryPath;
 
       if (!existingFileOk) {
         stats.filesRestored += 1;
@@ -936,7 +999,7 @@ async function restoreBackupSource(
         libraryPath,
         originalName: image.originalName,
         mimeType: image.mimeType,
-        sizeBytes: imageBuffer.length,
+        sizeBytes: restoredFile.sizeBytes,
         width: image.width,
         height: image.height,
         title: image.title,

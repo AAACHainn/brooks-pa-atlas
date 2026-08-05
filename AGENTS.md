@@ -2,6 +2,8 @@
 
 本文档面向后续 Codex 线程和人类维护者。开始修改代码前请先阅读本文件；当项目能力、接口、运行方式或安全规则发生变化时，请同步更新本文件。
 
+执行生产部署或已有实例升级时，还必须阅读 `docs/DEPLOYMENT_PITFALLS.md`；其中记录了导航筛选性能版本的 migration、2 核 2GB 配置建议、接口检查和 2 秒验收方法。
+
 ## 1. 最高优先级安全规则
 
 禁止批量删除文件或目录。
@@ -74,6 +76,7 @@ Prisma 7 运行时代码需要显式 driver adapter。本项目在 `src/lib/db.t
 npm run dev
 npm run lint
 npm run build
+npm run test:navigator
 npm run prisma:generate
 npm run db:migrate
 npm run db:init
@@ -85,6 +88,7 @@ npm run db:init
 - `npm run dev:lan` 启动局域网开发服务，绑定 `0.0.0.0`，用于手机或同局域网设备访问。
 - `npm run lint` 运行 ESLint。
 - `npm run build` 运行生产构建和类型检查。
+- `npm run test:navigator` 运行导航本地匹配数、跨分类 AND、目录搜索和自然排序单元测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
 - `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库，并继续执行全部增量 migrations。
@@ -101,6 +105,7 @@ npm run db:init
 - `README.md`：面向使用者的启动和基础使用说明，已包含 Windows、Linux/macOS 的 OCR 配置示例。
 - `CLAUDE.md`：只指向 `AGENTS.md`。
 - `docs/PRODUCT_SPEC.md`：早期产品规格，描述第一版目标；部分 UI 已被当前实现扩展。
+- `docs/DEPLOYMENT_PITFALLS.md`：部署、升级和启动问题记录；部署 AI 必须阅读其中“导航筛选性能优化部署说明”，按固定顺序应用 migration 并执行性能验收。
 - `src/app/page.tsx`：首页入口，渲染 `AtlasWorkbench`。
 - `src/app/layout.tsx`：根布局、字体和 metadata。
 - `src/app/globals.css`：Tailwind v4 入口和全局 CSS。
@@ -136,7 +141,8 @@ npm run db:init
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
 - `src/lib/backup.ts`：备份 manifest、zip 导出、zip 校验和合并恢复逻辑。
 - `src/lib/index-tree.ts`：索引树创建、路径补全、树形查询。
-- `src/lib/index-navigator.ts`：导航目录匹配、同类 OR/跨类 AND 和图片子树范围 helper。
+- `src/lib/index-navigator.ts`：导航基础数据查询、服务端目录匹配和图片子树范围 helper。
+- `src/lib/index-navigator-client.ts`：浏览器端导航匹配数、置灰状态、目录搜索、自然排序和分页的纯计算 helper。
 - `src/lib/atlas-images.ts`：工作台图片的全局自然排序和服务端分页 helper。
 - `src/lib/import-images.ts`：把已得到的图片 buffer 保存为图库图片并创建 `ChartImage` / `ImportItem`。
 - `src/lib/document-importers.ts`：资料导入 importer 的最小接口。
@@ -233,7 +239,7 @@ npm run db:init
 
 - 左侧目录 + 右侧图片浏览。
 - 顶部搜索可与目录筛选、标签多选筛选组合；多个精确标签使用交集语义。
-- 索引导航器可与关键词、标签和具体目录取交集；每个导航分类内单选，不同分类间按 AND。已有选择会动态置灰与其他分类组合后无匹配目录的选项。
+- 索引导航器可与关键词、标签和具体目录取交集；每个导航分类内单选，不同分类间按 AND。分类、选项和节点关联首次加载后，匹配数、目录结果和零结果置灰均在浏览器本地即时计算，不随每次点击重复请求服务器。
 - 选中图片后显示大图查看器。
 - 查看器固定高度并可拖动调整，缩放范围 `50%` 到 `220%`。
 - 放大后在查看器内部滚动，不撑大整页。
@@ -414,18 +420,21 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 `GET /api/atlas`
 
-- 参数：`q`、`indexId`、`tagId`、`navigatorOptionId`、`page`、`pageSize`；`tagId` 和 `navigatorOptionId` 可重复传递。
-- 返回：索引树、当前页图片、分页信息、最近导入批次、统计信息。
+- 参数：`scope`、`q`、`indexId`、`tagId`、`navigatorOptionId`、`page`、`pageSize`；`tagId` 和 `navigatorOptionId` 可重复传递。
+- `scope=images` 只执行筛选并返回当前页图片和分页；筛选、翻页的前端热路径必须使用此 scope，不能重复返回索引树。
+- `scope=metadata` 只返回索引树、标签、最近导入批次和统计，不执行图片筛选；默认 `scope=all` 保持完整响应兼容。
+- 客户端声明接受 gzip 时，路由会直接压缩 JSON 并设置 `Content-Encoding: gzip` 和 `Vary: Accept-Encoding`，不依赖反向代理是否为 Route Handler 开启压缩。
+- 响应包含 `Server-Timing`，分别记录导航节点解析、图片分页、元数据和总耗时，供云端性能诊断。
 - 索引筛选包含所选节点及其后代路径。
 - 搜索覆盖 `originalName`、`title`、`notes`、`ocrText`、图片文字标注、`indexNode.path` 和标签名称。
 - 参数 `tagId` 可叠加精确标签筛选条件；重复传递多个 `tagId` 时按 AND 组合，只返回同时包含全部所选标签的图片。
-- 导航选项每个分类内单选、不同分类间按 AND；接口会按其他分类的当前选择返回各选项的动态匹配目录数，前端据此禁用零结果组合。只检查节点直接关联，匹配节点的全部后代图片会纳入结果并去重。
+- 导航选项每个分类内单选、不同分类间按 AND；动态匹配目录数和零结果禁用由前端基础数据本地计算。`scope=images` 只使用已选导航条件筛选图片；目录匹配只检查节点直接关联，匹配节点的全部后代图片会纳入结果并去重。
 - OCR 文本和错误会截断返回，避免接口太大。
 
 `GET /api/index-navigator`
 
-- 返回分类、选项、关联节点数量，以及可选的分页目录结果。
-- 参数：重复 `optionId`、`nodeQ`、`resultPage`；没有选项和目录关键词时不枚举全部索引。
+- 返回分类、选项、关联节点数量，以及扁平的 `{ indexNodeId, optionId }` 节点关联；不接收筛选条件，也不在服务器计算动态匹配数或目录分页。
+- 前端只在首次加载、导航配置变更或完整刷新后读取该接口；选项匹配数、跨分类 AND、目录搜索、自然排序和分页由 `src/lib/index-navigator-client.ts` 本地计算。
 - 分类、选项 CRUD 和排序使用 `/api/index-navigator/categories`、`/api/index-navigator/options`。
 - `GET/POST /api/index-navigator/assignments` 读取节点关联，`PATCH` 批量修改关联；单次最多 `1000` 个节点。前端选择超过 1000 个节点的子树时会自动分批读取和提交。
 

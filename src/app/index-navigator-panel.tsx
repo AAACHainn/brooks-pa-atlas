@@ -20,6 +20,16 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useAppDialog } from "@/app/app-dialog";
+import {
+  addNavigatorMatchCounts,
+  buildNavigatorAssignmentIndex,
+  findLocalNavigatorResults,
+  normalizeNavigatorSelection,
+  type NavigatorAssignment,
+  type NavigatorCategoryBase,
+  type NavigatorCategoryWithMatches,
+  type NavigatorOptionWithMatches,
+} from "@/lib/index-navigator-client";
 
 type Locale = "zh" | "en";
 
@@ -33,35 +43,12 @@ export type NavigatorIndexNode = {
   children: NavigatorIndexNode[];
 };
 
-type NavigatorOption = {
-  id: string;
-  categoryId: string;
-  name: string;
-  sortOrder: number;
-  assignmentCount: number;
-  matchCount: number;
-};
-
-type NavigatorCategory = {
-  id: string;
-  name: string;
-  sortOrder: number;
-  assignmentCount: number;
-  options: NavigatorOption[];
-};
-
-type NavigatorResult = {
-  id: string;
-  name: string;
-  path: string;
-  depth: number;
-  imageCount: number;
-};
+type NavigatorOption = NavigatorOptionWithMatches;
+type NavigatorCategory = NavigatorCategoryWithMatches;
 
 type NavigatorResponse = {
-  categories: NavigatorCategory[];
-  results: NavigatorResult[];
-  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  categories: NavigatorCategoryBase[];
+  assignments: NavigatorAssignment[];
   error?: string;
 };
 
@@ -75,6 +62,7 @@ type Props = {
   onSelectResult: (nodeId: string) => void;
   requestedEditNode: NavigatorIndexNode | null;
   onRequestedEditNodeHandled: () => void;
+  refreshKey?: number;
 };
 
 const labels = {
@@ -280,6 +268,7 @@ export default function IndexNavigatorPanel({
   onSelectResult,
   requestedEditNode,
   onRequestedEditNodeHandled,
+  refreshKey = 0,
 }: Props) {
   const t = labels[locale];
   const [expanded, setExpanded] = useState(false);
@@ -306,12 +295,34 @@ export default function IndexNavigatorPanel({
 
   const allNodes = useMemo(() => flattenNodes(nodes), [nodes]);
   const nodeById = useMemo(() => new Map(allNodes.map((node) => [node.id, node])), [allNodes]);
+  const validNodeIds = useMemo(() => new Set(allNodes.map((node) => node.id)), [allNodes]);
+  const assignmentIndex = useMemo(
+    () => buildNavigatorAssignmentIndex(data?.assignments ?? []),
+    [data?.assignments],
+  );
+  const categories = useMemo<NavigatorCategory[]>(
+    () => addNavigatorMatchCounts(data?.categories ?? [], assignmentIndex, selectedOptionIds, validNodeIds),
+    [assignmentIndex, data?.categories, selectedOptionIds, validNodeIds],
+  );
+  const navigatorResult = useMemo(
+    () =>
+      findLocalNavigatorResults(
+        allNodes,
+        data?.categories ?? [],
+        assignmentIndex,
+        selectedOptionIds,
+        nodeQuery,
+        resultPage,
+        50,
+      ),
+    [allNodes, assignmentIndex, data?.categories, nodeQuery, resultPage, selectedOptionIds],
+  );
   const subtreeNodeIds = useMemo(() => {
     const result = new Map<string, string[]>();
     collectSubtreeNodeIds(nodes, result);
     return result;
   }, [nodes]);
-  const selectedCategory = data?.categories.find((category) => category.id === selectedCategoryId) ?? null;
+  const selectedCategory = categories.find((category) => category.id === selectedCategoryId) ?? null;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -322,10 +333,8 @@ export default function IndexNavigatorPanel({
 
   const load = useCallback(async () => {
     const params = new URLSearchParams();
-    selectedOptionIds.forEach((id) => params.append("optionId", id));
-    if (nodeQuery.trim()) params.set("nodeQ", nodeQuery.trim());
-    params.set("resultPage", String(resultPage));
     params.set("revision", String(revision));
+    params.set("refreshKey", String(refreshKey));
     setLoading(true);
     try {
       const response = await fetch(`/api/index-navigator?${params}`, { cache: "no-store" });
@@ -337,31 +346,29 @@ export default function IndexNavigatorPanel({
           ? current
           : next.categories[0]?.id ?? null,
       );
-      const normalizedSelection = new Set<string>();
-      for (const category of next.categories) {
-        const selectedInCategory = category.options.find((option) =>
-          selectedOptionIds.has(option.id),
-        );
-        if (selectedInCategory) normalizedSelection.add(selectedInCategory.id);
-      }
-      if (
-        normalizedSelection.size !== selectedOptionIds.size ||
-        [...normalizedSelection].some((id) => !selectedOptionIds.has(id))
-      ) {
-        onSelectionChange(normalizedSelection);
-      }
       setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t.loadFailed);
     } finally {
       setLoading(false);
     }
-  }, [nodeQuery, onSelectionChange, resultPage, revision, selectedOptionIds, t.loadFailed]);
+  }, [refreshKey, revision, t.loadFailed]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 120);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  useEffect(() => {
+    if (!data) return;
+    const normalizedSelection = normalizeNavigatorSelection(data.categories, selectedOptionIds);
+    if (
+      normalizedSelection.size !== selectedOptionIds.size ||
+      [...normalizedSelection].some((id) => !selectedOptionIds.has(id))
+    ) {
+      onSelectionChange(normalizedSelection);
+    }
+  }, [data, onSelectionChange, selectedOptionIds]);
 
   useEffect(() => {
     if (!requestedEditNode) return;
@@ -432,10 +439,9 @@ export default function IndexNavigatorPanel({
     const selected = selectedOptionIds.has(option.id);
     if (!selected && option.matchCount === 0) return;
     const next = new Set(selectedOptionIds);
-    const category = data?.categories.find((candidate) => candidate.id === option.categoryId);
+    const category = categories.find((candidate) => candidate.id === option.categoryId);
     category?.options.forEach((candidate) => next.delete(candidate.id));
     if (!selected) next.add(option.id);
-    setLoading(true);
     setResultPage(1);
     onSelectionChange(next);
   }
@@ -468,7 +474,7 @@ export default function IndexNavigatorPanel({
 
   async function reorderCategories(targetId: string) {
     if (!data || !draggedCategoryId || draggedCategoryId === targetId) return;
-    const ids = data.categories.map((category) => category.id);
+    const ids = categories.map((category) => category.id);
     const from = ids.indexOf(draggedCategoryId);
     const to = ids.indexOf(targetId);
     ids.splice(to, 0, ids.splice(from, 1)[0]);
@@ -529,7 +535,7 @@ export default function IndexNavigatorPanel({
   }
 
   const hasNavigatorQuery = selectedOptionIds.size > 0 || Boolean(nodeQuery.trim());
-  const matchedResultCount = hasNavigatorQuery ? (data?.pagination.total ?? 0) : 0;
+  const matchedResultCount = hasNavigatorQuery ? navigatorResult.pagination.total : 0;
 
   return (
     <div className="border-b border-zinc-200 bg-white shadow-[0_1px_0_rgba(0,0,0,0.02)]">
@@ -596,7 +602,7 @@ export default function IndexNavigatorPanel({
           {error ? (
             <p className="mb-3 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>
           ) : null}
-          {(data?.categories.length ?? 0) === 0 ? (
+          {categories.length === 0 ? (
             <div className="rounded-xl border border-dashed border-zinc-300 bg-white px-5 py-7 text-center shadow-sm">
               <span className="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-cyan-50 text-cyan-700">
                 <Layers3 className="h-5 w-5" />
@@ -623,7 +629,7 @@ export default function IndexNavigatorPanel({
                   <p className="text-xs font-medium text-zinc-600">{t.filterRule}</p>
                 </div>
                 <div className="space-y-2.5">
-                  {data?.categories.map((category) => (
+                  {categories.map((category) => (
                     <div
                       key={category.id}
                       className="grid gap-2 rounded-lg bg-zinc-50/80 px-3 py-2.5 sm:grid-cols-[minmax(100px,140px)_1fr]"
@@ -645,7 +651,7 @@ export default function IndexNavigatorPanel({
                               type="button"
                               aria-label={option.name}
                               aria-pressed={selected}
-                              disabled={loading || unavailable}
+                              disabled={unavailable}
                               onClick={() => toggleFilter(option)}
                               className={`inline-flex min-h-7 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition ${
                                 selected
@@ -704,7 +710,7 @@ export default function IndexNavigatorPanel({
                     placeholder={t.resultSearch}
                   />
                 </div>
-                {selectedIndexId && data && data.pagination.total > 1 ? (
+                {selectedIndexId && navigatorResult.pagination.total > 1 ? (
                   <button
                     type="button"
                     onClick={() => onSelectionChange(new Set(selectedOptionIds))}
@@ -714,7 +720,7 @@ export default function IndexNavigatorPanel({
                   </button>
                 ) : null}
                 <div className="mt-2 min-h-16 max-h-52 space-y-1 overflow-y-auto pr-0.5">
-                  {data?.results.map((result) => (
+                  {navigatorResult.results.map((result) => (
                     <button
                       key={result.id}
                       type="button"
@@ -736,20 +742,20 @@ export default function IndexNavigatorPanel({
                       <p className="mt-1 truncate pl-5 text-[10px] text-zinc-400">{result.path}</p>
                     </button>
                   ))}
-                  {!loading && data?.results.length === 0 ? (
+                  {!loading && navigatorResult.results.length === 0 ? (
                     <div className="grid min-h-16 place-items-center rounded-lg border border-dashed border-zinc-200 bg-zinc-50/60 px-3 text-center">
                       <p className="text-[11px] leading-5 text-zinc-400">{t.chooseCondition}</p>
                     </div>
                   ) : null}
                 </div>
-                {data && data.pagination.totalPages > 1 ? (
+                {navigatorResult.pagination.totalPages > 1 ? (
                   <div className="mt-2 flex items-center justify-between border-t border-zinc-200 pt-2 text-[11px] text-zinc-500">
-                    <span>{data.pagination.page}/{data.pagination.totalPages}</span>
+                    <span>{navigatorResult.pagination.page}/{navigatorResult.pagination.totalPages}</span>
                     <div className="flex gap-1">
                       <button
                         type="button"
-                        disabled={data.pagination.page <= 1}
-                        onClick={() => setResultPage((page) => Math.max(1, page - 1))}
+                        disabled={navigatorResult.pagination.page <= 1}
+                        onClick={() => setResultPage(Math.max(1, navigatorResult.pagination.page - 1))}
                         className="grid h-7 w-7 place-items-center rounded-lg border border-zinc-200 bg-white transition hover:border-cyan-200 hover:text-cyan-700 disabled:opacity-40"
                         title={t.previous}
                       >
@@ -757,8 +763,8 @@ export default function IndexNavigatorPanel({
                       </button>
                       <button
                         type="button"
-                        disabled={data.pagination.page >= data.pagination.totalPages}
-                        onClick={() => setResultPage((page) => page + 1)}
+                        disabled={navigatorResult.pagination.page >= navigatorResult.pagination.totalPages}
+                        onClick={() => setResultPage(navigatorResult.pagination.page + 1)}
                         className="grid h-7 w-7 place-items-center rounded-lg border border-zinc-200 bg-white transition hover:border-cyan-200 hover:text-cyan-700 disabled:opacity-40"
                         title={t.next}
                       >
@@ -836,7 +842,7 @@ export default function IndexNavigatorPanel({
                           <p className="mt-1 text-[11px] leading-4 text-zinc-500">{t.categoriesHelp}</p>
                         </div>
                         <span className="rounded-full bg-cyan-50 px-2 py-1 text-[11px] font-medium text-cyan-700">
-                          {data?.categories.length ?? 0}
+                          {categories.length}
                         </span>
                       </div>
                     </div>
@@ -859,7 +865,7 @@ export default function IndexNavigatorPanel({
                         </button>
                       </div>
                       <div className="mt-4 max-h-[52vh] space-y-1.5 overflow-y-auto pr-1">
-                        {data?.categories.map((category) => (
+                        {categories.map((category) => (
                           <div
                             key={category.id}
                             draggable={!busy}
@@ -924,7 +930,7 @@ export default function IndexNavigatorPanel({
                             </button>
                           </div>
                         ))}
-                        {(data?.categories.length ?? 0) === 0 ? (
+                        {categories.length === 0 ? (
                           <p className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-8 text-center text-xs text-zinc-400">
                             {t.noCategories}
                           </p>
@@ -1154,7 +1160,7 @@ export default function IndexNavigatorPanel({
                       </span>
                     </div>
                     <div className="mt-3 flex-1 space-y-3 overflow-y-auto">
-                      {data?.categories.map((category) => (
+                      {categories.map((category) => (
                         <div key={category.id} className="rounded-lg bg-zinc-50/80 p-3">
                           <p className="flex items-center gap-2 text-xs font-semibold text-zinc-600">
                             <span className="h-1.5 w-1.5 rounded-full bg-cyan-500" />

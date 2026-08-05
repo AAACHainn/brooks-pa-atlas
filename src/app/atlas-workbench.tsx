@@ -151,6 +151,25 @@ type AtlasData = {
   };
 };
 
+type AtlasMetadataResponse = Pick<AtlasData, "tree" | "tags" | "batches" | "stats">;
+type AtlasImagesResponse = Pick<AtlasData, "images" | "pagination">;
+
+function mergeAtlasData(current: AtlasData | null, patch: Partial<AtlasData>): AtlasData {
+  return {
+    tree: patch.tree ?? current?.tree ?? [],
+    images: patch.images ?? current?.images ?? [],
+    tags: patch.tags ?? current?.tags ?? [],
+    batches: patch.batches ?? current?.batches ?? [],
+    stats: patch.stats ?? current?.stats ?? { imageCount: 0, unclassifiedCount: 0, ocr: {} },
+    pagination: patch.pagination ?? current?.pagination ?? {
+      page: 1,
+      pageSize: 50,
+      total: 0,
+      totalPages: 1,
+    },
+  };
+}
+
 type SelectedFile = {
   id: string;
   file: File;
@@ -405,6 +424,7 @@ const copy = {
     noImages: "暂无图片",
     dataLoadFailed: "数据加载失败",
     retryLoad: "重新加载",
+    filteringImages: "正在更新图片",
     imageDetail: "图片详情",
     noSelection: "未选择图片",
     deleteImage: "删除图片",
@@ -608,6 +628,7 @@ const copy = {
     noImages: "No images",
     dataLoadFailed: "Data load failed",
     retryLoad: "Retry",
+    filteringImages: "Updating images",
     imageDetail: "Image detail",
     noSelection: "No selection",
     deleteImage: "Delete image",
@@ -2170,7 +2191,10 @@ export default function AtlasWorkbench() {
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("manage");
   const [data, setData] = useState<AtlasData | null>(null);
-  const [dataError, setDataError] = useState<string | null>(null);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
+  const [imagesError, setImagesError] = useState<string | null>(null);
+  const [imagesLoading, setImagesLoading] = useState(false);
+  const [navigatorRefreshKey, setNavigatorRefreshKey] = useState(0);
   const [query, setQuery] = useState("");
   const [selectedIndexId, setSelectedIndexId] = useState<string | null>(null);
   const [locatedIndexId, setLocatedIndexId] = useState<string | null>(null);
@@ -2290,7 +2314,12 @@ export default function AtlasWorkbench() {
   const pendingPageImageNavigationRef = useRef<{ direction: -1 | 1; page: number } | null>(null);
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
+  const imagesRequestRef = useRef<{ controller: AbortController | null; sequence: number }>({
+    controller: null,
+    sequence: 0,
+  });
   const t = copy[locale];
+  const dataError = imagesError ?? metadataError;
   const appDialog = useAppDialog({ confirm: t.confirm, cancel: t.cancel });
   const isBrowseMode = viewMode === "browse";
   const isExamMode = viewMode === "exam";
@@ -2336,8 +2365,28 @@ export default function AtlasWorkbench() {
     }
   })();
 
-  const refresh = useCallback(async () => {
+  const refreshMetadata = useCallback(async () => {
+    try {
+      const response = await fetch("/api/atlas?scope=metadata", { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`GET /api/atlas?scope=metadata ${response.status}`);
+      }
+      const metadata = (await response.json()) as AtlasMetadataResponse;
+      setData((current) => mergeAtlasData(current, metadata));
+      const availableTagIds = new Set(metadata.tags.map((tag) => tag.id));
+      setSelectedTagIds((current) => {
+        if (![...current].some((tagId) => !availableTagIds.has(tagId))) return current;
+        return new Set([...current].filter((tagId) => availableTagIds.has(tagId)));
+      });
+      setMetadataError(null);
+    } catch (error) {
+      setMetadataError(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  const refreshImages = useCallback(async () => {
     const params = new URLSearchParams();
+    params.set("scope", "images");
     if (query.trim()) {
       params.set("q", query.trim());
     }
@@ -2353,24 +2402,45 @@ export default function AtlasWorkbench() {
     params.set("page", String(imageGridPage));
     params.set("pageSize", String(imageGridPageSize));
 
+    imagesRequestRef.current.controller?.abort();
+    const controller = new AbortController();
+    const sequence = imagesRequestRef.current.sequence + 1;
+    imagesRequestRef.current = { controller, sequence };
+    setImagesLoading(true);
     try {
-      const response = await fetch(`/api/atlas?${params.toString()}`, { cache: "no-store" });
+      const response = await fetch(`/api/atlas?${params.toString()}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
       if (!response.ok) {
         throw new Error(`GET /api/atlas ${response.status}`);
       }
 
-      const nextData = (await response.json()) as AtlasData;
-      setData(nextData);
+      const nextData = (await response.json()) as AtlasImagesResponse;
+      if (imagesRequestRef.current.sequence !== sequence) return;
+      setData((current) => mergeAtlasData(current, nextData));
       setImageGridPage(nextData.pagination.page);
-      const availableTagIds = new Set(nextData.tags.map((tag) => tag.id));
-      if ([...selectedTagIds].some((tagId) => !availableTagIds.has(tagId))) {
-        setSelectedTagIds(new Set([...selectedTagIds].filter((tagId) => availableTagIds.has(tagId))));
-      }
-      setDataError(null);
+      setImagesError(null);
     } catch (error) {
-      setDataError(error instanceof Error ? error.message : String(error));
+      if (controller.signal.aborted) return;
+      if (imagesRequestRef.current.sequence === sequence) {
+        setImagesError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (imagesRequestRef.current.sequence === sequence) {
+        setImagesLoading(false);
+      }
     }
   }, [imageGridPage, imageGridPageSize, query, selectedIndexId, selectedNavigatorOptionIds, selectedTagIds]);
+
+  const refreshAtlas = useCallback(async () => {
+    await Promise.all([refreshMetadata(), refreshImages()]);
+  }, [refreshImages, refreshMetadata]);
+
+  const refresh = useCallback(async () => {
+    await refreshAtlas();
+    setNavigatorRefreshKey((current) => current + 1);
+  }, [refreshAtlas]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2415,12 +2485,15 @@ export default function AtlasWorkbench() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void refresh();
-    }, 0);
+    void refreshMetadata();
+  }, [refreshMetadata]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => void refreshImages(), 0);
     return () => window.clearTimeout(timer);
-  }, [refresh]);
+  }, [refreshImages]);
+
+  useEffect(() => () => imagesRequestRef.current.controller?.abort(), []);
 
   useEffect(() => {
     if (selectedBulkImageIds.size === 0) {
@@ -2612,11 +2685,11 @@ export default function AtlasWorkbench() {
     }
 
     const interval = window.setInterval(() => {
-      void refresh();
+      void refreshAtlas();
     }, 2000);
 
     return () => window.clearInterval(interval);
-  }, [data?.batches, refresh]);
+  }, [data?.batches, refreshAtlas]);
 
   useEffect(() => {
     if (!isResizingSidebar) {
@@ -4603,6 +4676,15 @@ export default function AtlasWorkbench() {
                 ariaLabel={t.activeTag}
                 clearLabel={t.clearTagFilter}
               />
+              {imagesLoading ? (
+                <span
+                  className="inline-flex h-10 shrink-0 items-center gap-2 rounded-md bg-cyan-50 px-3 text-xs font-medium text-cyan-800"
+                  role="status"
+                >
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>{t.filteringImages}</span>
+                </span>
+              ) : null}
               {isManageMode ? (
                 <>
                   <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800">
@@ -4710,6 +4792,7 @@ export default function AtlasWorkbench() {
               onSelectResult={selectNavigatorResult}
               requestedEditNode={requestedNavigatorEditNode}
               onRequestedEditNodeHandled={() => setRequestedNavigatorEditNode(null)}
+              refreshKey={navigatorRefreshKey}
             />
           ) : null}
 

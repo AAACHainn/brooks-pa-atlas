@@ -148,7 +148,7 @@ model IndexNodeNavigatorOption {
   option    IndexNavigatorOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
 
   @@id([indexNodeId, optionId])
-  @@index([optionId])
+  @@index([optionId, indexNodeId])
 }
 
 model ImageAnnotation {

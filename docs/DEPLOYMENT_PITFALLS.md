@@ -99,6 +99,106 @@ Server-Timing: navigator;dur=2.0, images;dur=80.0, total;dur=85.0
 
 不要通过删除图片、清空 `data/library/`、重建空数据库或降低分页正确性来规避性能问题。当前全库自然数字排序仍会读取全部匹配图片的轻量排序字段；若未来图库规模增长到当前数倍并且 `images` 查询持续超过阈值，再考虑持久化自然排序键，而不是先扩大服务器配置。
 
+## 缩略图补齐与 3Mbps 即时切换部署说明（2026-08-06）
+
+本版本把工作台网格和考试选图列表从原图切换到版本化 WebP 缩略图。筛选条件、目录或分页发生变化后，浏览器会立即卸载旧图片 DOM 并显示骨架屏，旧下载不再占住连接等待新筛选结果。大图查看器、标注编辑和考试看图仍读取原图。
+
+当前缩略图规格固定为 `v1 / 420px / WebP quality 72`，默认目录：
+
+```text
+data/library/thumbnails/v1/<hash前2位>/<hash>.webp
+```
+
+可通过 `BROOKS_THUMBNAIL_ROOT` 覆盖 `thumbnails` 根目录；2 核服务器的后台生成并发默认是 `1`，只在磁盘和 CPU 余量充足时设置 `BROOKS_THUMBNAIL_CONCURRENCY=2`。缩略图是可重建缓存，不进入 SQLite，也不包含在备份 zip 中。恢复备份后需要再次执行补齐任务。
+
+### 升级和启动后台补齐
+
+升级代码后运行：
+
+```bash
+npm run test:thumbnails
+npm run lint
+npm run build
+```
+
+重启应用后先检查磁盘空间和缩略图当前占用：
+
+```bash
+df -h data/library
+du -sh data/library/thumbnails 2>/dev/null || true
+```
+
+启动任务（接口无请求体）：
+
+```bash
+curl -sS -X POST http://127.0.0.1:3000/api/maintenance/thumbnails/jobs
+```
+
+新任务返回 HTTP `202`；如果已有任务正在运行，返回 HTTP `200` 且 `reused` 为 `true`。保存响应中的 `job.id`。丢失 ID 时可读取最近任务：
+
+```bash
+curl -sS http://127.0.0.1:3000/api/maintenance/thumbnails/jobs
+```
+
+按 ID 查询：
+
+```bash
+curl -sS http://127.0.0.1:3000/api/maintenance/thumbnails/jobs/JOB_ID
+```
+
+部署 AI 可以用下面的 Linux 示例每 2 秒轮询；需已安装 `jq`：
+
+```bash
+JOB_ID="$(curl -sS -X POST http://127.0.0.1:3000/api/maintenance/thumbnails/jobs | jq -r '.job.id')"
+while true; do
+  JOB="$(curl -sS "http://127.0.0.1:3000/api/maintenance/thumbnails/jobs/$JOB_ID")"
+  echo "$JOB" | jq '{status: .job.status, phase: .job.phase, progressPercent: .job.progressPercent, processedImages: .job.processedImages, totalImages: .job.totalImages, generatedImages: .job.generatedImages, skippedImages: .job.skippedImages, failedImages: .job.failedImages}'
+  STATUS="$(echo "$JOB" | jq -r '.job.status')"
+  case "$STATUS" in
+    completed|completed_with_errors|failed|interrupted) break ;;
+  esac
+  sleep 2
+done
+```
+
+任务状态文件保存在 `data/library/thumbnail-jobs/`。应用进程在任务中途重启时，旧任务会在下次查询时变成 `interrupted`；重新执行同一个 POST 即可创建续跑任务，新任务的 `resumedFrom` 指向旧任务。续跑不会覆盖已有的非空 v1 文件，只会把它们计入 `skippedImages`。
+
+完成时必须核对：
+
+```text
+processedImages = generatedImages + skippedImages + failedImages
+progressPercent = 100
+status = completed 或 completed_with_errors
+```
+
+`completed_with_errors` 表示部分原图无法读取或转换。查看 `recentErrors`，修复原图或权限后重新 POST；已成功的文件仍会跳过。`failed` 表示数据库分页或状态持久化等任务级错误，应先检查应用日志、SQLite、本机磁盘空间和 `data/library/thumbnail-jobs/` 写权限。
+
+### 接口与浏览器验收
+
+任选一张图片验证缩略图响应；第二次请求把上一响应的 `ETag` 作为 `If-None-Match` 时应返回 `304`：
+
+```bash
+curl -sS -D - -o /tmp/thumbnail.webp \
+  "http://127.0.0.1:3000/api/images/IMAGE_ID/thumbnail?v=1"
+```
+
+首次正常响应应包含：
+
+```text
+Content-Type: image/webp
+Cache-Control: private, max-age=31536000, immutable
+ETag: "thumbnail-v1-..."
+```
+
+在限制为 3Mbps 的浏览器 Network 面板验收：
+
+1. 当前网格仍有图片下载时点击其他目录或导航筛选，旧卡片应在 100ms 内消失并出现骨架屏。
+2. 旧缩略图或原图请求应显示为 cancelled，新 `/api/atlas?scope=images...` 请求立即开始。
+3. 新网格只请求 `/thumbnail?v=1`，不能批量请求 `/file`；选中大图时才允许请求 `/file`。
+4. 首批新缩略图目标在 1–2 秒内出现，连续快速点击后只能展示最后一次筛选结果。
+
+维护接口按当前产品决策不加应用鉴权。不要把 `/api/maintenance/thumbnails/` 直接暴露到公网；应通过 Nginx/Caddy location 规则、仅监听内网或云安全组限制到运维来源。应用自身的单任务复用只能避免重复生成，不能替代访问控制。
+
 ## Windows PowerShell 执行 `npm` 被策略拦截
 
 现象：

@@ -7,6 +7,7 @@ import { serializeImageAnnotation } from "@/lib/image-annotations";
 import { updateBatchCounters } from "@/lib/ocr-queue";
 import { absoluteImagePath } from "@/lib/storage";
 import { cleanupUnusedTags, replaceImageTags } from "@/lib/tags";
+import { removeThumbnail } from "@/lib/thumbnails";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -123,7 +124,7 @@ export async function DELETE(
   const { id } = await context.params;
   const image = await prisma.chartImage.findUnique({
     where: { id },
-    select: { id: true, libraryPath: true },
+    select: { id: true, hash: true, libraryPath: true },
   });
 
   if (!image) {
@@ -151,6 +152,10 @@ export async function DELETE(
       );
     }
   }
+
+  await removeThumbnail(image.hash).catch((error) => {
+    console.error(`[delete-image:${image.id}] thumbnail removal failed`, error);
+  });
 
   await prisma.$transaction(async (tx) => {
     await tx.chartImage.delete({ where: { id: image.id } });

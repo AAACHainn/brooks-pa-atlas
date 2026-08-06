@@ -5,6 +5,7 @@ import {
   hashBuffer,
   saveImageBuffer,
 } from "@/lib/storage";
+import { ensureThumbnailFromBuffer } from "@/lib/thumbnails";
 
 export type ImportImageBufferInput = {
   batchId: string;
@@ -105,6 +106,10 @@ export async function importImageBuffer({
       groupKey,
       status: "IMPORTED",
     },
+  });
+
+  await ensureThumbnailFromBuffer(buffer, hash).catch((error) => {
+    console.error(`[thumbnail-import:${image.id}] generation failed`, error);
   });
 
   return {

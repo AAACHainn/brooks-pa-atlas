@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { absoluteImagePath } from "@/lib/storage";
 import { cleanupUnusedTags } from "@/lib/tags";
+import { removeThumbnail } from "@/lib/thumbnails";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +21,7 @@ export async function POST(
       images: {
         select: {
           id: true,
+          hash: true,
           libraryPath: true,
         },
       },
@@ -52,6 +54,15 @@ export async function POST(
         );
       }
     }
+  }
+
+  for (const image of batch.images) {
+    await removeThumbnail(image.hash).catch((error) => {
+      console.error(`[undo-import:${batch.id}] thumbnail removal failed`, {
+        imageId: image.id,
+        error,
+      });
+    });
   }
 
   await prisma.$transaction(async (tx) => {

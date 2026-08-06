@@ -77,6 +77,7 @@ npm run dev
 npm run lint
 npm run build
 npm run test:navigator
+npm run test:thumbnails
 npm run prisma:generate
 npm run db:migrate
 npm run db:init
@@ -89,6 +90,7 @@ npm run db:init
 - `npm run lint` 运行 ESLint。
 - `npm run build` 运行生产构建和类型检查。
 - `npm run test:navigator` 运行导航本地匹配数、跨分类 AND、目录搜索和自然排序单元测试。
+- `npm run test:thumbnails` 运行缩略图路径、缓存、尺寸、并发合并和图片查询键测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
 - `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库，并继续执行全部增量 migrations。
@@ -136,6 +138,8 @@ npm run db:init
 - `src/app/api/images/route.ts`：分页查询图库图片，供考试模式选择已有图片。
 - `src/app/api/index-navigator/**/route.ts`：导航分类、选项、目录结果和节点关联接口。
 - `src/app/api/images/[id]/file/route.ts`：读取图库内图片文件并返回给浏览器。
+- `src/app/api/images/[id]/thumbnail/route.ts`：读取或按需生成版本化 WebP 缩略图。
+- `src/app/api/maintenance/thumbnails/jobs/**/route.ts`：启动并查询持久化缩略图补齐任务。
 - `src/app/api/ocr/images/[id]/route.ts`：把单张图片放入 OCR 队列。
 - `src/app/api/ocr/retry/route.ts`：重试失败 OCR。
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
@@ -149,6 +153,9 @@ npm run db:init
 - `src/lib/document-import-jobs.ts`：资料导入后台任务状态，供前端轮询进度。
 - `src/lib/pdf-importer.ts`：PDF 书签解析、逐页渲染和按目录挂载逻辑。
 - `src/lib/storage.ts`：图片存储、hash、文件名清洗、尺寸读取、安全路径校验。
+- `src/lib/thumbnails.ts`：版本化缩略图路径、生成、读取、缓存命中和单文件删除。
+- `src/lib/thumbnail-jobs.ts`：缩略图补齐任务的持久化、重启中断识别和续跑。
+- `src/lib/image-query-key.ts`：图片筛选请求的稳定查询键，防止旧结果继续渲染。
 - `src/lib/image-annotations.ts`：图片文字标注的校验和序列化 helper。
 - `src/lib/ocr-queue.ts`：本地 OCR 并发队列。
 - `prisma/schema.prisma`：Prisma 数据模型。
@@ -250,6 +257,7 @@ npm run db:init
 - 鼠标悬停图片时显示左右箭头；箭头 tooltip 提示 `←` / `→` 快捷键。
 - 键盘 `ArrowLeft` / `ArrowRight` 可切换上一张/下一张；焦点在输入框、选择框、滑杆等编辑控件时不会触发。
 - 下方缩略图网格可隐藏或显示。
+- 图片网格使用 420px WebP 缩略图；大图查看器仍读取原图。筛选、目录或分页变化时旧图片 DOM 立即卸载并显示骨架屏，不等待上一批图片下载完成。
 
 管理模式特性：
 
@@ -392,6 +400,8 @@ npm run db:init
 - 默认图库根目录是 `data/library/images`。
 - 环境变量 `BROOKS_LIBRARY_ROOT` 可以覆盖图库根目录。
 - 新图片保存到 `data/library/images/YYYY-MM/`。
+- 缩略图默认保存到 `data/library/thumbnails/v1/<hash前2位>/<hash>.webp`，可用 `BROOKS_THUMBNAIL_ROOT` 覆盖缩略图根目录。
+- 当前缩略图规格为最长边 420px、WebP quality 72、自动旋转且不放大小图。缩略图是可重建缓存，不写数据库、不进入备份；算法变化时升级版本目录和前端 `v` 参数。
 - 保存文件名格式是 `清洗后的原名-hash前16位.ext`，例如 `1-a1b2c3d4e5f6a7b8.jpg`。hash 放在原名后面，避免破坏按原始名称排序。
 - 浏览器原始硬盘路径不能直接入库，只能保存上传后的应用内相对路径。
 - `absoluteImagePath()` 会校验图片路径必须在图库根目录内，避免任意文件读取。
@@ -437,6 +447,18 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 前端只在首次加载、导航配置变更或完整刷新后读取该接口；选项匹配数、跨分类 AND、目录搜索、自然排序和分页由 `src/lib/index-navigator-client.ts` 本地计算。
 - 分类、选项 CRUD 和排序使用 `/api/index-navigator/categories`、`/api/index-navigator/options`。
 - `GET/POST /api/index-navigator/assignments` 读取节点关联，`PATCH` 批量修改关联；单次最多 `1000` 个节点。前端选择超过 1000 个节点的子树时会自动分批读取和提交。
+
+`GET /api/images/[id]/thumbnail?v=1`
+
+- 优先返回已有 WebP 缓存，缺失时从原图按需生成；同一 Node.js 进程内相同 hash 的并发生成会合并。
+- 返回版本化 `ETag`、支持 `If-None-Match` / `304`，并设置一年 `private, immutable` 缓存。大图和标注仍使用 `/api/images/[id]/file` 原图接口。
+
+`POST /api/maintenance/thumbnails/jobs`
+
+- 启动已有图库的缺失缩略图补齐任务；同时只运行一个任务，已有任务运行时返回 `reused: true`。
+- 任务按 200 张分页读取、默认并发 1，`BROOKS_THUMBNAIL_CONCURRENCY` 可设为 `1` 或 `2`。每 25 张或最多每秒把状态原子写入 `data/library/thumbnail-jobs/`。
+- `GET /api/maintenance/thumbnails/jobs` 返回最近任务；`GET /api/maintenance/thumbnails/jobs/[id]` 返回指定任务。重启后的运行中任务会标记为 `interrupted`，再次 POST 会新建续跑任务并通过跳过已有文件继续。
+- 维护接口没有应用层鉴权。公网部署必须通过反向代理、内网监听或安全组限制访问，不要直接暴露给不可信客户端。
 
 `GET /api/backups/export`
 

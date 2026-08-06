@@ -39,6 +39,7 @@ import { createPortal } from "react-dom";
 import ExamMode from "@/app/exam-mode";
 import { useAppDialog } from "@/app/app-dialog";
 import IndexNavigatorPanel from "@/app/index-navigator-panel";
+import { buildImageQueryKey } from "@/lib/image-query-key";
 
 type IndexTreeNode = {
   id: string;
@@ -2194,6 +2195,7 @@ export default function AtlasWorkbench() {
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [imagesError, setImagesError] = useState<string | null>(null);
   const [imagesLoading, setImagesLoading] = useState(false);
+  const [imagesResultKey, setImagesResultKey] = useState<string | null>(null);
   const [navigatorRefreshKey, setNavigatorRefreshKey] = useState(0);
   const [query, setQuery] = useState("");
   const [selectedIndexId, setSelectedIndexId] = useState<string | null>(null);
@@ -2318,6 +2320,25 @@ export default function AtlasWorkbench() {
     controller: null,
     sequence: 0,
   });
+  const imageQueryKey = useMemo(
+    () =>
+      buildImageQueryKey({
+        query,
+        selectedIndexId,
+        selectedTagIds,
+        selectedNavigatorOptionIds,
+        page: imageGridPage,
+        pageSize: imageGridPageSize,
+      }),
+    [
+      imageGridPage,
+      imageGridPageSize,
+      query,
+      selectedIndexId,
+      selectedNavigatorOptionIds,
+      selectedTagIds,
+    ],
+  );
   const t = copy[locale];
   const dataError = imagesError ?? metadataError;
   const appDialog = useAppDialog({ confirm: t.confirm, cancel: t.cancel });
@@ -2385,30 +2406,13 @@ export default function AtlasWorkbench() {
   }, []);
 
   const refreshImages = useCallback(async () => {
-    const params = new URLSearchParams();
-    params.set("scope", "images");
-    if (query.trim()) {
-      params.set("q", query.trim());
-    }
-    if (selectedIndexId) {
-      params.set("indexId", selectedIndexId);
-    }
-    for (const tagId of selectedTagIds) {
-      params.append("tagId", tagId);
-    }
-    for (const optionId of selectedNavigatorOptionIds) {
-      params.append("navigatorOptionId", optionId);
-    }
-    params.set("page", String(imageGridPage));
-    params.set("pageSize", String(imageGridPageSize));
-
     imagesRequestRef.current.controller?.abort();
     const controller = new AbortController();
     const sequence = imagesRequestRef.current.sequence + 1;
     imagesRequestRef.current = { controller, sequence };
     setImagesLoading(true);
     try {
-      const response = await fetch(`/api/atlas?${params.toString()}`, {
+      const response = await fetch(`/api/atlas?${imageQueryKey}`, {
         cache: "no-store",
         signal: controller.signal,
       });
@@ -2419,6 +2423,7 @@ export default function AtlasWorkbench() {
       const nextData = (await response.json()) as AtlasImagesResponse;
       if (imagesRequestRef.current.sequence !== sequence) return;
       setData((current) => mergeAtlasData(current, nextData));
+      setImagesResultKey(imageQueryKey);
       setImageGridPage(nextData.pagination.page);
       setImagesError(null);
     } catch (error) {
@@ -2431,7 +2436,7 @@ export default function AtlasWorkbench() {
         setImagesLoading(false);
       }
     }
-  }, [imageGridPage, imageGridPageSize, query, selectedIndexId, selectedNavigatorOptionIds, selectedTagIds]);
+  }, [imageQueryKey]);
 
   const refreshAtlas = useCallback(async () => {
     await Promise.all([refreshMetadata(), refreshImages()]);
@@ -2819,9 +2824,10 @@ export default function AtlasWorkbench() {
   const selectedIndexPath =
     flatIndexes.find((node) => node.id === selectedIndexId)?.path ?? "";
   const locatedIndex = flatIndexes.find((node) => node.id === locatedIndexId) ?? null;
-  const selectedImage = data?.images.find((image) => image.id === selectedImageId) ?? null;
-  const selectedImageIndex =
-    data?.images.findIndex((image) => image.id === selectedImageId) ?? -1;
+  const hasCurrentImageResults = imagesResultKey === imageQueryKey;
+  const currentImages = hasCurrentImageResults ? data?.images ?? [] : [];
+  const selectedImage = currentImages.find((image) => image.id === selectedImageId) ?? null;
+  const selectedImageIndex = currentImages.findIndex((image) => image.id === selectedImageId);
   useEffect(() => {
     if (isManageViewerOpen && !selectedImage && !pendingPageImageNavigationRef.current) {
       setIsManageViewerOpen(false);
@@ -2891,12 +2897,15 @@ export default function AtlasWorkbench() {
   const importStartIndex = (importCurrentPage - 1) * importPageSize;
   const importPageFiles = files.slice(importStartIndex, importStartIndex + importPageSize);
   const importEndIndex = importStartIndex + importPageFiles.length;
-  const imageGridTotal = data?.pagination.total ?? 0;
-  const imageGridTotalPages = data?.pagination.totalPages ?? 1;
-  const imageGridCurrentPage = data?.pagination.page ?? imageGridPage;
+  const imageGridTotal = hasCurrentImageResults ? data?.pagination.total ?? 0 : 0;
+  const imageGridTotalPages = hasCurrentImageResults ? data?.pagination.totalPages ?? 1 : 1;
+  const imageGridCurrentPage = hasCurrentImageResults
+    ? data?.pagination.page ?? imageGridPage
+    : imageGridPage;
   const imageGridStartIndex = (imageGridCurrentPage - 1) * imageGridPageSize;
-  const imageGridPageImages = data?.images ?? [];
+  const imageGridPageImages = currentImages;
   const imageGridEndIndex = imageGridStartIndex + imageGridPageImages.length;
+  const showImageGridSkeletons = !hasCurrentImageResults;
   const imageStageSize = useMemo(() => {
     if (
       !selectedImage?.width ||
@@ -5520,7 +5529,21 @@ export default function AtlasWorkbench() {
                   </div>
                 ) : null}
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-4">
-                  {imageGridPageImages.map((image) => (
+                  {showImageGridSkeletons
+                    ? Array.from({ length: Math.min(12, imageGridPageSize) }, (_, index) => (
+                        <div
+                          key={`image-skeleton-${index}`}
+                          className="overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm"
+                          aria-hidden="true"
+                        >
+                          <div className="aspect-[4/3] animate-pulse bg-zinc-200" />
+                          <div className="space-y-2 p-3">
+                            <div className="h-4 w-3/4 animate-pulse rounded bg-zinc-200" />
+                            <div className="h-3 w-1/2 animate-pulse rounded bg-zinc-100" />
+                          </div>
+                        </div>
+                      ))
+                    : imageGridPageImages.map((image) => (
                     <div
                       key={image.id}
                       className={`relative overflow-hidden rounded-md border bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
@@ -5550,7 +5573,7 @@ export default function AtlasWorkbench() {
                       >
                         <div className="aspect-[4/3] bg-zinc-100">
                           <img
-                            src={`/api/images/${image.id}/file`}
+                            src={`/api/images/${image.id}/thumbnail?v=1`}
                             alt={image.title ?? image.originalName}
                             className="h-full w-full object-contain"
                             loading="lazy"
@@ -5627,7 +5650,7 @@ export default function AtlasWorkbench() {
               </>
             ) : null}
 
-            {!isExamMode && data?.images.length === 0 ? (
+            {!isExamMode && hasCurrentImageResults && !imagesLoading && currentImages.length === 0 ? (
               <div className="grid h-72 place-items-center rounded-md border border-dashed border-zinc-300 bg-white text-sm text-zinc-500">
                 {t.noImages}
               </div>

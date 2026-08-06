@@ -2587,7 +2587,7 @@ export default function ExamMode({
                 >
                   <div className="relative aspect-[4/3] bg-zinc-100">
                     <img
-                      src={`/api/images/${image.id}/file`}
+                      src={`/api/images/${image.id}/thumbnail?v=1`}
                       alt={image.title ?? image.originalName}
                       className="h-full w-full object-contain"
                       loading="lazy"

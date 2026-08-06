@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { absoluteImagePath } from "@/lib/storage";
 import { cleanupUnusedTags } from "@/lib/tags";
+import { removeThumbnail } from "@/lib/thumbnails";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,7 +50,7 @@ export async function POST(
   const nodeIds = [node.id, ...descendants.map((descendant) => descendant.id)];
   const images = await prisma.chartImage.findMany({
     where: { indexNodeId: { in: nodeIds } },
-    select: { id: true, libraryPath: true },
+    select: { id: true, hash: true, libraryPath: true },
   });
   const imageIds = images.map((image) => image.id);
   let examQuestionCount = 0;
@@ -88,6 +89,16 @@ export async function POST(
         );
       }
     }
+  }
+
+  for (const image of images) {
+    await removeThumbnail(image.hash).catch((error) => {
+      console.error("[clear-index-images] thumbnail removal failed", {
+        indexNodeId: node.id,
+        imageId: image.id,
+        error,
+      });
+    });
   }
 
   await prisma.$transaction(async (tx) => {

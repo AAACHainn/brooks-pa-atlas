@@ -81,6 +81,10 @@ npm run test:thumbnails
 npm run prisma:generate
 npm run db:migrate
 npm run db:init
+docker compose up -d --build
+docker compose ps
+docker compose logs -f atlas
+docker compose down
 ```
 
 说明：
@@ -94,6 +98,8 @@ npm run db:init
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
 - `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库，并继续执行全部增量 migrations。
+- `docker compose up -d --build` 构建生产镜像并启动服务，默认访问 `http://localhost:3000`；容器启动时会自动初始化或迁移数据库。
+- Compose 使用命名卷 `brooks-pa-atlas-data` 持久化 SQLite 数据库和图库。`docker compose down` 不删除该卷；不要添加会删除 volume 的参数。
 
 注意：
 
@@ -163,6 +169,10 @@ npm run db:init
 - `scripts/init-db.mjs`：本地 SQLite 初始化脚本。
 - `scripts/migrate-db.mjs`：本地 SQLite 增量迁移脚本。
 - `public/*.svg`：create-next-app 默认静态图标，目前不是产品核心资源。
+- `Dockerfile`：基于 Node.js 22 的 Next.js standalone 多阶段生产镜像，运行层包含 Tesseract 中英文 OCR。
+- `compose.yaml`：本地容器编排、端口映射、健康检查和数据卷配置。
+- `docker-entrypoint.sh`：容器启动入口，先初始化/迁移 SQLite，再启动 Next.js standalone server。
+- `.dockerignore`：排除依赖、构建产物、本地数据库、图库和环境变量，避免进入镜像构建上下文。
 
 ## 6. 本地数据和生成物
 
@@ -175,6 +185,8 @@ npm run db:init
 - `data/library/`
 - `next-env.d.ts`
 - 运行日志，例如 `.codex-dev-server.log`、`dev-server.log`、`dev-server.err.log`
+
+Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统一挂载到 `/app/data`：数据库为 `/app/data/dev.db`，图库为 `/app/data/library/images`。重新构建容器不会清空该卷。
 
 注意：
 

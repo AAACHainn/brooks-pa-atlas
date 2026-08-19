@@ -1,0 +1,15 @@
+.git
+.next
+node_modules
+node_modules.broken-*
+.env*
+dev.db
+dev.db-*
+data/library
+data/tessdata
+coverage
+out
+build
+*.log
+.codex*
+DEPLOYMENT_NOTES.md

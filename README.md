@@ -9,7 +9,39 @@ Brooks PA Atlas 是一个本地 Web App，用来管理 Brooks 价格行为图表
 - SQLite：项目通过 Prisma + better-sqlite3 使用本地 SQLite 数据库。
 - OCR：导入图片后会触发后台 OCR 队列，部署机器需要全局安装 `tesseract`，否则 OCR 会失败，并可能影响导入后的处理体验。
 
-## 安装 OCR 依赖（Tesseract）
+使用 Docker Compose 运行时，只需要 Docker Engine 和 Docker Compose v2。镜像已经包含 Node.js、Tesseract、简体中文和英文 OCR 语言包，不需要在宿主机另外安装这些依赖。
+
+## 使用 Docker Compose 启动
+
+在项目根目录执行：
+
+```bash
+docker compose up -d --build
+```
+
+启动完成后访问 `http://localhost:3000`。如果当前用户无权访问 Docker socket，请给命令加上 `sudo`。
+
+常用管理命令：
+
+```bash
+docker compose ps
+docker compose logs -f atlas
+docker compose restart atlas
+docker compose down
+```
+
+`docker compose down` 只停止并移除容器和 Compose 网络，不会删除命名卷。应用数据保存在名为 `brooks-pa-atlas-data` 的 Docker volume 中：
+
+- SQLite 数据库：`/app/data/dev.db`
+- 图片图库：`/app/data/library/images`
+
+重新构建或替换容器时会继续使用同一个数据卷。不要使用会删除 volume 的 Compose 参数，否则数据库和图库数据可能丢失。
+
+Compose 固定把宿主机 `3000` 端口映射到容器 `3000` 端口，以保证访问地址始终为 `http://localhost:3000`。
+
+容器启动时会自动初始化空数据库，并对已有数据库执行全部增量 migrations。更新源码后的常规升级命令同样是 `docker compose up -d --build`。
+
+## 本地运行时安装 OCR 依赖（Tesseract）
 
 Brooks PA Atlas 默认调用命令行里的 `tesseract`：
 

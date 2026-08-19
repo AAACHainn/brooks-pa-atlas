@@ -1,0 +1,35 @@
+services:
+  atlas:
+    build:
+      context: .
+      args:
+        APP_VERSION: v1.2
+    image: brooks-pa-atlas:v1.2
+    container_name: brooks-pa-atlas
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: file:/app/data/dev.db
+      BROOKS_LIBRARY_ROOT: /app/data/library/images
+      BROOKS_THUMBNAIL_ROOT: /app/data/library/thumbnails
+      BROOKS_THUMBNAIL_CONCURRENCY: ${BROOKS_THUMBNAIL_CONCURRENCY:-1}
+      BROOKS_OCR_COMMAND: tesseract
+      BROOKS_OCR_LANG: ${BROOKS_OCR_LANG:-chi_sim+eng}
+      TMPDIR: /app/data/tmp
+    volumes:
+      - brooks-data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/atlas?scope=images&page=1&pageSize=25').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  brooks-data:
+    name: brooks-pa-atlas-data

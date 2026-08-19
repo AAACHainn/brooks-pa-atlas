@@ -2307,7 +2307,6 @@ export default function AtlasWorkbench() {
   const annotationSaveTimerRef = useRef<number | null>(null);
   const annotationStageRef = useRef<HTMLDivElement | null>(null);
   const viewerViewportRef = useRef<HTMLDivElement | null>(null);
-  const contentScrollRef = useRef<HTMLDivElement | null>(null);
   const manageGridScrollTopRef = useRef(0);
   const detailsSavingRef = useRef(false);
   const detailDraftRef = useRef<ImageDetailDraft>(detailDraft);
@@ -4186,10 +4185,10 @@ export default function AtlasWorkbench() {
     }
 
     if (!isManageViewerOpen) {
-      manageGridScrollTopRef.current = contentScrollRef.current?.scrollTop ?? 0;
+      manageGridScrollTopRef.current = window.scrollY;
     }
     setIsManageViewerOpen(true);
-    window.requestAnimationFrame(() => contentScrollRef.current?.scrollTo({ top: 0 }));
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0 }));
   }
 
   function closeManageViewer() {
@@ -4199,7 +4198,7 @@ export default function AtlasWorkbench() {
     void saveAnnotationsNow();
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() =>
-        contentScrollRef.current?.scrollTo({ top: manageGridScrollTopRef.current }),
+        window.scrollTo({ top: manageGridScrollTopRef.current }),
       );
     });
   }
@@ -4954,10 +4953,7 @@ export default function AtlasWorkbench() {
             </div>
           ) : null}
 
-          <div
-            ref={contentScrollRef}
-            className={`overflow-auto ${isExamMode ? "p-3 xl:h-screen" : "p-5 xl:h-[calc(100vh-65px)]"}`}
-          >
+          <div className={isExamMode ? "p-3" : "p-5"}>
             {dataError ? (
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                 <div className="min-w-0">

@@ -2949,21 +2949,17 @@ export default function AtlasWorkbench() {
           onClick: () => void createBackup(indexContextMenu.node),
           disabled: backingUp,
         },
-        ...(isManageMode
-          ? [
-              {
-                id: "collapse",
-                label: t.collapseLeafIndexes,
-                icon: <ChevronRight className="h-4 w-4" />,
-                onClick: () => collapseLeafIndexes(indexContextMenu.node),
-                disabled: indexContextMenu.node.children.length === 0,
-                title:
-                  indexContextMenu.node.children.length === 0
-                    ? t.collapseLeafIndexesDisabled
-                    : t.collapseLeafIndexes,
-              },
-            ]
-          : []),
+        {
+          id: "collapse",
+          label: t.collapseLeafIndexes,
+          icon: <ChevronRight className="h-4 w-4" />,
+          onClick: () => collapseLeafIndexes(indexContextMenu.node),
+          disabled: indexContextMenu.node.children.length === 0,
+          title:
+            indexContextMenu.node.children.length === 0
+              ? t.collapseLeafIndexesDisabled
+              : t.collapseLeafIndexes,
+        },
         {
           id: "navigator",
           label: t.editNavigatorAttributes,

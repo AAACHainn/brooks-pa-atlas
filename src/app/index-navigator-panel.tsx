@@ -120,6 +120,8 @@ const labels = {
     noNodes: "没有匹配的索引节点。",
     selectNodesHint: "选择父节点会同时选择全部后代；取消父节点也会取消全部后代。",
     optionOperation: "选择要批量操作的选项",
+    assignedToAllSelectedNodes: "全部所选节点已有此属性",
+    assignedToSomeSelectedNodes: "部分所选节点已有此属性",
     addToNodes: "添加到所选节点",
     removeFromNodes: "从所选节点移除",
     saving: "保存中",
@@ -185,6 +187,8 @@ const labels = {
     noNodes: "No matching index nodes.",
     selectNodesHint: "Selecting or clearing a parent also selects or clears all descendants.",
     optionOperation: "Choose options to update",
+    assignedToAllSelectedNodes: "Assigned to all selected nodes",
+    assignedToSomeSelectedNodes: "Assigned to some selected nodes",
     addToNodes: "Add to selected nodes",
     removeFromNodes: "Remove from selected nodes",
     saving: "Saving",
@@ -373,6 +377,7 @@ export default function IndexNavigatorPanel({
   useEffect(() => {
     if (!requestedEditNode) return;
     const timer = window.setTimeout(() => {
+      setAssignmentCounts(new Map());
       setSelectedNodeIds(new Set([requestedEditNode.id]));
       setExpandedAssignmentNodeIds((current) => {
         const next = new Set(current);
@@ -1127,6 +1132,7 @@ export default function IndexNavigatorPanel({
                                 if (input) input.indeterminate = subtreePartiallySelected;
                               }}
                               onChange={() => {
+                                setAssignmentCounts(new Map());
                                 setSelectedNodeIds((current) => {
                                   const next = new Set(current);
                                   if (subtreeSelected) nodeSubtreeIds.forEach((nodeId) => next.delete(nodeId));
@@ -1170,11 +1176,20 @@ export default function IndexNavigatorPanel({
                             {category.options.map((option) => {
                               const selected = operationOptionIds.has(option.id);
                               const count = assignmentCounts.get(option.id) ?? 0;
+                              const assignedToAll = selectedNodeIds.size > 0 && count === selectedNodeIds.size;
+                              const assignedToSome = count > 0 && !assignedToAll;
                               return (
                                 <button
                                   key={option.id}
                                   type="button"
                                   aria-pressed={selected}
+                                  title={
+                                    assignedToAll
+                                      ? t.assignedToAllSelectedNodes
+                                      : assignedToSome
+                                        ? t.assignedToSomeSelectedNodes
+                                        : undefined
+                                  }
                                   onClick={() => {
                                     setOperationOptionIds((current) => {
                                       const next = new Set(current);
@@ -1186,13 +1201,27 @@ export default function IndexNavigatorPanel({
                                   className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
                                     selected
                                       ? "border-cyan-700 bg-cyan-700 text-white shadow-sm"
-                                      : "border-zinc-200 bg-white text-zinc-600 hover:border-cyan-200 hover:text-cyan-800"
+                                      : assignedToAll
+                                        ? "border-cyan-300 bg-cyan-50 text-cyan-800 shadow-sm hover:bg-cyan-100"
+                                        : assignedToSome
+                                          ? "border-amber-300 bg-amber-50 text-amber-800 shadow-sm hover:bg-amber-100"
+                                          : "border-zinc-200 bg-white text-zinc-600 hover:border-cyan-200 hover:text-cyan-800"
                                   }`}
                                 >
                                   {selected ? <Check className="h-3 w-3" /> : null}
                                   <span>{option.name}</span>
                                   {selectedNodeIds.size > 0 ? (
-                                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${selected ? "bg-white/15" : "bg-zinc-100 text-zinc-400"}`}>
+                                    <span
+                                      className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                                        selected
+                                          ? "bg-white/15"
+                                          : assignedToAll
+                                            ? "bg-cyan-100 text-cyan-700"
+                                            : assignedToSome
+                                              ? "bg-amber-100 text-amber-700"
+                                              : "bg-zinc-100 text-zinc-400"
+                                      }`}
+                                    >
                                       {count}/{selectedNodeIds.size}
                                     </span>
                                   ) : null}

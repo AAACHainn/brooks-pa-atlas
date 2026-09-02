@@ -33,7 +33,16 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 
 import ExamMode from "@/app/exam-mode";
@@ -233,6 +242,15 @@ type DocumentImportJobSnapshot = {
 type Locale = "zh" | "en";
 type ViewMode = "browse" | "manage" | "exam";
 type IndexContextMenu = { node: IndexTreeNode; x: number; y: number };
+type IndexContextMenuItem = {
+  id: string;
+  label: string;
+  icon: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  tone?: "default" | "danger";
+};
 type IndexDropPosition = "before" | "after";
 type IndexDropIndicator = { id: string; position: IndexDropPosition };
 type IndexAction =
@@ -324,6 +342,7 @@ const copy = {
     reorderIndex: "拖动调整顺序",
     reorderIndexMode: "索引排序",
     reorderIndexFailed: "索引排序失败，请稍后重试。",
+    editNavigatorAttributes: "编辑导航属性",
     allImages: "全部图片",
     searchPlaceholder: "搜索标题、OCR、备注、标注、索引、标签",
     viewLocatedIndexImages: "查看此栏目全部图片",
@@ -447,6 +466,9 @@ const copy = {
     retryOcr: "重试 OCR",
     runOcr: "执行 OCR",
     ocrText: "OCR 文本",
+    ocrEditHint: "可直接删除乱码、不需要的数字或补充遗漏内容，修改后请保存。",
+    ocrUnsaved: "未保存修改",
+    saveOcrText: "保存 OCR 文本",
     ocrOverwriteConfirm: "当前已有 OCR 文本。重新 OCR 会在完成后覆盖现有内容，是否继续？",
     ocrOverwriteTitle: "覆盖现有 OCR 文本？",
     ocrUpdateFailed: "OCR 操作失败，请稍后重试。",
@@ -527,6 +549,7 @@ const copy = {
     reorderIndex: "Drag to reorder",
     reorderIndexMode: "Reorder",
     reorderIndexFailed: "Index reorder failed. Please try again.",
+    editNavigatorAttributes: "Edit navigator attributes",
     allImages: "All images",
     searchPlaceholder: "Search title, OCR, notes, annotations, index, tags",
     viewLocatedIndexImages: "View all images in this index",
@@ -653,6 +676,9 @@ const copy = {
     retryOcr: "Retry OCR",
     runOcr: "Run OCR",
     ocrText: "OCR text",
+    ocrEditHint: "Correct garbled text, remove unwanted numbers, or add missing content, then save your changes.",
+    ocrUnsaved: "Unsaved changes",
+    saveOcrText: "Save OCR text",
     ocrOverwriteConfirm: "This image already has OCR text. Running OCR again will overwrite it when completed. Continue?",
     ocrOverwriteTitle: "Overwrite existing OCR text?",
     ocrUpdateFailed: "OCR update failed. Please try again.",
@@ -2129,6 +2155,66 @@ function IndexBranch({
   );
 }
 
+function IndexNodeContextMenu({
+  items,
+  x,
+  y,
+}: {
+  items: IndexContextMenuItem[];
+  x: number;
+  y: number;
+}) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) {
+      return;
+    }
+
+    const viewportMargin = 8;
+    const bounds = menu.getBoundingClientRect();
+    const maxLeft = Math.max(viewportMargin, window.innerWidth - bounds.width - viewportMargin);
+    const maxTop = Math.max(viewportMargin, window.innerHeight - bounds.height - viewportMargin);
+    const left = Math.min(Math.max(x, viewportMargin), maxLeft);
+    const hasEnoughSpaceBelow = y + bounds.height + viewportMargin <= window.innerHeight;
+    const preferredTop = hasEnoughSpaceBelow ? y : y - bounds.height;
+    const top = Math.min(Math.max(preferredTop, viewportMargin), maxTop);
+
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }, [items, x, y]);
+
+  return (
+    <div
+      ref={menuRef}
+      role="menu"
+      className="fixed z-40 max-h-[calc(100vh-1rem)] w-56 overflow-y-auto rounded-md border border-zinc-200 bg-white p-1 text-sm shadow-xl"
+      style={{ left: x, top: y }}
+      onClick={(event) => event.stopPropagation()}
+    >
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          role="menuitem"
+          onClick={item.onClick}
+          disabled={item.disabled}
+          className={`flex h-9 w-full items-center gap-2 rounded px-2 text-left disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent ${
+            item.tone === "danger"
+              ? "text-rose-700 hover:bg-rose-50"
+              : "text-zinc-700 hover:bg-zinc-100"
+          }`}
+          title={item.title ?? item.label}
+        >
+          {item.icon}
+          <span>{item.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ModeSwitch({
   mode,
   labels,
@@ -2225,6 +2311,7 @@ export default function AtlasWorkbench() {
     indexNodeId: "",
     tagNames: [] as string[],
   });
+  const [savedOcrText, setSavedOcrText] = useState("");
   const [detailTagInput, setDetailTagInput] = useState("");
   const [ocrRunningImageId, setOcrRunningImageId] = useState<string | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(() => new Set());
@@ -2810,11 +2897,13 @@ export default function AtlasWorkbench() {
 
     window.addEventListener("click", closeMenu);
     window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("resize", closeMenu);
     window.addEventListener("keydown", handleKeyDown);
 
     return () => {
       window.removeEventListener("click", closeMenu);
       window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("resize", closeMenu);
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [indexContextMenu]);
@@ -2851,6 +2940,72 @@ export default function AtlasWorkbench() {
   const indexContextImageCount = indexContextMenu
     ? indexBranchImageCount(indexContextMenu.node)
     : 0;
+  const indexContextMenuItems: IndexContextMenuItem[] = indexContextMenu
+    ? [
+        {
+          id: "export",
+          label: t.exportIndex,
+          icon: <Download className="h-4 w-4" />,
+          onClick: () => void createBackup(indexContextMenu.node),
+          disabled: backingUp,
+        },
+        ...(isManageMode
+          ? [
+              {
+                id: "collapse",
+                label: t.collapseLeafIndexes,
+                icon: <ChevronRight className="h-4 w-4" />,
+                onClick: () => collapseLeafIndexes(indexContextMenu.node),
+                disabled: indexContextMenu.node.children.length === 0,
+                title:
+                  indexContextMenu.node.children.length === 0
+                    ? t.collapseLeafIndexesDisabled
+                    : t.collapseLeafIndexes,
+              },
+            ]
+          : []),
+        {
+          id: "navigator",
+          label: t.editNavigatorAttributes,
+          icon: <TagIcon className="h-4 w-4" />,
+          onClick: () => {
+            setRequestedNavigatorEditNode(indexContextMenu.node);
+            setIndexContextMenu(null);
+          },
+        },
+        {
+          id: "rename",
+          label: t.renameIndex,
+          icon: <PencilLine className="h-4 w-4" />,
+          onClick: () => openIndexAction({ mode: "rename", node: indexContextMenu.node }),
+        },
+        {
+          id: "delete",
+          label: t.deleteIndex,
+          icon: <Trash2 className="h-4 w-4" />,
+          onClick: () => openIndexAction({ mode: "delete", node: indexContextMenu.node }),
+          disabled: indexContextImageCount > 0,
+          title: indexContextImageCount > 0 ? t.deleteIndexDisabled : t.deleteIndex,
+          tone: "danger",
+        },
+        ...(isManageMode
+          ? [
+              {
+                id: "clear",
+                label: t.clearIndexImages,
+                icon: <AlertTriangle className="h-4 w-4" />,
+                onClick: () => openIndexAction({ mode: "clear", node: indexContextMenu.node }),
+                disabled: indexContextImageCount === 0,
+                title:
+                  indexContextImageCount === 0
+                    ? t.clearIndexImagesDisabled
+                    : t.clearIndexImages,
+                tone: "danger" as const,
+              },
+            ]
+          : []),
+      ]
+    : [];
   const indexActionImageCount = indexAction ? indexBranchImageCount(indexAction.node) : 0;
   const canNavigateSelectedImage = (data?.pagination.total ?? 0) > 1;
   const shouldShowImageGrid =
@@ -2858,6 +3013,9 @@ export default function AtlasWorkbench() {
     (isBrowseMode && (showBrowseThumbnails || !selectedImage));
   const isSelectedImageOcrBusy = selectedImage
     ? selectedImage.ocrStatus === "RUNNING" || ocrRunningImageId === selectedImage.id
+    : false;
+  const isOcrTextDirty = selectedImage
+    ? detailDraft.ocrText !== savedOcrText
     : false;
   const selectedImageTip = selectedImage
     ? [
@@ -3161,7 +3319,7 @@ export default function AtlasWorkbench() {
   }
 
   function openIndexContextMenu(node: IndexTreeNode, event: React.MouseEvent<HTMLButtonElement>) {
-    if (!isManageMode) {
+    if (!isManageMode && !isBrowseMode) {
       return;
     }
 
@@ -3439,6 +3597,7 @@ export default function AtlasWorkbench() {
         detailDraftRef.current = savedDraft;
         detailTagInputRef.current = "";
         setDetailDraft(savedDraft);
+        setSavedOcrText(savedDraft.ocrText);
         setDetailTagInput("");
       }
 
@@ -3457,7 +3616,13 @@ export default function AtlasWorkbench() {
   }
 
   async function saveDetails() {
-    if (!selectedImage || !(await saveImageDetails(selectedImage))) {
+    if (!selectedImage) {
+      return;
+    }
+
+    detailDraftRef.current = detailDraft;
+    detailTagInputRef.current = detailTagInput;
+    if (!(await saveImageDetails(selectedImage))) {
       return;
     }
 
@@ -4086,6 +4251,7 @@ export default function AtlasWorkbench() {
       const loadedDraft = detailDraftFromImage(result.image);
       detailDraftRef.current = loadedDraft;
       setDetailDraft(loadedDraft);
+      setSavedOcrText(loadedDraft.ocrText);
     } catch {
       // Keep the atlas summary visible if the full detail request fails.
     }
@@ -4098,6 +4264,7 @@ export default function AtlasWorkbench() {
     detailTagInputRef.current = "";
     setSelectedImageId(image.id);
     setDetailDraft(nextDraft);
+    setSavedOcrText(nextDraft.ocrText);
     hydrateAnnotationDrafts(image);
     setDetailTagInput("");
     void loadImageDetails(image.id);
@@ -4369,6 +4536,7 @@ export default function AtlasWorkbench() {
   }
 
   function setPersistedViewModeWithPagination(mode: ViewMode) {
+    setIndexContextMenu(null);
     setIsManageViewerOpen(false);
     setIsEditingAnnotations(false);
     setEditingAnnotationId(null);
@@ -5817,14 +5985,31 @@ export default function AtlasWorkbench() {
                   </p>
                 ) : null}
                 <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-zinc-500">{t.ocrText}</span>
+                  <span className="mb-1 flex items-center justify-between gap-2 text-xs font-medium text-zinc-500">
+                    <span>{t.ocrText}</span>
+                    {isOcrTextDirty ? (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
+                        {t.ocrUnsaved}
+                      </span>
+                    ) : null}
+                  </span>
                   <textarea
                     value={detailDraft.ocrText}
                     onChange={(event) => setDetailDraft((draft) => ({ ...draft, ocrText: event.target.value }))}
                     placeholder={t.noOcrText}
-                    className="min-h-32 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-xs leading-5 outline-none focus:border-zinc-500"
+                    className="min-h-32 w-full resize-y rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs leading-5 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
                   />
                 </label>
+                <p className="text-[11px] leading-4 text-zinc-500">{t.ocrEditHint}</p>
+                <button
+                  type="button"
+                  onClick={() => void saveDetails()}
+                  disabled={detailsSaving || !isOcrTextDirty}
+                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400"
+                >
+                  {detailsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  <span>{detailsSaving ? t.saving : t.saveOcrText}</span>
+                </button>
               </div>
 
               <dl className="mt-5 grid grid-cols-2 gap-2 text-xs">
@@ -6094,71 +6279,12 @@ export default function AtlasWorkbench() {
           </div>
         </div>
       ) : null}
-      {indexContextMenu && isManageMode ? (
-        <div
-          className="fixed z-40 w-56 rounded-md border border-zinc-200 bg-white p-1 text-sm shadow-xl"
-          style={{ left: indexContextMenu.x, top: indexContextMenu.y }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <button
-            type="button"
-            onClick={() => void createBackup(indexContextMenu.node)}
-            disabled={backingUp}
-            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent"
-          >
-            <Download className="h-4 w-4" />
-            <span>{t.exportIndex}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => collapseLeafIndexes(indexContextMenu.node)}
-            disabled={indexContextMenu.node.children.length === 0}
-            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent"
-            title={indexContextMenu.node.children.length === 0 ? t.collapseLeafIndexesDisabled : t.collapseLeafIndexes}
-          >
-            <ChevronRight className="h-4 w-4" />
-            <span>{t.collapseLeafIndexes}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setRequestedNavigatorEditNode(indexContextMenu.node);
-              setIndexContextMenu(null);
-            }}
-            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-zinc-700 hover:bg-zinc-100"
-          >
-            <TagIcon className="h-4 w-4" />
-            <span>{locale === "zh" ? "编辑导航属性" : "Edit navigator attributes"}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => openIndexAction({ mode: "rename", node: indexContextMenu.node })}
-            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-zinc-700 hover:bg-zinc-100"
-          >
-            <PencilLine className="h-4 w-4" />
-            <span>{t.renameIndex}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => openIndexAction({ mode: "delete", node: indexContextMenu.node })}
-            disabled={indexContextImageCount > 0}
-            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent"
-            title={indexContextImageCount > 0 ? t.deleteIndexDisabled : t.deleteIndex}
-          >
-            <Trash2 className="h-4 w-4" />
-            <span>{t.deleteIndex}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => openIndexAction({ mode: "clear", node: indexContextMenu.node })}
-            disabled={indexContextImageCount === 0}
-            className="flex h-9 w-full items-center gap-2 rounded px-2 text-left text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent"
-            title={indexContextImageCount === 0 ? t.clearIndexImagesDisabled : t.clearIndexImages}
-          >
-            <AlertTriangle className="h-4 w-4" />
-            <span>{t.clearIndexImages}</span>
-          </button>
-        </div>
+      {indexContextMenu ? (
+        <IndexNodeContextMenu
+          items={indexContextMenuItems}
+          x={indexContextMenu.x}
+          y={indexContextMenu.y}
+        />
       ) : null}
       {indexAction ? (
         <div

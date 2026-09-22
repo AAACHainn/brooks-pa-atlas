@@ -48,6 +48,7 @@ import { createPortal } from "react-dom";
 import ExamMode from "@/app/exam-mode";
 import { useAppDialog } from "@/app/app-dialog";
 import IndexNavigatorPanel from "@/app/index-navigator-panel";
+import { shouldDeferEmptyFocusedAnnotationSave } from "@/lib/image-annotation-drafts";
 import { buildImageQueryKey } from "@/lib/image-query-key";
 
 type IndexTreeNode = {
@@ -2390,6 +2391,7 @@ export default function AtlasWorkbench() {
   const annotationDraftsRef = useRef<ImageAnnotation[]>([]);
   const annotationSaveImageIdRef = useRef<string | null>(null);
   const editingAnnotationIdRef = useRef<string | null>(null);
+  const focusedAnnotationIdRef = useRef<string | null>(null);
   const annotationDirtyRef = useRef(false);
   const annotationSaveTimerRef = useRef<number | null>(null);
   const annotationStageRef = useRef<HTMLDivElement | null>(null);
@@ -2921,6 +2923,7 @@ export default function AtlasWorkbench() {
       setIsManageViewerOpen(false);
       setIsEditingAnnotations(false);
       setEditingAnnotationId(null);
+      focusedAnnotationIdRef.current = null;
     }
   }, [isManageViewerOpen, selectedImage]);
 
@@ -4033,6 +4036,7 @@ export default function AtlasWorkbench() {
     setAnnotationDrafts(annotations);
     setEditingAnnotationId(null);
     editingAnnotationIdRef.current = null;
+    focusedAnnotationIdRef.current = null;
     setDraggingAnnotation(null);
     setResizingAnnotation(null);
     setAnnotationSaveFailed(false);
@@ -4082,6 +4086,15 @@ export default function AtlasWorkbench() {
     if (annotationSaveTimerRef.current) {
       window.clearTimeout(annotationSaveTimerRef.current);
       annotationSaveTimerRef.current = null;
+    }
+
+    if (
+      shouldDeferEmptyFocusedAnnotationSave(
+        annotations,
+        focusedAnnotationIdRef.current,
+      )
+    ) {
+      return true;
     }
 
     const cleanedAnnotations = cleanAnnotations(annotations);
@@ -4220,6 +4233,9 @@ export default function AtlasWorkbench() {
 
   function deleteAnnotation(annotationId: string) {
     updateAnnotationDrafts((annotations) => annotations.filter((annotation) => annotation.id !== annotationId));
+    if (focusedAnnotationIdRef.current === annotationId) {
+      focusedAnnotationIdRef.current = null;
+    }
     if (editingAnnotationId === annotationId) {
       setEditingAnnotationId(null);
     }
@@ -4358,6 +4374,7 @@ export default function AtlasWorkbench() {
     setIsManageViewerOpen(false);
     setIsEditingAnnotations(false);
     setEditingAnnotationId(null);
+    focusedAnnotationIdRef.current = null;
     void saveAnnotationsNow();
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() =>
@@ -4515,6 +4532,7 @@ export default function AtlasWorkbench() {
       const nextValue = !current;
       if (!nextValue) {
         setEditingAnnotationId(null);
+        focusedAnnotationIdRef.current = null;
         void saveAnnotationsNow();
       } else {
         setShowBrowseAnnotations(true);
@@ -4536,6 +4554,7 @@ export default function AtlasWorkbench() {
     setIsManageViewerOpen(false);
     setIsEditingAnnotations(false);
     setEditingAnnotationId(null);
+    focusedAnnotationIdRef.current = null;
     void saveAnnotationsNow();
 
     if (mode !== "manage") {
@@ -4614,7 +4633,7 @@ export default function AtlasWorkbench() {
         className={`${layoutClass} ${isResizingSidebar ? "select-none" : ""}`}
         style={{ "--atlas-sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}
       >
-        <aside className="relative min-w-0 border-r border-zinc-200 bg-white">
+        <aside className="relative min-w-0 border-r border-zinc-200 bg-white xl:sticky xl:top-0 xl:h-screen xl:self-start">
           {isSidebarCollapsed ? (
             <div className="flex min-h-screen flex-col items-center gap-3 py-3">
               <button
@@ -5419,7 +5438,17 @@ export default function AtlasWorkbench() {
                                     </button>
                                     <textarea
                                       value={annotation.text}
-                                      onFocus={() => setEditingAnnotationId(annotation.id)}
+                                      onFocus={() => {
+                                        focusedAnnotationIdRef.current = annotation.id;
+                                        editingAnnotationIdRef.current = annotation.id;
+                                        setEditingAnnotationId(annotation.id);
+                                      }}
+                                      onBlur={() => {
+                                        if (focusedAnnotationIdRef.current === annotation.id) {
+                                          focusedAnnotationIdRef.current = null;
+                                        }
+                                        void saveAnnotationsNow();
+                                      }}
                                       onPointerDown={(event) => event.stopPropagation()}
                                       onChange={(event) =>
                                         updateAnnotationDrafts((annotations) =>

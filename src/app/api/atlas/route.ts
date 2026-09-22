@@ -6,6 +6,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { findAtlasImagePage } from "@/lib/atlas-images";
 import { serializeImageAnnotation } from "@/lib/image-annotations";
+import { findLiteralSearchImageIds } from "@/lib/image-search";
 import { getIndexTree } from "@/lib/index-tree";
 import { navigatorImageWhere } from "@/lib/index-navigator";
 
@@ -93,25 +94,18 @@ export async function GET(request: Request) {
               ],
             }
           : {},
-        query
-          ? {
-              OR: [
-                { originalName: { contains: query } },
-                { title: { contains: query } },
-                { notes: { contains: query } },
-                { ocrText: { contains: query } },
-                { indexNode: { path: { contains: query } } },
-                { tags: { some: { tag: { name: { contains: query } } } } },
-                { annotations: { some: { text: { contains: query } } } },
-              ],
-            }
-          : {},
         ...tagIds.map((tagId) => ({ tags: { some: { tagId } } })),
         ...(navigatorWhere ? [navigatorWhere] : []),
       ],
     };
     const imageStartedAt = performance.now();
-    const { images, pagination } = await findAtlasImagePage(imageWhere, requestedPage, pageSize);
+    const matchingImageIds = query ? await findLiteralSearchImageIds(query) : null;
+    const { images, pagination } = await findAtlasImagePage(
+      imageWhere,
+      requestedPage,
+      pageSize,
+      matchingImageIds,
+    );
     imageDuration = performance.now() - imageStartedAt;
     payload.images = images.map((image) => ({
       id: image.id,

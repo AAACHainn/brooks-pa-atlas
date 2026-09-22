@@ -11,11 +11,15 @@ export async function findAtlasImagePage(
   where: Prisma.ChartImageWhereInput,
   page: number,
   pageSize: number,
+  matchingImageIds: ReadonlySet<string> | null = null,
 ) {
-  const lightweight = await prisma.chartImage.findMany({
+  const candidateImages = await prisma.chartImage.findMany({
     where,
     select: { id: true, originalName: true, createdAt: true },
   });
+  const lightweight = matchingImageIds
+    ? candidateImages.filter((image) => matchingImageIds.has(image.id))
+    : candidateImages;
   lightweight.sort((left, right) => {
     const nameComparison = imageNameCollator.compare(left.originalName, right.originalName);
     return nameComparison || left.createdAt.getTime() - right.createdAt.getTime();

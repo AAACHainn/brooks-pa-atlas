@@ -77,6 +77,7 @@ npm run dev
 npm run lint
 npm run build
 npm run test:navigator
+npm run test:search
 npm run test:thumbnails
 npm run prisma:generate
 npm run db:migrate
@@ -94,6 +95,7 @@ docker compose down
 - `npm run lint` 运行 ESLint。
 - `npm run build` 运行生产构建和类型检查。
 - `npm run test:navigator` 运行导航本地匹配数、跨分类 AND、目录搜索和自然排序单元测试。
+- `npm run test:search` 运行图片关键词搜索的字面量匹配测试，确保 `%`、`_` 和反斜杠不会被当作通配符。
 - `npm run test:thumbnails` 运行缩略图路径、缓存、尺寸、并发合并和图片查询键测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
@@ -259,6 +261,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 
 - 左侧目录 + 右侧图片浏览。
 - 顶部搜索可与目录筛选、标签多选筛选组合；多个精确标签使用交集语义。
+- 顶部搜索按字面量匹配原始文件名、标题、备注、OCR、索引路径、标签和图片文字标注；`%`、`_`、反斜杠等字符不作为数据库通配符。
 - 索引导航器可与关键词、标签和具体目录取交集；每个导航分类内单选，不同分类间按 AND。分类、选项和节点关联首次加载后，匹配数、目录结果和零结果置灰均在浏览器本地即时计算，不随每次点击重复请求服务器。
 - 选中图片后显示大图查看器。
 - 查看器固定高度并可拖动调整，缩放范围 `50%` 到 `220%`。

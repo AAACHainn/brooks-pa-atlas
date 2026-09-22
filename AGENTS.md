@@ -64,6 +64,7 @@ Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart
 - `sharp` 读取图片尺寸，并压缩 PDF 页面转换后的图片
 - `lucide-react` 提供图标
 - `pdfjs-dist` 解析 PDF 页和内置书签目录
+- `next.config.ts` 通过 `outputFileTracingIncludes` 把 `pdf.worker.mjs` 纳入两个 PDF 导入路由的 standalone 产物；不要移除此配置，否则 Docker 精简运行镜像会在运行时解析 worker 失败。
 - `@napi-rs/canvas` 在 Node.js 中渲染 PDF 页面
 - `yazl`、`yauzl` 用于跨平台 zip 备份和恢复
 - `zod`、`xlsx`、`fuse.js` 已作为依赖存在，其中部分能力还不是核心路径

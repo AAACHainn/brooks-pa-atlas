@@ -18,6 +18,14 @@ const nextConfig: NextConfig = {
   output: "standalone",
   allowedDevOrigins,
   serverExternalPackages: ["@napi-rs/canvas", "pdfjs-dist"],
+  outputFileTracingIncludes: {
+    "/api/import/documents": [
+      "./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+    ],
+    "/api/import/documents/jobs": [
+      "./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+    ],
+  },
   turbopack: {
     // Avoid parent lockfiles making Turbopack treat a user or monorepo directory as this app's root.
     root: turbopackRoot,

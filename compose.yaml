@@ -3,12 +3,12 @@ services:
     build:
       context: .
       args:
-        APP_VERSION: v1.2
-    image: brooks-pa-atlas:v1.2
+        APP_VERSION: v1.5
+    image: brooks-pa-atlas:v1.5
     container_name: brooks-pa-atlas
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${BROOKS_PORT:-3000}:3000"
     environment:
       DATABASE_URL: file:/app/data/dev.db
       BROOKS_LIBRARY_ROOT: /app/data/library/images

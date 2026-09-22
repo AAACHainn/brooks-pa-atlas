@@ -9,7 +9,7 @@
     "start": "next start",
     "start:lan": "next start -H 0.0.0.0",
     "lint": "eslint",
-    "test:annotations": "tsx --test src/lib/image-annotation-drafts.test.ts",
+    "test:annotations": "tsx --test src/lib/image-annotation-drafts.test.ts src/lib/annotation-colors.test.ts",
     "test:navigator": "tsx --test src/lib/index-navigator-client.test.ts",
     "test:search": "tsx --test src/lib/image-search.test.ts",
     "test:thumbnails": "tsx --test src/lib/thumbnail-suite.test.ts",

@@ -45,6 +45,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import AnnotationColorPicker from "@/app/annotation-color-picker";
 import ExamMode from "@/app/exam-mode";
 import { useAppDialog } from "@/app/app-dialog";
 import IndexNavigatorPanel from "@/app/index-navigator-panel";
@@ -507,6 +508,9 @@ const copy = {
     annotationStyle: "标注样式",
     annotationFontSize: "字号",
     annotationColor: "颜色",
+    annotationUsedColors: "使用过的颜色",
+    annotationBaseColors: "基础色",
+    annotationMoreColors: "更多颜色",
     addAnnotationHint: "点击图片添加文字标注",
     annotationTextPlaceholder: "输入标注",
     deleteAnnotation: "删除标注",
@@ -717,6 +721,9 @@ const copy = {
     annotationStyle: "Annotation style",
     annotationFontSize: "Size",
     annotationColor: "Color",
+    annotationUsedColors: "Used colors",
+    annotationBaseColors: "Basic colors",
+    annotationMoreColors: "More colors",
     addAnnotationHint: "Click the image to add a text note",
     annotationTextPlaceholder: "Enter annotation",
     deleteAnnotation: "Delete annotation",
@@ -5554,24 +5561,28 @@ export default function AtlasWorkbench() {
                 {isEditingAnnotations && selectedAnnotation ? (
                   <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
                     <span className="font-semibold text-zinc-700">{t.annotationStyle}</span>
-                    <label className="inline-flex items-center gap-2">
+                    <div className="inline-flex items-center gap-2">
                       <span>{t.annotationColor}</span>
-                      <input
-                        type="color"
+                      <AnnotationColorPicker
                         value={selectedAnnotation.color}
-                        onChange={(event) =>
+                        usedColors={annotationDrafts.map((annotation) => annotation.color)}
+                        onChange={(color) =>
                           updateAnnotationDrafts((annotations) =>
                             annotations.map((annotation) =>
                               annotation.id === selectedAnnotation.id
-                                ? { ...annotation, color: event.target.value }
+                                ? { ...annotation, color }
                                 : annotation,
                             ),
                           )
                         }
-                        className="h-7 w-9 rounded border border-zinc-200 bg-white p-0.5"
-                        aria-label={t.annotationColor}
+                        labels={{
+                          color: t.annotationColor,
+                          usedColors: t.annotationUsedColors,
+                          baseColors: t.annotationBaseColors,
+                          moreColors: t.annotationMoreColors,
+                        }}
                       />
-                    </label>
+                    </div>
                     <label className="inline-flex min-w-52 items-center gap-2">
                       <span>{t.annotationFontSize}</span>
                       <input

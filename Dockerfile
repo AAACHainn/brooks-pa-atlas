@@ -17,7 +17,7 @@ RUN npm run build
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 
-ARG APP_VERSION=v1.6
+ARG APP_VERSION=v2.0
 LABEL org.opencontainers.image.title="Brooks PA Atlas" \
       org.opencontainers.image.version="${APP_VERSION}"
 

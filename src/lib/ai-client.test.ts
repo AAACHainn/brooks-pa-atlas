@@ -5,6 +5,7 @@ import {
   AiServiceError,
   createAiChatCompletion,
   fetchAiModels,
+  streamAiChatCompletion,
 } from "@/lib/ai-client";
 import { buildOcrRefinementMessages } from "@/lib/ai-ocr-refinement";
 import type { StoredAiEndpoint } from "@/lib/ai-config";
@@ -141,4 +142,44 @@ test("requests enforce the configured timeout", async () => {
     }),
     (error: unknown) => error instanceof AiServiceError && error.kind === "timeout",
   );
+});
+
+test("streaming chat parses SSE split across chunks", async () => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Hel'));
+      controller.enqueue(encoder.encode('lo"}}]}\n\ndata: {"choices":[{"delta":{"content":" 世界"}}]}\n'));
+      controller.enqueue(encoder.encode("\ndata: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+  const chunks: string[] = [];
+  for await (const chunk of streamAiChatCompletion(
+    endpoint(),
+    "vision-model",
+    [{ role: "user", content: "test" }],
+    {
+      fetchImpl: async () =>
+        new Response(stream, { headers: { "Content-Type": "text/event-stream" } }),
+    },
+  )) {
+    chunks.push(chunk);
+  }
+  assert.deepEqual(chunks, ["Hello", " 世界"]);
+});
+
+test("streaming chat accepts providers that return normal JSON", async () => {
+  const chunks: string[] = [];
+  for await (const chunk of streamAiChatCompletion(
+    endpoint(),
+    "vision-model",
+    [{ role: "user", content: "test" }],
+    {
+      fetchImpl: async () => Response.json({ choices: [{ message: { content: "Complete" } }] }),
+    },
+  )) {
+    chunks.push(chunk);
+  }
+  assert.deepEqual(chunks, ["Complete"]);
 });

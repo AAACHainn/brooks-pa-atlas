@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   AI_CONFIG_VERSION,
   DEFAULT_OCR_REFINEMENT_PROMPT,
+  DEFAULT_READING_COMPANION_PROMPT,
   defaultStoredAiConfig,
   mergeAiConfigSecrets,
   parseStoredAiConfig,
@@ -41,6 +42,7 @@ function input(overrides: Partial<AiConfigInput> = {}): AiConfigInput {
     activeEndpointId: "endpoint-1",
     skills: {
       ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" },
+      readingCompanion: { prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" },
     },
     ...overrides,
   };
@@ -53,6 +55,21 @@ test("missing or invalid persisted AI config falls back to the built-in skill", 
     parseStoredAiConfig("{}").skills.ocrRefinement.prompt,
     DEFAULT_OCR_REFINEMENT_PROMPT,
   );
+});
+
+test("legacy v1 configuration gains the reading companion without losing endpoints", () => {
+  const legacy = {
+    version: AI_CONFIG_VERSION,
+    endpoints: [endpoint()],
+    activeEndpointId: "endpoint-1",
+    skills: {
+      ocrRefinement: { prompt: "legacy prompt", modelOverride: "model-a" },
+    },
+  };
+  const parsed = parseStoredAiConfig(JSON.stringify(legacy));
+  assert.equal(parsed.endpoints[0].apiKey, "secret-key");
+  assert.equal(parsed.skills.ocrRefinement.prompt, "legacy prompt");
+  assert.equal(parsed.skills.readingCompanion.prompt, DEFAULT_READING_COMPANION_PROMPT);
 });
 
 test("saving retains, replaces, and explicitly clears endpoint secrets", () => {
@@ -81,6 +98,8 @@ test("sanitized config never returns API key material and reports readiness", ()
     activeEndpointId: "endpoint-1",
   });
   assert.equal(dto.ready, true);
+  assert.equal(dto.skillReady.ocrRefinement, true);
+  assert.equal(dto.skillReady.readingCompanion, true);
   assert.equal(dto.endpoints[0].hasApiKey, true);
   assert.equal("apiKey" in dto.endpoints[0], false);
   assert.doesNotMatch(JSON.stringify(dto), /secret-key/);

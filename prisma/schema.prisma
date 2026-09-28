@@ -50,6 +50,11 @@ enum OcrBatchJobItemStatus {
   FAILED
 }
 
+enum AiReadingMessageRole {
+  USER
+  ASSISTANT
+}
+
 enum ExamPaperStatus {
   DRAFT
   PUBLISHED
@@ -118,11 +123,42 @@ model ChartImage {
   tags          ChartImageTag[]
   annotations   ImageAnnotation[]
   ocrBatchJobItems OcrBatchJobItem[]
+  aiReadingMessages AiReadingMessage[]
 
   @@index([indexNodeId])
   @@index([importBatchId])
   @@index([ocrStatus])
   @@index([originalName])
+}
+
+model AiReadingConversation {
+  id        String   @id @default(cuid())
+  title     String?
+  nextTurn  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages AiReadingMessage[]
+
+  @@index([updatedAt])
+}
+
+model AiReadingMessage {
+  id               String               @id @default(cuid())
+  conversationId   String
+  role             AiReadingMessageRole
+  sequence         Int
+  content          String
+  chartImageId     String?
+  imageContextJson String?
+  createdAt        DateTime             @default(now())
+
+  conversation AiReadingConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  chartImage    ChartImage?           @relation(fields: [chartImageId], references: [id], onDelete: SetNull)
+
+  @@unique([conversationId, sequence])
+  @@index([conversationId, createdAt])
+  @@index([chartImageId])
 }
 
 model OcrBatchJob {

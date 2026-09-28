@@ -22,7 +22,9 @@ import {
   type AiEndpointDto,
   type AiProvider,
   DEFAULT_OCR_REFINEMENT_PROMPT,
+  DEFAULT_READING_COMPANION_PROMPT,
   OCR_REFINEMENT_SKILL_KEY,
+  READING_COMPANION_SKILL_KEY,
   resolveAiEndpointUrls,
 } from "@/lib/ai-config";
 
@@ -74,10 +76,13 @@ const labels = {
     noModels: "暂无模型，可拉取或手动添加。",
     skillTitle: "AI 精校 OCR",
     skillDescription: "结合原图校对当前 OCR 草稿。模型返回结果后只更新未保存草稿。",
+    readingSkillTitle: "AI 阅读伴侣",
+    readingSkillDescription: "结合当前图片及其全部学习资料，进行翻译、讲解、比较和讨论。",
     prompt: "提示词",
     modelOverride: "模型覆盖",
     inheritModel: "继承启用端点的默认模型",
     privacy: "精校时会把当前图片和 OCR 文本发送到启用的外部端点。",
+    readingPrivacy: "伴读时会把近期会话、参考图片及其标签、备注、OCR、标注、索引属性发送到启用的外部端点。",
     cancel: "取消",
     save: "保存设置",
     saving: "保存中",
@@ -129,10 +134,13 @@ const labels = {
     noModels: "No models yet. Fetch or add one manually.",
     skillTitle: "AI OCR refinement",
     skillDescription: "Proofread the current OCR draft against the image. Results remain unsaved until you save them.",
+    readingSkillTitle: "AI reading companion",
+    readingSkillDescription: "Translate, explain, compare, and discuss the current image with all saved study context.",
     prompt: "Prompt",
     modelOverride: "Model override",
     inheritModel: "Inherit active endpoint default",
     privacy: "Refinement sends the current image and OCR text to the active external endpoint.",
+    readingPrivacy: "Reading companion sends recent conversation, reference images, tags, notes, OCR, annotations, and index attributes to the active external endpoint.",
     cancel: "Cancel",
     save: "Save settings",
     saving: "Saving",
@@ -212,18 +220,20 @@ export default function AppSettingsDialog({
   locale,
   onClose,
   onSaved,
+  initialTab = "endpoints",
 }: {
   open: boolean;
   locale: Locale;
   onClose: () => void;
   onSaved: (config: AiConfigDto) => void;
+  initialTab?: SettingsTab;
 }) {
   const t = labels[locale];
   const { showAlert, showConfirm, dialogElement } = useAppDialog({
     confirm: t.confirm,
     cancel: t.cancel,
   });
-  const [tab, setTab] = useState<SettingsTab>("endpoints");
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [config, setConfig] = useState<ConfigDraft | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -234,6 +244,7 @@ export default function AppSettingsDialog({
 
   useEffect(() => {
     if (!open) return;
+    const tabTimer = window.setTimeout(() => setTab(initialTab), 0);
     fetch("/api/settings/ai", { cache: "no-store" })
       .then(async (response) => {
         const result = (await response.json().catch(() => null)) as
@@ -253,6 +264,14 @@ export default function AppSettingsDialog({
                 prompt: DEFAULT_OCR_REFINEMENT_PROMPT,
                 modelOverride: "",
               },
+              [READING_COMPANION_SKILL_KEY]: {
+                prompt: DEFAULT_READING_COMPANION_PROMPT,
+                modelOverride: "",
+              },
+            },
+            skillReady: {
+              [OCR_REFINEMENT_SKILL_KEY]: false,
+              [READING_COMPANION_SKILL_KEY]: false,
             },
             ready: false,
           }),
@@ -264,7 +283,8 @@ export default function AppSettingsDialog({
         });
       })
       .finally(() => setLoading(false));
-  }, [open, showAlert, t.loadFailed, t.operationFailed]);
+    return () => window.clearTimeout(tabTimer);
+  }, [initialTab, open, showAlert, t.loadFailed, t.operationFailed]);
 
   useEffect(() => {
     if (!open) return;
@@ -733,65 +753,80 @@ export default function AppSettingsDialog({
                     })}
                   </div>
                 ) : (
-                  <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
-                    <div className="flex items-start gap-3">
-                      <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-cyan-200 bg-cyan-50 text-cyan-700">
-                        <Sparkles className="h-5 w-5" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-semibold text-zinc-950">{t.skillTitle}</h3>
-                        <p className="mt-1 text-xs leading-5 text-zinc-500">{t.skillDescription}</p>
-                      </div>
-                    </div>
-                    <label className="mt-5 block text-xs font-medium text-zinc-600">
-                      {t.modelOverride}
-                      <select
-                        value={config.skills[OCR_REFINEMENT_SKILL_KEY].modelOverride}
-                        onChange={(event) => setConfig((current) => current ? {
-                          ...current,
-                          skills: {
-                            ...current.skills,
-                            [OCR_REFINEMENT_SKILL_KEY]: {
-                              ...current.skills[OCR_REFINEMENT_SKILL_KEY],
-                              modelOverride: event.target.value,
-                            },
-                          },
-                        } : current)}
-                        className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-cyan-500"
-                      >
-                        <option value="">{t.inheritModel}</option>
-                        {config.skills[OCR_REFINEMENT_SKILL_KEY].modelOverride &&
-                        !activeEndpoint?.models.includes(
-                          config.skills[OCR_REFINEMENT_SKILL_KEY].modelOverride,
-                        ) ? (
-                          <option value={config.skills[OCR_REFINEMENT_SKILL_KEY].modelOverride}>
-                            {config.skills[OCR_REFINEMENT_SKILL_KEY].modelOverride}
-                          </option>
-                        ) : null}
-                        {activeEndpoint?.models.map((model) => <option key={model} value={model}>{model}</option>)}
-                      </select>
-                    </label>
-                    <label className="mt-4 block text-xs font-medium text-zinc-600">
-                      {t.prompt}
-                      <textarea
-                        value={config.skills[OCR_REFINEMENT_SKILL_KEY].prompt}
-                        onChange={(event) => setConfig((current) => current ? {
-                          ...current,
-                          skills: {
-                            ...current.skills,
-                            [OCR_REFINEMENT_SKILL_KEY]: {
-                              ...current.skills[OCR_REFINEMENT_SKILL_KEY],
-                              prompt: event.target.value,
-                            },
-                          },
-                        } : current)}
-                        className="mt-1 min-h-52 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-sm leading-6 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
-                      />
-                    </label>
-                    <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-                      {t.privacy}
-                    </p>
-                  </section>
+                  <div className="space-y-4">
+                    {([
+                      {
+                        key: OCR_REFINEMENT_SKILL_KEY,
+                        title: t.skillTitle,
+                        description: t.skillDescription,
+                        privacy: t.privacy,
+                      },
+                      {
+                        key: READING_COMPANION_SKILL_KEY,
+                        title: t.readingSkillTitle,
+                        description: t.readingSkillDescription,
+                        privacy: t.readingPrivacy,
+                      },
+                    ] as const).map((skillDefinition) => {
+                      const skill = config.skills[skillDefinition.key];
+                      return (
+                        <section key={skillDefinition.key} className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
+                          <div className="flex items-start gap-3">
+                            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-cyan-200 bg-cyan-50 text-cyan-700">
+                              <Sparkles className="h-5 w-5" />
+                            </div>
+                            <div>
+                              <h3 className="text-sm font-semibold text-zinc-950">{skillDefinition.title}</h3>
+                              <p className="mt-1 text-xs leading-5 text-zinc-500">{skillDefinition.description}</p>
+                            </div>
+                          </div>
+                          <label className="mt-5 block text-xs font-medium text-zinc-600">
+                            {t.modelOverride}
+                            <select
+                              value={skill.modelOverride}
+                              onChange={(event) => setConfig((current) => current ? {
+                                ...current,
+                                skills: {
+                                  ...current.skills,
+                                  [skillDefinition.key]: {
+                                    ...current.skills[skillDefinition.key],
+                                    modelOverride: event.target.value,
+                                  },
+                                },
+                              } : current)}
+                              className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-cyan-500"
+                            >
+                              <option value="">{t.inheritModel}</option>
+                              {skill.modelOverride && !activeEndpoint?.models.includes(skill.modelOverride) ? (
+                                <option value={skill.modelOverride}>{skill.modelOverride}</option>
+                              ) : null}
+                              {activeEndpoint?.models.map((model) => <option key={model} value={model}>{model}</option>)}
+                            </select>
+                          </label>
+                          <label className="mt-4 block text-xs font-medium text-zinc-600">
+                            {t.prompt}
+                            <textarea
+                              value={skill.prompt}
+                              onChange={(event) => setConfig((current) => current ? {
+                                ...current,
+                                skills: {
+                                  ...current.skills,
+                                  [skillDefinition.key]: {
+                                    ...current.skills[skillDefinition.key],
+                                    prompt: event.target.value,
+                                  },
+                                },
+                              } : current)}
+                              className="mt-1 min-h-52 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-sm leading-6 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                            />
+                          </label>
+                          <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+                            {skillDefinition.privacy}
+                          </p>
+                        </section>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
 

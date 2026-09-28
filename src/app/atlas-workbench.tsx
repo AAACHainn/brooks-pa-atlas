@@ -49,13 +49,18 @@ import {
 import { createPortal } from "react-dom";
 
 import AnnotationColorPicker from "@/app/annotation-color-picker";
+import AiReadingCompanion from "@/app/ai-reading-companion";
 import AppSettingsDialog from "@/app/app-settings-dialog";
 import ExamMode from "@/app/exam-mode";
 import { useAppDialog } from "@/app/app-dialog";
 import IndexNavigatorPanel from "@/app/index-navigator-panel";
 import { shouldDeferEmptyFocusedAnnotationSave } from "@/lib/image-annotation-drafts";
 import { buildImageQueryKey } from "@/lib/image-query-key";
-import type { AiConfigDto } from "@/lib/ai-config";
+import {
+  OCR_REFINEMENT_SKILL_KEY,
+  READING_COMPANION_SKILL_KEY,
+  type AiConfigDto,
+} from "@/lib/ai-config";
 
 type IndexTreeNode = {
   id: string;
@@ -273,6 +278,7 @@ type OcrBatchJobSnapshot = {
 type Locale = "zh" | "en";
 type ViewMode = "browse" | "manage" | "exam";
 type IndexContextMenu = { node: IndexTreeNode; x: number; y: number };
+type ImageContextMenu = { x: number; y: number };
 type IndexContextMenuItem = {
   id: string;
   label: string;
@@ -526,6 +532,7 @@ const copy = {
     aiRefineOcr: "AI 精校",
     aiRefiningOcr: "AI 精校中",
     aiRefineFailed: "AI 精校失败，请稍后重试。",
+    aiReadingCompanion: "AI 伴读",
     aiRefineNeedsConfig: "请先完成 AI 端点和模型配置。",
     aiRefineEmpty: "请先执行 OCR 或输入需要精校的文本。",
     ocrOverwriteConfirm: "当前已有 OCR 文本。重新 OCR 会在完成后覆盖现有内容，是否继续？",
@@ -765,6 +772,7 @@ const copy = {
     aiRefineOcr: "AI refine",
     aiRefiningOcr: "AI refining",
     aiRefineFailed: "AI OCR refinement failed. Please try again.",
+    aiReadingCompanion: "AI companion",
     aiRefineNeedsConfig: "Configure an active AI endpoint and model first.",
     aiRefineEmpty: "Run OCR or enter text to refine first.",
     ocrOverwriteConfirm: "This image already has OCR text. Running OCR again will overwrite it when completed. Continue?",
@@ -2280,7 +2288,7 @@ function IndexNodeContextMenu({
     <div
       ref={menuRef}
       role="menu"
-      className="fixed z-40 max-h-[calc(100vh-1rem)] w-56 overflow-y-auto rounded-md border border-zinc-200 bg-white p-1 text-sm shadow-xl"
+      className="fixed z-[70] max-h-[calc(100vh-1rem)] w-56 overflow-y-auto rounded-md border border-zinc-200 bg-white p-1 text-sm shadow-xl"
       style={{ left: x, top: y }}
       onClick={(event) => event.stopPropagation()}
     >
@@ -2390,7 +2398,10 @@ export default function AtlasWorkbench() {
   const [backupTask, setBackupTask] = useState<BackupJobSnapshot | null>(null);
   const [isBackupManagerOpen, setIsBackupManagerOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<"endpoints" | "skills">("endpoints");
   const [aiConfigReady, setAiConfigReady] = useState(false);
+  const [readingCompanionReady, setReadingCompanionReady] = useState(false);
+  const [isReadingCompanionOpen, setIsReadingCompanionOpen] = useState(false);
   const [backupRecords, setBackupRecords] = useState<BackupRecord[]>([]);
   const [backupRecordsLoading, setBackupRecordsLoading] = useState(false);
   const [backupRecordsError, setBackupRecordsError] = useState<string | null>(null);
@@ -2431,6 +2442,7 @@ export default function AtlasWorkbench() {
   const [pendingDeleteImage, setPendingDeleteImage] = useState<ChartImage | null>(null);
   const [deletingImageId, setDeletingImageId] = useState<string | null>(null);
   const [indexContextMenu, setIndexContextMenu] = useState<IndexContextMenu | null>(null);
+  const [imageContextMenu, setImageContextMenu] = useState<ImageContextMenu | null>(null);
   const [indexAction, setIndexAction] = useState<IndexAction | null>(null);
   const [indexActionBusy, setIndexActionBusy] = useState(false);
   const [renameIndexName, setRenameIndexName] = useState("");
@@ -2685,10 +2697,18 @@ export default function AtlasWorkbench() {
         const result = (await response.json().catch(() => null)) as
           | { config?: AiConfigDto }
           | null;
-        if (!cancelled) setAiConfigReady(Boolean(response.ok && result?.config?.ready));
+        if (!cancelled) {
+          setAiConfigReady(
+            Boolean(response.ok && result?.config?.skillReady[OCR_REFINEMENT_SKILL_KEY]),
+          );
+          setReadingCompanionReady(
+            Boolean(response.ok && result?.config?.skillReady[READING_COMPANION_SKILL_KEY]),
+          );
+        }
       })
       .catch(() => {
         if (!cancelled) setAiConfigReady(false);
+        if (!cancelled) setReadingCompanionReady(false);
       });
     return () => {
       cancelled = true;
@@ -3062,12 +3082,13 @@ export default function AtlasWorkbench() {
   }, [isResizingImportTable]);
 
   useEffect(() => {
-    if (!indexContextMenu) {
+    if (!indexContextMenu && !imageContextMenu) {
       return;
     }
 
     function closeMenu() {
       setIndexContextMenu(null);
+      setImageContextMenu(null);
     }
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -3087,7 +3108,7 @@ export default function AtlasWorkbench() {
       window.removeEventListener("resize", closeMenu);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [indexContextMenu]);
+  }, [imageContextMenu, indexContextMenu]);
 
   const flatIndexes = useMemo(() => flattenTree(data?.tree ?? []), [data?.tree]);
   const selectedIndexPath =
@@ -3195,6 +3216,19 @@ export default function AtlasWorkbench() {
               },
             ]
           : []),
+      ]
+    : [];
+  const imageContextMenuItems: IndexContextMenuItem[] = imageContextMenu
+    ? [
+        {
+          id: "ai-reading-companion",
+          label: t.aiReadingCompanion,
+          icon: <Sparkles className="h-4 w-4" />,
+          onClick: () => {
+            setImageContextMenu(null);
+            setIsReadingCompanionOpen(true);
+          },
+        },
       ]
     : [];
   const indexActionImageCount = indexAction ? indexBranchImageCount(indexAction.node) : 0;
@@ -3518,6 +3552,14 @@ export default function AtlasWorkbench() {
     setSelectedIndexId(node.id);
     setSelectedBulkImageIds(new Set());
     setIndexContextMenu({ node, x: event.clientX, y: event.clientY });
+  }
+
+  function openImageContextMenu(event: React.MouseEvent<HTMLDivElement>) {
+    if (!isBrowseMode || !selectedImage) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setIndexContextMenu(null);
+    setImageContextMenu({ x: event.clientX, y: event.clientY });
   }
 
   function startIndexDrag(node: IndexTreeNode, event: React.DragEvent<HTMLButtonElement>) {
@@ -4034,6 +4076,7 @@ export default function AtlasWorkbench() {
       return;
     }
     if (!aiConfigReady) {
+      setSettingsInitialTab("skills");
       setIsSettingsOpen(true);
       return;
     }
@@ -4879,6 +4922,8 @@ export default function AtlasWorkbench() {
 
   function setPersistedViewModeWithPagination(mode: ViewMode) {
     setIndexContextMenu(null);
+    setImageContextMenu(null);
+    if (mode !== "browse") setIsReadingCompanionOpen(false);
     setIsManageViewerOpen(false);
     setIsEditingAnnotations(false);
     setEditingAnnotationId(null);
@@ -5297,7 +5342,10 @@ export default function AtlasWorkbench() {
                   />
                   <button
                     type="button"
-                    onClick={() => setIsSettingsOpen(true)}
+                    onClick={() => {
+                      setSettingsInitialTab("endpoints");
+                      setIsSettingsOpen(true);
+                    }}
                     className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
                   >
                     <Settings className="h-4 w-4" />
@@ -5724,6 +5772,7 @@ export default function AtlasWorkbench() {
                       <div
                         ref={annotationStageRef}
                         onPointerDown={addAnnotationAt}
+                        onContextMenu={openImageContextMenu}
                         className={`absolute left-1/2 top-1/2 bg-white ${
                           isEditingAnnotations ? "cursor-crosshair" : ""
                         }`}
@@ -5830,7 +5879,10 @@ export default function AtlasWorkbench() {
                           : null}
                       </div>
                     ) : (
-                      <div className="flex h-full min-h-[420px] min-w-full items-center justify-center">
+                      <div
+                        className="flex h-full min-h-[420px] min-w-full items-center justify-center"
+                        onContextMenu={openImageContextMenu}
+                      >
                         <img
                           src={`/api/images/${selectedImage.id}/file`}
                           alt={selectedImage.title ?? selectedImage.originalName}
@@ -7125,8 +7177,34 @@ export default function AtlasWorkbench() {
         <AppSettingsDialog
           open={isSettingsOpen}
           locale={locale}
+          initialTab={settingsInitialTab}
           onClose={() => setIsSettingsOpen(false)}
-          onSaved={(config) => setAiConfigReady(config.ready)}
+          onSaved={(config) => {
+            setAiConfigReady(config.skillReady[OCR_REFINEMENT_SKILL_KEY]);
+            setReadingCompanionReady(config.skillReady[READING_COMPANION_SKILL_KEY]);
+          }}
+        />
+      ) : null}
+      <AiReadingCompanion
+        open={isBrowseMode && isReadingCompanionOpen}
+        locale={locale}
+        image={selectedImage ? {
+          id: selectedImage.id,
+          title: selectedImage.title,
+          originalName: selectedImage.originalName,
+        } : null}
+        configured={readingCompanionReady}
+        onClose={() => setIsReadingCompanionOpen(false)}
+        onOpenSettings={() => {
+          setSettingsInitialTab("skills");
+          setIsSettingsOpen(true);
+        }}
+      />
+      {imageContextMenu ? (
+        <IndexNodeContextMenu
+          items={imageContextMenuItems}
+          x={imageContextMenu.x}
+          y={imageContextMenu.y}
         />
       ) : null}
       {importPreviewFile ? (

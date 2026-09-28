@@ -103,7 +103,7 @@ docker compose down
 - `npm run test:search` 运行图片关键词搜索的字面量匹配测试，确保 `%`、`_` 和反斜杠不会被当作通配符。
 - `npm run test:thumbnails` 运行缩略图路径、缓存、尺寸、并发合并和图片查询键测试。
 - `npm run test:ocr` 运行索引子树批量 OCR 的文本判断、终态和进度计算测试。
-- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现和多模态 Chat Completions 测试。
+- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、阅读伴侣上下文和多模态 Chat Completions 测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
 - `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库，并继续执行全部增量 migrations。
@@ -130,6 +130,7 @@ docker compose down
 - `src/app/index-navigator-panel.tsx`：统一索引节点导航器和管理设置弹窗。
 - `src/app/app-dialog.tsx`：全局统一的应用内提示、确认和文本输入弹窗，提供危险级别样式、焦点管理和键盘操作。
 - `src/app/app-settings-dialog.tsx`：可扩展的全局设置弹窗，当前提供 AI 端点和内置技能配置。
+- `src/app/ai-reading-companion.tsx`：浏览模式 AI 阅读伴侣悬浮窗，负责全局多会话、流式消息、拖动和收起交互。
 - `src/app/exam-mode.tsx`：考试模式客户端组件，包含试卷管理、制题、遮罩、考试和结果复盘。
 - `src/app/api/atlas/route.ts`：工作台聚合查询接口。
 - `src/app/api/exam/**/route.ts`：考试模式 API，负责试卷、题目、发布、考试记录和提交评分。
@@ -162,6 +163,7 @@ docker compose down
 - `src/app/api/ocr/jobs/**/route.ts`：恢复和查询批量 OCR 任务进度。
 - `src/app/api/settings/ai/**/route.ts`：读取/保存脱敏 AI 设置、拉取模型和测试兼容端点。
 - `src/app/api/ai/ocr-refine/route.ts`：读取原图并调用 AI 精校当前 OCR 草稿，不直接保存结果。
+- `src/app/api/ai/reading-companion/**/route.ts`：阅读伴侣会话、分页消息、清空、删除和 NDJSON 流式对话接口。
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
 - `src/lib/backup.ts`：备份 manifest、zip 导出、zip 校验和合并恢复逻辑。
 - `src/lib/index-tree.ts`：索引树创建、路径补全、树形查询。
@@ -180,8 +182,9 @@ docker compose down
 - `src/lib/ocr-queue.ts`：本地 OCR 并发队列。
 - `src/lib/ocr-batch-jobs.ts`：索引子树批量 OCR 的任务快照、确认校验、恢复和进度统计。
 - `src/lib/ai-config.ts`：版本化 AI 配置 schema、默认技能、密钥合并/脱敏和端点 URL 解析。
-- `src/lib/ai-client.ts`：OpenAI-compatible 模型发现和非流式 Chat Completions 客户端。
+- `src/lib/ai-client.ts`：OpenAI-compatible 模型发现、非流式与 SSE 流式 Chat Completions 客户端。
 - `src/lib/ai-ocr-refinement.ts`：精校图片压缩、多模态消息构造和 OCR 精校调用。
+- `src/lib/ai-reading-companion.ts` / `src/lib/ai-reading-context.ts`：阅读伴侣上下文窗口、图片资料快照、多模态消息和服务端图片上下文查询。
 - `prisma/schema.prisma`：Prisma 数据模型。
 - `prisma/migrations/20260505000000_init/migration.sql`：初始 SQLite schema。
 - `scripts/init-db.mjs`：本地 SQLite 初始化脚本。
@@ -228,6 +231,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - `ImportItem`：导入批次中的单张图片记录，保存原始文件名、相对路径、保存路径、分组、状态、错误和映射索引。
 - `AppSetting`：本地设置，用于 OCR 并发数及版本化 `ai.config.v1` AI 配置等键值；AI API Key 明文保存在本地 SQLite，但任何客户端 DTO 都不能返回完整密钥。
 - `OcrBatchJob` / `OcrBatchJobItem`：持久化索引子树批量 OCR 任务及启动时的图片清单，进度只统计该任务自己的图片。
+- `AiReadingConversation` / `AiReadingMessage`：全局 AI 阅读伴侣会话与消息；消息保存发送时的图片引用和资料快照，图片删除后仍保留文字历史。
 - `ExamPaper`：试卷，支持草稿和发布状态，保存标题、描述、默认选项模板和发布时间。
 - `ExamQuestion`：试题，关联已有 `ChartImage`，保存题型、题干、选项、正确答案、解析和遮罩坐标 JSON。
 - `ExamAttempt`：一次考试记录，保存开始/提交时间、耗时、正确数、总题数和正确率。
@@ -238,6 +242,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - `ImportBatchStatus`：`DRAFT`、`IMPORTING`、`PROCESSING_OCR`、`COMPLETED`、`COMPLETED_WITH_ERRORS`、`FAILED`
 - `ImportItemStatus`：`PENDING`、`IMPORTED`、`DUPLICATE`、`FAILED`
 - `OcrStatus`：`PENDING`、`RUNNING`、`COMPLETED`、`FAILED`、`SKIPPED`
+- `AiReadingMessageRole`：`USER`、`ASSISTANT`
 - `ExamPaperStatus`：`DRAFT`、`PUBLISHED`
 - `ExamQuestionStatus`：`DRAFT`、`READY`
 - `ExamQuestionType`：`SINGLE`、`MULTIPLE`
@@ -278,6 +283,8 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 浏览模式特性：
 
 - 左侧目录 + 右侧图片浏览。
+- 中央大图右键菜单提供“AI 伴读”；悬浮窗默认位于右侧，可拖动、从四边或四角调整宽高、收起、关闭并记住位置、尺寸和收起状态，打开后自动跟随当前大图；AI 回复按 Markdown 渲染。
+- 阅读伴侣支持全局多会话、新建、切换、重命名、清空和删除；会话保存在 SQLite 但不进入备份 zip。每条用户消息记录发送时的参考图，模型可读取图片、标签、备注、OCR、文字标注、索引和导航属性。
 - 顶部搜索可与目录筛选、标签多选筛选组合；多个精确标签使用交集语义。
 - 顶部搜索按字面量匹配原始文件名、标题、备注、OCR、索引路径、标签和图片文字标注；`%`、`_`、反斜杠等字符不作为数据库通配符。
 - 索引导航器可与关键词、标签和具体目录取交集；每个导航分类内单选，不同分类间按 AND。分类、选项和节点关联首次加载后，匹配数、目录结果和零结果置灰均在浏览器本地即时计算，不随每次点击重复请求服务器。
@@ -317,7 +324,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - 支持删除单张图片，删除前必须二次确认。
 - 索引右键菜单支持批量 OCR 当前节点及全部后代图片；存在非空 OCR 文本时必须输入 `确认重新OCR`，任务使用右下角后台进度卡且全局同时只运行一个批量任务。
 - OCR 文本可在图片详情面板手动编辑校准；OCR 卡片内会提示未保存修改，并提供独立的“保存 OCR 文本”按钮。保存非空文本会把状态设为 `COMPLETED`，清空文本会把状态设为 `SKIPPED`。
-- 管理顶部设置弹窗可配置多个 OpenAI-compatible AI 端点、唯一启用端点和内置技能；OCR 卡片的“AI 精校”把原图和当前草稿发给外部模型，结果只进入未保存草稿，用户仍需手动保存。
+- 管理顶部设置弹窗可配置多个 OpenAI-compatible AI 端点、唯一启用端点以及“AI 精校 OCR”和“AI 阅读伴侣”技能；两个技能可分别覆盖模型和提示词。OCR 精校结果只进入未保存草稿，用户仍需手动保存。
 - 单张图片可从详情面板手动执行 OCR；如果已有 OCR 文本，前端会先确认覆盖。OCR 失败可重试。
 - 最近导入批次可撤销，撤销前必须二次确认。
 - 概览区可折叠。

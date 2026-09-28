@@ -14,7 +14,7 @@
     "test:search": "tsx --test src/lib/image-search.test.ts",
     "test:thumbnails": "tsx --test src/lib/thumbnail-suite.test.ts",
     "test:ocr": "tsx --test src/lib/ocr-batch-job-state.test.ts src/lib/ocr-batch-jobs.test.ts",
-    "test:ai": "tsx --test src/lib/ai-config.test.ts src/lib/ai-client.test.ts",
+    "test:ai": "tsx --test src/lib/ai-config.test.ts src/lib/ai-client.test.ts src/lib/ai-reading-companion.test.ts",
     "prisma:generate": "prisma generate",
     "db:migrate": "node scripts/migrate-db.mjs",
     "db:init": "node scripts/init-db.mjs"
@@ -32,6 +32,8 @@
     "prisma": "^7.8.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "sharp": "^0.34.5",
     "xlsx": "^0.18.5",
     "yauzl": "^3.3.0",

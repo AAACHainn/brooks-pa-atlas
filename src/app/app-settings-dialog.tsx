@@ -16,6 +16,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 
 import { useAppDialog } from "@/app/app-dialog";
+import { createBrowserId } from "@/lib/browser-id";
 import {
   AI_CONFIG_VERSION,
   type AiConfigDto,
@@ -169,7 +170,7 @@ function toDraft(config: AiConfigDto): ConfigDraft {
 
 function createEndpoint(): EndpointDraft {
   return {
-    id: crypto.randomUUID(),
+    id: createBrowserId(),
     name: "OpenAI",
     provider: "openai",
     baseUrl: "https://api.openai.com/v1",

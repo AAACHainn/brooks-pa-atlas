@@ -3,8 +3,8 @@ services:
     build:
       context: .
       args:
-        APP_VERSION: v2.0
-    image: brooks-pa-atlas:v2.0
+        APP_VERSION: v2.1
+    image: brooks-pa-atlas:v2.1
     container_name: brooks-pa-atlas
     restart: unless-stopped
     ports:

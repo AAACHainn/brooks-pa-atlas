@@ -81,6 +81,7 @@ npm run test:annotations
 npm run test:navigator
 npm run test:search
 npm run test:thumbnails
+npm run test:ocr
 npm run prisma:generate
 npm run db:migrate
 npm run db:init
@@ -100,6 +101,7 @@ docker compose down
 - `npm run test:navigator` 运行导航本地匹配数、跨分类 AND、目录搜索和自然排序单元测试。
 - `npm run test:search` 运行图片关键词搜索的字面量匹配测试，确保 `%`、`_` 和反斜杠不会被当作通配符。
 - `npm run test:thumbnails` 运行缩略图路径、缓存、尺寸、并发合并和图片查询键测试。
+- `npm run test:ocr` 运行索引子树批量 OCR 的文本判断、终态和进度计算测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
 - `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库，并继续执行全部增量 migrations。
@@ -153,6 +155,8 @@ docker compose down
 - `src/app/api/maintenance/thumbnails/jobs/**/route.ts`：启动并查询持久化缩略图补齐任务。
 - `src/app/api/ocr/images/[id]/route.ts`：把单张图片放入 OCR 队列。
 - `src/app/api/ocr/retry/route.ts`：重试失败 OCR。
+- `src/app/api/ocr/index-nodes/[id]/batch/route.ts`：读取索引子树 OCR 统计并启动持久化批量 OCR 任务。
+- `src/app/api/ocr/jobs/**/route.ts`：恢复和查询批量 OCR 任务进度。
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
 - `src/lib/backup.ts`：备份 manifest、zip 导出、zip 校验和合并恢复逻辑。
 - `src/lib/index-tree.ts`：索引树创建、路径补全、树形查询。
@@ -169,6 +173,7 @@ docker compose down
 - `src/lib/image-query-key.ts`：图片筛选请求的稳定查询键，防止旧结果继续渲染。
 - `src/lib/image-annotations.ts`：图片文字标注的校验和序列化 helper。
 - `src/lib/ocr-queue.ts`：本地 OCR 并发队列。
+- `src/lib/ocr-batch-jobs.ts`：索引子树批量 OCR 的任务快照、确认校验、恢复和进度统计。
 - `prisma/schema.prisma`：Prisma 数据模型。
 - `prisma/migrations/20260505000000_init/migration.sql`：初始 SQLite schema。
 - `scripts/init-db.mjs`：本地 SQLite 初始化脚本。
@@ -214,6 +219,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - `ImportBatch`：一次批量导入任务，保存总数、成功数、失败数、重复数、OCR 进度、状态、开始和结束时间。
 - `ImportItem`：导入批次中的单张图片记录，保存原始文件名、相对路径、保存路径、分组、状态、错误和映射索引。
 - `AppSetting`：本地设置，目前用于 OCR 并发数等键值配置。
+- `OcrBatchJob` / `OcrBatchJobItem`：持久化索引子树批量 OCR 任务及启动时的图片清单，进度只统计该任务自己的图片。
 - `ExamPaper`：试卷，支持草稿和发布状态，保存标题、描述、默认选项模板和发布时间。
 - `ExamQuestion`：试题，关联已有 `ChartImage`，保存题型、题干、选项、正确答案、解析和遮罩坐标 JSON。
 - `ExamAttempt`：一次考试记录，保存开始/提交时间、耗时、正确数、总题数和正确率。
@@ -301,6 +307,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - 图片网格支持复选框跨页选择；筛选条件或页面模式变化时清空选择，批量标签工具栏可以为选中图片添加或移除标签。
 - 标签输入、顶部标签多选筛选器和批量移除标签选择器使用应用内自绘菜单，不依赖浏览器原生 `datalist` / `select`；支持已有标签过滤、方向键选择和回车确认，标签输入仍支持自由输入。
 - 支持删除单张图片，删除前必须二次确认。
+- 索引右键菜单支持批量 OCR 当前节点及全部后代图片；存在非空 OCR 文本时必须输入 `确认重新OCR`，任务使用右下角后台进度卡且全局同时只运行一个批量任务。
 - OCR 文本可在图片详情面板手动编辑校准；OCR 卡片内会提示未保存修改，并提供独立的“保存 OCR 文本”按钮。保存非空文本会把状态设为 `COMPLETED`，清空文本会把状态设为 `SKIPPED`。
 - 单张图片可从详情面板手动执行 OCR；如果已有 OCR 文本，前端会先确认覆盖。OCR 失败可重试。
 - 最近导入批次可撤销，撤销前必须二次确认。

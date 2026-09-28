@@ -289,6 +289,8 @@ npm.cmd run prisma:generate
 - `20260515000000_exam_mode`
 - `20260517000000_exam_multi_select`
 
+升级到索引子树批量 OCR 版本时，还必须应用 `20260928000000_ocr_batch_jobs`；否则批量 OCR 的统计和启动接口会因缺少任务表而失败。迁移只新增任务表和索引，不会改写已有图片或 OCR 文本。
+
 如果本地没有 `dev.db`，先执行：
 
 ```powershell

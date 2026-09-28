@@ -13,6 +13,7 @@
     "test:navigator": "tsx --test src/lib/index-navigator-client.test.ts",
     "test:search": "tsx --test src/lib/image-search.test.ts",
     "test:thumbnails": "tsx --test src/lib/thumbnail-suite.test.ts",
+    "test:ocr": "tsx --test src/lib/ocr-batch-job-state.test.ts src/lib/ocr-batch-jobs.test.ts",
     "prisma:generate": "prisma generate",
     "db:migrate": "node scripts/migrate-db.mjs",
     "db:init": "node scripts/init-db.mjs"

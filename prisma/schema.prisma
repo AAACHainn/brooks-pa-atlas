@@ -36,6 +36,20 @@ enum OcrStatus {
   SKIPPED
 }
 
+enum OcrBatchJobStatus {
+  RUNNING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+}
+
+enum OcrBatchJobItemStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 enum ExamPaperStatus {
   DRAFT
   PUBLISHED
@@ -103,11 +117,52 @@ model ChartImage {
   examQuestions ExamQuestion[]
   tags          ChartImageTag[]
   annotations   ImageAnnotation[]
+  ocrBatchJobItems OcrBatchJobItem[]
 
   @@index([indexNodeId])
   @@index([importBatchId])
   @@index([ocrStatus])
   @@index([originalName])
+}
+
+model OcrBatchJob {
+  id              String            @id @default(cuid())
+  activeKey       String?           @unique
+  indexNodeId     String
+  indexPath       String
+  status          OcrBatchJobStatus @default(RUNNING)
+  totalImages     Int               @default(0)
+  processedImages Int               @default(0)
+  completedImages Int               @default(0)
+  failedImages    Int               @default(0)
+  error           String?
+  startedAt       DateTime          @default(now())
+  finishedAt      DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  items OcrBatchJobItem[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OcrBatchJobItem {
+  id            String                @id @default(cuid())
+  jobId         String
+  chartImageId  String?
+  sourceImageId String
+  status        OcrBatchJobItemStatus @default(PENDING)
+  error         String?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  job        OcrBatchJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  chartImage ChartImage? @relation(fields: [chartImageId], references: [id], onDelete: SetNull)
+
+  @@unique([jobId, sourceImageId])
+  @@index([jobId, status])
+  @@index([chartImageId])
 }
 
 model IndexNavigatorCategory {

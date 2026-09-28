@@ -24,6 +24,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  ScanText,
   Search,
   Tag as TagIcon,
   Trash2,
@@ -241,6 +242,30 @@ type DocumentImportJobSnapshot = {
   error: string | null;
 };
 
+type OcrBatchSummary = {
+  indexNodeId: string;
+  indexPath: string;
+  totalImages: number;
+  existingTextImages: number;
+  withoutTextImages: number;
+  requiresTypedConfirmation: boolean;
+};
+
+type OcrBatchJobSnapshot = {
+  id: string;
+  status: "running" | "completed" | "completed_with_errors" | "failed";
+  indexNodeId: string;
+  indexPath: string;
+  totalImages: number;
+  processedImages: number;
+  completedImages: number;
+  failedImages: number;
+  progressPercent: number;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
 type Locale = "zh" | "en";
 type ViewMode = "browse" | "manage" | "exam";
 type IndexContextMenu = { node: IndexTreeNode; x: number; y: number };
@@ -258,7 +283,8 @@ type IndexDropIndicator = { id: string; position: IndexDropPosition };
 type IndexAction =
   | { mode: "rename"; node: IndexTreeNode }
   | { mode: "delete"; node: IndexTreeNode }
-  | { mode: "clear"; node: IndexTreeNode };
+  | { mode: "clear"; node: IndexTreeNode }
+  | { mode: "batchOcr"; node: IndexTreeNode };
 type TagSuggestionInputProps = {
   ariaLabel: string;
   className?: string;
@@ -307,6 +333,7 @@ type IndexTreeSelectorProps = {
 
 const chunkSize = 80;
 const destructiveConfirmPhrase = "确认删除";
+const batchOcrConfirmPhrase = "确认重新OCR";
 const collapsedIndexesStorageKey = "brooks-pa-atlas.collapsedIndexes";
 const sidebarWidthStorageKey = "brooks-pa-atlas.sidebarWidth";
 const defaultSidebarWidth = 300;
@@ -339,6 +366,26 @@ const copy = {
     clearIndexImagesBlockedByExam:
       "该索引或其子索引中的图片已被考试题目引用，不能清空。请先从相关试卷中移除题目，或删除对应试卷后再试。",
     clearIndexImagesFailedTitle: "清空索引图片失败",
+    batchOcr: "批量 OCR",
+    batchOcrDisabled: "当前索引和子索引下没有图片可处理。",
+    batchOcrActive: "已有批量 OCR 任务正在运行。",
+    batchOcrConfirmTitle: "确认批量 OCR？",
+    batchOcrConfirmMessage: "将对当前索引及所有子索引下的图片执行 OCR。",
+    batchOcrOverwriteMessage: "其中已有 OCR 文本的图片将在识别成功后覆盖现有文本。",
+    batchOcrTyping: "请输入“确认重新OCR”以继续。",
+    batchOcrExistingText: "已有 OCR 文本",
+    batchOcrWithoutText: "没有 OCR 文本",
+    batchOcrPreparing: "正在统计图片",
+    batchOcrStarting: "正在启动",
+    batchOcrFailedTitle: "批量 OCR 启动失败",
+    batchOcrFailed: "无法启动批量 OCR，请稍后重试。",
+    batchOcrProgressTitle: "批量 OCR 进度",
+    batchOcrCompleted: "OCR 已完成",
+    batchOcrCompletedWithErrors: "OCR 已完成，部分图片失败",
+    batchOcrTaskFailed: "OCR 任务失败",
+    batchOcrRunning: "正在识别图片",
+    batchOcrSuccessCount: "成功",
+    batchOcrFailureCount: "失败",
     indexActionFailedTitle: "索引操作失败",
     indexActionFailed: "索引操作失败，请稍后重试。",
     reorderIndex: "拖动调整顺序",
@@ -549,6 +596,26 @@ const copy = {
     clearIndexImagesBlockedByExam:
       "This index or its child indexes contain images used by exam questions. Remove those questions from the related paper, or delete that paper, then try again.",
     clearIndexImagesFailedTitle: "Clear index images failed",
+    batchOcr: "Batch OCR",
+    batchOcrDisabled: "This index and its child indexes have no images to process.",
+    batchOcrActive: "Another batch OCR task is already running.",
+    batchOcrConfirmTitle: "Run batch OCR?",
+    batchOcrConfirmMessage: "OCR will run for every image in this index and all child indexes.",
+    batchOcrOverwriteMessage: "Images with OCR text will overwrite that text after successful recognition.",
+    batchOcrTyping: "Type “确认重新OCR” to continue.",
+    batchOcrExistingText: "With OCR text",
+    batchOcrWithoutText: "Without OCR text",
+    batchOcrPreparing: "Counting images",
+    batchOcrStarting: "Starting",
+    batchOcrFailedTitle: "Batch OCR could not start",
+    batchOcrFailed: "Could not start batch OCR. Please try again.",
+    batchOcrProgressTitle: "Batch OCR progress",
+    batchOcrCompleted: "OCR completed",
+    batchOcrCompletedWithErrors: "OCR completed with some failures",
+    batchOcrTaskFailed: "OCR task failed",
+    batchOcrRunning: "Recognizing images",
+    batchOcrSuccessCount: "Succeeded",
+    batchOcrFailureCount: "Failed",
     indexActionFailedTitle: "Index action failed",
     indexActionFailed: "Index action failed. Please try again.",
     reorderIndex: "Drag to reorder",
@@ -2349,6 +2416,9 @@ export default function AtlasWorkbench() {
   const [indexActionBusy, setIndexActionBusy] = useState(false);
   const [renameIndexName, setRenameIndexName] = useState("");
   const [clearIndexConfirmText, setClearIndexConfirmText] = useState("");
+  const [batchOcrConfirmText, setBatchOcrConfirmText] = useState("");
+  const [batchOcrSummary, setBatchOcrSummary] = useState<OcrBatchSummary | null>(null);
+  const [batchOcrJob, setBatchOcrJob] = useState<OcrBatchJobSnapshot | null>(null);
   const [isIndexReorderEnabled, setIsIndexReorderEnabled] = useState(false);
   const [draggedIndexNodeId, setDraggedIndexNodeId] = useState<string | null>(null);
   const [indexDropIndicator, setIndexDropIndicator] = useState<IndexDropIndicator | null>(null);
@@ -2592,6 +2662,62 @@ export default function AtlasWorkbench() {
     const timer = window.setTimeout(() => void refreshImages(), 0);
     return () => window.clearTimeout(timer);
   }, [refreshImages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/ocr/jobs/active", { cache: "no-store" })
+      .then(async (response) => {
+        const result = (await response.json().catch(() => null)) as
+          | { job?: OcrBatchJobSnapshot | null }
+          | null;
+        if (!cancelled && response.ok && result?.job) {
+          setBatchOcrJob(result.job);
+        }
+      })
+      .catch((error) => console.error("[ocr-batch] active task lookup failed", error));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!batchOcrJob || batchOcrJob.status !== "running") return;
+
+    let cancelled = false;
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/ocr/jobs/${batchOcrJob.id}`, { cache: "no-store" });
+        const result = (await response.json().catch(() => null)) as
+          | { job?: OcrBatchJobSnapshot; error?: string }
+          | null;
+        if (!response.ok || !result?.job) {
+          throw new Error(result?.error ?? "Batch OCR status lookup failed.");
+        }
+        if (cancelled) return;
+        setBatchOcrJob(result.job);
+        if (result.job.status === "running") {
+          timer = window.setTimeout(() => void poll(), 600);
+        } else {
+          await refresh();
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setBatchOcrJob((current) => current
+          ? {
+              ...current,
+              status: "failed",
+              error: error instanceof Error ? error.message : String(error),
+            }
+          : current);
+      }
+    };
+    timer = window.setTimeout(() => void poll(), 600);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [batchOcrJob, refresh]);
 
   useEffect(() => () => imagesRequestRef.current.controller?.abort(), []);
 
@@ -2996,6 +3122,19 @@ export default function AtlasWorkbench() {
         },
         ...(isManageMode
           ? [
+              {
+                id: "batch-ocr",
+                label: t.batchOcr,
+                icon: <ScanText className="h-4 w-4" />,
+                onClick: () => void openBatchOcrAction(indexContextMenu.node),
+                disabled: indexContextImageCount === 0 || batchOcrJob?.status === "running",
+                title:
+                  indexContextImageCount === 0
+                    ? t.batchOcrDisabled
+                    : batchOcrJob?.status === "running"
+                      ? t.batchOcrActive
+                      : t.batchOcr,
+              },
               {
                 id: "clear",
                 label: t.clearIndexImages,
@@ -3440,6 +3579,35 @@ export default function AtlasWorkbench() {
     }
   }
 
+  async function openBatchOcrAction(node: IndexTreeNode) {
+    setIndexContextMenu(null);
+    setIndexAction({ mode: "batchOcr", node });
+    setBatchOcrSummary(null);
+    setBatchOcrConfirmText("");
+    setIndexActionBusy(true);
+    try {
+      const response = await fetch(`/api/ocr/index-nodes/${node.id}/batch`, {
+        cache: "no-store",
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { summary?: OcrBatchSummary; error?: string }
+        | null;
+      if (!response.ok || !result?.summary) {
+        throw new Error(result?.error ?? t.batchOcrFailed);
+      }
+      setBatchOcrSummary(result.summary);
+    } catch (error) {
+      closeIndexAction(true);
+      await appDialog.showAlert({
+        title: t.batchOcrFailedTitle,
+        message: error instanceof Error ? error.message : t.batchOcrFailed,
+        tone: "danger",
+      });
+    } finally {
+      setIndexActionBusy(false);
+    }
+  }
+
   function closeIndexAction(force = false) {
     if (indexActionBusy && !force) {
       return;
@@ -3448,6 +3616,59 @@ export default function AtlasWorkbench() {
     setIndexAction(null);
     setRenameIndexName("");
     setClearIndexConfirmText("");
+    setBatchOcrConfirmText("");
+    setBatchOcrSummary(null);
+  }
+
+  async function startBatchOcr() {
+    if (
+      !indexAction ||
+      indexAction.mode !== "batchOcr" ||
+      !batchOcrSummary ||
+      (batchOcrSummary.requiresTypedConfirmation && batchOcrConfirmText !== batchOcrConfirmPhrase)
+    ) {
+      return;
+    }
+
+    setIndexActionBusy(true);
+    try {
+      const response = await fetch(`/api/ocr/index-nodes/${indexAction.node.id}/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          confirmation: batchOcrSummary.requiresTypedConfirmation ? batchOcrConfirmText : undefined,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { job?: OcrBatchJobSnapshot | null; error?: string; code?: string }
+        | null;
+
+      if (response.status === 409 && result?.job) {
+        setBatchOcrJob(result.job);
+        closeIndexAction(true);
+        await appDialog.showAlert({
+          title: t.noticeTitle,
+          message: t.batchOcrActive,
+          tone: "warning",
+        });
+        return;
+      }
+      if (!response.ok || !result?.job) {
+        throw new Error(result?.error ?? t.batchOcrFailed);
+      }
+
+      setBatchOcrJob(result.job);
+      closeIndexAction(true);
+    } catch (error) {
+      closeIndexAction(true);
+      await appDialog.showAlert({
+        title: t.batchOcrFailedTitle,
+        message: error instanceof Error ? error.message : t.batchOcrFailed,
+        tone: "danger",
+      });
+    } finally {
+      setIndexActionBusy(false);
+    }
   }
 
   async function renameIndexNode() {
@@ -6114,6 +6335,97 @@ export default function AtlasWorkbench() {
           </aside>
         ) : null}
       </div>
+      {batchOcrJob ? (
+        <div
+          className={`fixed right-4 z-50 w-[min(calc(100vw-2rem),24rem)] rounded-md border bg-white p-4 text-sm shadow-2xl ${
+            backupTask ? "bottom-44" : "bottom-4"
+          }`}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex items-start gap-3">
+            <div
+              className={`grid h-9 w-9 shrink-0 place-items-center rounded-md border ${
+                batchOcrJob.status === "failed"
+                  ? "border-rose-200 bg-rose-50 text-rose-700"
+                  : batchOcrJob.status === "completed_with_errors"
+                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                    : batchOcrJob.status === "completed"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-cyan-200 bg-cyan-50 text-cyan-700"
+              }`}
+            >
+              {batchOcrJob.status === "running" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : batchOcrJob.status === "completed" ? (
+                <CheckCircle2 className="h-4 w-4" />
+              ) : (
+                <AlertTriangle className="h-4 w-4" />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-semibold text-zinc-950">{t.batchOcrProgressTitle}</p>
+                  <p className="mt-0.5 truncate text-xs text-zinc-500" title={batchOcrJob.indexPath}>
+                    {batchOcrJob.indexPath}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-lg font-semibold tabular-nums text-zinc-950">
+                    {batchOcrJob.progressPercent}%
+                  </span>
+                  {batchOcrJob.status !== "running" ? (
+                    <button
+                      type="button"
+                      onClick={() => setBatchOcrJob(null)}
+                      className="grid h-7 w-7 place-items-center rounded-md text-zinc-500 hover:bg-zinc-100"
+                      aria-label={t.taskDismiss}
+                      title={t.taskDismiss}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              <p className="mt-2 text-xs font-medium text-zinc-700">
+                {batchOcrJob.status === "running"
+                  ? t.batchOcrRunning
+                  : batchOcrJob.status === "completed"
+                    ? t.batchOcrCompleted
+                    : batchOcrJob.status === "completed_with_errors"
+                      ? t.batchOcrCompletedWithErrors
+                      : t.batchOcrTaskFailed}
+              </p>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-100">
+                <div
+                  className={`h-full transition-all ${
+                    batchOcrJob.status === "failed"
+                      ? "bg-rose-600"
+                      : batchOcrJob.status === "completed_with_errors"
+                        ? "bg-amber-500"
+                        : batchOcrJob.status === "completed"
+                          ? "bg-emerald-600"
+                          : "bg-cyan-700"
+                  }`}
+                  style={{ width: `${batchOcrJob.progressPercent}%` }}
+                />
+              </div>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+                <span>{batchOcrJob.processedImages}/{batchOcrJob.totalImages} {t.imageUnit}</span>
+                <span>
+                  {t.batchOcrSuccessCount} {batchOcrJob.completedImages} / {t.batchOcrFailureCount} {batchOcrJob.failedImages}
+                </span>
+              </div>
+              {batchOcrJob.error ? (
+                <p className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+                  {batchOcrJob.error}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {backupTask ? (
         <div
           className="fixed bottom-4 right-4 z-50 w-[min(calc(100vw-2rem),24rem)] rounded-md border border-zinc-200 bg-white p-4 text-sm shadow-2xl"
@@ -6470,6 +6782,92 @@ export default function AtlasWorkbench() {
                       <AlertTriangle className="h-4 w-4" />
                     )}
                     <span>{indexActionBusy ? t.deleting : t.clearIndexImages}</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {indexAction.mode === "batchOcr" ? (
+              <div>
+                <div className="flex items-start gap-3">
+                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-cyan-200 bg-cyan-50 text-cyan-700">
+                    {indexActionBusy && !batchOcrSummary ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <ScanText className="h-5 w-5" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h2 className="text-base font-semibold text-zinc-950">
+                      {t.batchOcrConfirmTitle}
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 text-zinc-600">
+                      {batchOcrSummary ? t.batchOcrConfirmMessage : t.batchOcrPreparing}
+                    </p>
+                    <p className="mt-3 truncate rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+                      {indexAction.node.path}
+                    </p>
+                  </div>
+                </div>
+                {batchOcrSummary ? (
+                  <>
+                    <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
+                      <div className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-2">
+                        <p className="font-semibold text-zinc-950">{batchOcrSummary.totalImages}</p>
+                        <p className="mt-1 text-zinc-500">{t.imageUnit}</p>
+                      </div>
+                      <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-2">
+                        <p className="font-semibold text-amber-800">{batchOcrSummary.existingTextImages}</p>
+                        <p className="mt-1 text-amber-700">{t.batchOcrExistingText}</p>
+                      </div>
+                      <div className="rounded-md border border-cyan-200 bg-cyan-50 px-2 py-2">
+                        <p className="font-semibold text-cyan-800">{batchOcrSummary.withoutTextImages}</p>
+                        <p className="mt-1 text-cyan-700">{t.batchOcrWithoutText}</p>
+                      </div>
+                    </div>
+                    {batchOcrSummary.requiresTypedConfirmation ? (
+                      <label className="mt-4 block">
+                        <span className="text-xs font-medium text-amber-700">
+                          {t.batchOcrOverwriteMessage} {t.batchOcrTyping}
+                        </span>
+                        <input
+                          autoFocus
+                          value={batchOcrConfirmText}
+                          onChange={(event) => setBatchOcrConfirmText(event.target.value)}
+                          className="mt-2 h-10 w-full rounded-md border border-amber-300 px-3 text-sm outline-none focus:border-amber-500"
+                          placeholder={batchOcrConfirmPhrase}
+                        />
+                      </label>
+                    ) : null}
+                  </>
+                ) : null}
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => closeIndexAction()}
+                    disabled={indexActionBusy}
+                    className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {t.cancel}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void startBatchOcr()}
+                    disabled={
+                      indexActionBusy ||
+                      !batchOcrSummary ||
+                      batchOcrSummary.totalImages === 0 ||
+                      (batchOcrSummary.requiresTypedConfirmation &&
+                        batchOcrConfirmText !== batchOcrConfirmPhrase)
+                    }
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {indexActionBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ScanText className="h-4 w-4" />
+                    )}
+                    <span>{indexActionBusy ? t.batchOcrStarting : t.batchOcr}</span>
                   </button>
                 </div>
               </div>

@@ -3,6 +3,11 @@ import os from "node:os";
 import { promisify } from "node:util";
 
 import { prisma } from "@/lib/db";
+import {
+  markOcrBatchItemRunning,
+  recoverActiveOcrBatchJob,
+  settleOcrBatchItem,
+} from "@/lib/ocr-batch-jobs";
 import { absoluteImagePath } from "@/lib/storage";
 
 const execFileAsync = promisify(execFile);
@@ -97,6 +102,7 @@ async function runLocalOcr(libraryPath: string) {
 async function processImage(imageId: string) {
   running.add(imageId);
   activeWorkers += 1;
+  let importBatchId: string | null = null;
 
   try {
     const image = await prisma.chartImage.update({
@@ -107,6 +113,8 @@ async function processImage(imageId: string) {
         ocrUpdatedAt: new Date(),
       },
     });
+    importBatchId = image.importBatchId;
+    await markOcrBatchItemRunning(image.id);
 
     const text = await runLocalOcr(image.libraryPath);
 
@@ -119,17 +127,15 @@ async function processImage(imageId: string) {
         ocrUpdatedAt: new Date(),
       },
     });
+    await settleOcrBatchItem(image.id, "COMPLETED");
 
-    if (image.importBatchId) {
-      await updateBatchCounters(image.importBatchId);
-    }
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
         : "OCR failed with an unknown error.";
 
-    const image = await prisma.chartImage.update({
+    await prisma.chartImage.updateMany({
       where: { id: imageId },
       data: {
         ocrStatus: "FAILED",
@@ -137,11 +143,14 @@ async function processImage(imageId: string) {
         ocrUpdatedAt: new Date(),
       },
     });
+    await settleOcrBatchItem(imageId, "FAILED", message);
 
-    if (image.importBatchId) {
-      await updateBatchCounters(image.importBatchId);
-    }
   } finally {
+    if (importBatchId) {
+      await updateBatchCounters(importBatchId).catch((error) => {
+        console.error(`[ocr:${imageId}] import batch counter update failed`, error);
+      });
+    }
     running.delete(imageId);
     activeWorkers -= 1;
     scheduleOcrPump();
@@ -196,6 +205,13 @@ export async function retryFailedOcr(imageIds?: string[]) {
     },
   });
 
+  scheduleOcrPump();
+}
+
+export async function resumeActiveOcrBatchJob() {
+  if (running.size === 0 && activeWorkers === 0) {
+    await recoverActiveOcrBatchJob();
+  }
   scheduleOcrPump();
 }
 

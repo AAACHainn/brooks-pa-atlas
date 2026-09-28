@@ -1,0 +1,144 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  AiServiceError,
+  createAiChatCompletion,
+  fetchAiModels,
+} from "@/lib/ai-client";
+import { buildOcrRefinementMessages } from "@/lib/ai-ocr-refinement";
+import type { StoredAiEndpoint } from "@/lib/ai-config";
+
+function endpoint(apiKey = "secret"): StoredAiEndpoint {
+  return {
+    id: "endpoint-1",
+    name: "Test",
+    provider: "custom",
+    baseUrl: "https://example.test/v1",
+    useCustomUrls: false,
+    chatCompletionsUrl: "",
+    modelsUrl: "",
+    apiKey,
+    models: ["vision-model"],
+    defaultModel: "vision-model",
+  };
+}
+
+test("model discovery sends optional bearer auth and parses unique model ids", async () => {
+  let headers: Headers | null = null;
+  const models = await fetchAiModels(endpoint(), {
+    fetchImpl: async (_input, init) => {
+      headers = new Headers(init?.headers);
+      return Response.json({ data: [{ id: "b" }, { id: "a" }, { id: "a" }, {}] });
+    },
+  });
+  assert.deepEqual(models, ["a", "b"]);
+  assert.equal(headers!.get("Authorization"), "Bearer secret");
+
+  let anonymousHeaders: Headers | null = null;
+  await fetchAiModels(endpoint(""), {
+    fetchImpl: async (_input, init) => {
+      anonymousHeaders = new Headers(init?.headers);
+      return Response.json({ data: [] });
+    },
+  });
+  assert.equal(anonymousHeaders!.has("Authorization"), false);
+});
+
+test("chat completion sends multimodal messages and extracts fenced text", async () => {
+  let body: unknown;
+  const messages = buildOcrRefinementMessages({
+    prompt: "Proofread",
+    originalName: "chart.png",
+    ocrText: "Br0oks",
+    imageDataUrl: "data:image/jpeg;base64,AA==",
+  });
+  const text = await createAiChatCompletion(endpoint(), "vision-model", messages, {
+    fetchImpl: async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({ choices: [{ message: { content: "```text\nBrooks\n```" } }] });
+    },
+  });
+  assert.equal(text, "Brooks");
+  assert.deepEqual((body as { messages: unknown }).messages, messages);
+  assert.equal((body as { stream: boolean }).stream, false);
+});
+
+test("chat completion accepts array content and rejects empty responses", async () => {
+  const text = await createAiChatCompletion(
+    endpoint(),
+    "vision-model",
+    [{ role: "user", content: "test" }],
+    {
+      fetchImpl: async () =>
+        Response.json({ choices: [{ message: { content: [{ type: "text", text: "OK" }] } }] }),
+    },
+  );
+  assert.equal(text, "OK");
+
+  await assert.rejects(
+    createAiChatCompletion(endpoint(), "vision-model", [{ role: "user", content: "test" }], {
+      fetchImpl: async () => Response.json({ choices: [{ message: { content: "" } }] }),
+    }),
+    (error: unknown) => error instanceof AiServiceError && error.kind === "invalid-response",
+  );
+});
+
+test("upstream errors do not expose response bodies or API keys", async () => {
+  await assert.rejects(
+    fetchAiModels(endpoint("top-secret"), {
+      fetchImpl: async () => new Response("provider leaked details", { status: 401, statusText: "Unauthorized" }),
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AiServiceError);
+      assert.equal(error.kind, "upstream");
+      assert.match(error.message, /401 Unauthorized/);
+      assert.doesNotMatch(error.message, /provider leaked details|top-secret/);
+      return true;
+    },
+  );
+});
+
+test("multimodal requests report unsupported image input without exposing the provider body", async () => {
+  const providerBody = JSON.stringify({
+    error: { message: "This text-only model does not support image_url. trace=private-detail" },
+  });
+  await assert.rejects(
+    createAiChatCompletion(
+      endpoint("top-secret"),
+      "text-only-model",
+      buildOcrRefinementMessages({
+        prompt: "Proofread",
+        originalName: "chart.png",
+        ocrText: "Br0oks",
+        imageDataUrl: "data:image/jpeg;base64,AA==",
+      }),
+      {
+        fetchImpl: async () =>
+          new Response(providerBody, { status: 400, statusText: "Bad Request" }),
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof AiServiceError);
+      assert.equal(error.kind, "unsupported-image");
+      assert.match(error.message, /does not support image input/i);
+      assert.doesNotMatch(error.message, /private-detail|top-secret/);
+      return true;
+    },
+  );
+});
+
+test("requests enforce the configured timeout", async () => {
+  await assert.rejects(
+    fetchAiModels(endpoint(), {
+      timeoutMs: 5,
+      fetchImpl: async (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+    }),
+    (error: unknown) => error instanceof AiServiceError && error.kind === "timeout",
+  );
+});

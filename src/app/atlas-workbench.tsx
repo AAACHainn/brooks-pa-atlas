@@ -26,6 +26,8 @@ import {
   RotateCcw,
   ScanText,
   Search,
+  Settings,
+  Sparkles,
   Tag as TagIcon,
   Trash2,
   Undo2,
@@ -47,11 +49,13 @@ import {
 import { createPortal } from "react-dom";
 
 import AnnotationColorPicker from "@/app/annotation-color-picker";
+import AppSettingsDialog from "@/app/app-settings-dialog";
 import ExamMode from "@/app/exam-mode";
 import { useAppDialog } from "@/app/app-dialog";
 import IndexNavigatorPanel from "@/app/index-navigator-panel";
 import { shouldDeferEmptyFocusedAnnotationSave } from "@/lib/image-annotation-drafts";
 import { buildImageQueryKey } from "@/lib/image-query-key";
+import type { AiConfigDto } from "@/lib/ai-config";
 
 type IndexTreeNode = {
   id: string;
@@ -430,6 +434,7 @@ const copy = {
     refreshBackupList: "刷新",
     restoreData: "恢复",
     restoring: "恢复中",
+    settings: "设置",
     backupFailed: "备份失败，请稍后重试。",
     restoreFailed: "恢复失败，请确认 zip 文件有效后重试。",
     restoreConfirmMessage:
@@ -518,6 +523,11 @@ const copy = {
     ocrEditHint: "可直接删除乱码、不需要的数字或补充遗漏内容，修改后请保存。",
     ocrUnsaved: "未保存修改",
     saveOcrText: "保存 OCR 文本",
+    aiRefineOcr: "AI 精校",
+    aiRefiningOcr: "AI 精校中",
+    aiRefineFailed: "AI 精校失败，请稍后重试。",
+    aiRefineNeedsConfig: "请先完成 AI 端点和模型配置。",
+    aiRefineEmpty: "请先执行 OCR 或输入需要精校的文本。",
     ocrOverwriteConfirm: "当前已有 OCR 文本。重新 OCR 会在完成后覆盖现有内容，是否继续？",
     ocrOverwriteTitle: "覆盖现有 OCR 文本？",
     ocrUpdateFailed: "OCR 操作失败，请稍后重试。",
@@ -660,6 +670,7 @@ const copy = {
     refreshBackupList: "Refresh",
     restoreData: "Restore",
     restoring: "Restoring",
+    settings: "Settings",
     backupFailed: "Backup failed. Please try again.",
     restoreFailed: "Restore failed. Please confirm the zip file is valid and try again.",
     restoreConfirmMessage:
@@ -751,6 +762,11 @@ const copy = {
     ocrEditHint: "Correct garbled text, remove unwanted numbers, or add missing content, then save your changes.",
     ocrUnsaved: "Unsaved changes",
     saveOcrText: "Save OCR text",
+    aiRefineOcr: "AI refine",
+    aiRefiningOcr: "AI refining",
+    aiRefineFailed: "AI OCR refinement failed. Please try again.",
+    aiRefineNeedsConfig: "Configure an active AI endpoint and model first.",
+    aiRefineEmpty: "Run OCR or enter text to refine first.",
     ocrOverwriteConfirm: "This image already has OCR text. Running OCR again will overwrite it when completed. Continue?",
     ocrOverwriteTitle: "Overwrite existing OCR text?",
     ocrUpdateFailed: "OCR update failed. Please try again.",
@@ -2373,6 +2389,8 @@ export default function AtlasWorkbench() {
   const [restoring, setRestoring] = useState(false);
   const [backupTask, setBackupTask] = useState<BackupJobSnapshot | null>(null);
   const [isBackupManagerOpen, setIsBackupManagerOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [aiConfigReady, setAiConfigReady] = useState(false);
   const [backupRecords, setBackupRecords] = useState<BackupRecord[]>([]);
   const [backupRecordsLoading, setBackupRecordsLoading] = useState(false);
   const [backupRecordsError, setBackupRecordsError] = useState<string | null>(null);
@@ -2389,6 +2407,7 @@ export default function AtlasWorkbench() {
   const [savedOcrText, setSavedOcrText] = useState("");
   const [detailTagInput, setDetailTagInput] = useState("");
   const [ocrRunningImageId, setOcrRunningImageId] = useState<string | null>(null);
+  const [aiRefiningImageId, setAiRefiningImageId] = useState<string | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(() => new Set());
   const [selectedNavigatorOptionIds, setSelectedNavigatorOptionIds] = useState<Set<string>>(
     () => new Set(),
@@ -2485,6 +2504,7 @@ export default function AtlasWorkbench() {
     controller: null,
     sequence: 0,
   });
+  const aiRefinementControllerRef = useRef<AbortController | null>(null);
   const imageQueryKey = useMemo(
     () =>
       buildImageQueryKey({
@@ -2659,6 +2679,23 @@ export default function AtlasWorkbench() {
   }, [refreshMetadata]);
 
   useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/settings/ai", { cache: "no-store" })
+      .then(async (response) => {
+        const result = (await response.json().catch(() => null)) as
+          | { config?: AiConfigDto }
+          | null;
+        if (!cancelled) setAiConfigReady(Boolean(response.ok && result?.config?.ready));
+      })
+      .catch(() => {
+        if (!cancelled) setAiConfigReady(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => void refreshImages(), 0);
     return () => window.clearTimeout(timer);
   }, [refreshImages]);
@@ -2719,7 +2756,13 @@ export default function AtlasWorkbench() {
     };
   }, [batchOcrJob, refresh]);
 
-  useEffect(() => () => imagesRequestRef.current.controller?.abort(), []);
+  useEffect(
+    () => () => {
+      imagesRequestRef.current.controller?.abort();
+      aiRefinementControllerRef.current?.abort();
+    },
+    [],
+  );
 
   useEffect(() => {
     if (selectedBulkImageIds.size === 0) {
@@ -2754,6 +2797,9 @@ export default function AtlasWorkbench() {
 
   useEffect(() => {
     selectedImageIdRef.current = selectedImageId;
+    aiRefinementControllerRef.current?.abort();
+    aiRefinementControllerRef.current = null;
+    setAiRefiningImageId(null);
   }, [selectedImageId]);
 
   useEffect(() => {
@@ -3976,6 +4022,60 @@ export default function AtlasWorkbench() {
     }
   }
 
+  async function refineOcrWithAi() {
+    if (!selectedImage || aiRefiningImageId) return;
+    const ocrText = detailDraft.ocrText.trim();
+    if (!ocrText) {
+      await appDialog.showAlert({
+        title: t.noticeTitle,
+        message: t.aiRefineEmpty,
+        tone: "info",
+      });
+      return;
+    }
+    if (!aiConfigReady) {
+      setIsSettingsOpen(true);
+      return;
+    }
+
+    aiRefinementControllerRef.current?.abort();
+    const controller = new AbortController();
+    aiRefinementControllerRef.current = controller;
+    const imageId = selectedImage.id;
+    setAiRefiningImageId(imageId);
+    try {
+      const response = await fetch("/api/ai/ocr-refine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageId, ocrText }),
+        signal: controller.signal,
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { refinedText?: string; error?: string }
+        | null;
+      if (!response.ok || !result?.refinedText) {
+        if (response.status === 409) setAiConfigReady(false);
+        throw new Error(result?.error ?? t.aiRefineFailed);
+      }
+      if (selectedImageIdRef.current !== imageId || controller.signal.aborted) return;
+      const nextDraft = { ...detailDraftRef.current, ocrText: result.refinedText };
+      detailDraftRef.current = nextDraft;
+      setDetailDraft(nextDraft);
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) return;
+      await appDialog.showAlert({
+        title: t.operationFailedTitle,
+        message: error instanceof Error ? error.message : t.aiRefineFailed,
+        tone: "danger",
+      });
+    } finally {
+      if (aiRefinementControllerRef.current === controller) {
+        aiRefinementControllerRef.current = null;
+      }
+      setAiRefiningImageId((current) => (current === imageId ? null : current));
+    }
+  }
+
   async function readBackupJobResponse(response: Response) {
     const result = (await response.json().catch(() => null)) as
       | { error?: string; job?: BackupJobSnapshot }
@@ -5195,6 +5295,14 @@ export default function AtlasWorkbench() {
                       event.target.value = "";
                     }}
                   />
+                  <button
+                    type="button"
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+                  >
+                    <Settings className="h-4 w-4" />
+                    <span>{t.settings}</span>
+                  </button>
                 </>
               ) : null}
             </div>
@@ -6260,6 +6368,26 @@ export default function AtlasWorkbench() {
                 <p className="text-[11px] leading-4 text-zinc-500">{t.ocrEditHint}</p>
                 <button
                   type="button"
+                  onClick={() => void refineOcrWithAi()}
+                  disabled={
+                    !detailDraft.ocrText.trim() ||
+                    isSelectedImageOcrBusy ||
+                    aiRefiningImageId === selectedImage.id
+                  }
+                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-cyan-200 bg-cyan-50 px-4 text-sm font-medium text-cyan-800 transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400"
+                  title={!detailDraft.ocrText.trim() ? t.aiRefineEmpty : !aiConfigReady ? t.aiRefineNeedsConfig : t.aiRefineOcr}
+                >
+                  {aiRefiningImageId === selectedImage.id ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" />
+                  )}
+                  <span>
+                    {aiRefiningImageId === selectedImage.id ? t.aiRefiningOcr : t.aiRefineOcr}
+                  </span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => void saveDetails()}
                   disabled={detailsSaving || !isOcrTextDirty}
                   className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400"
@@ -6992,6 +7120,14 @@ export default function AtlasWorkbench() {
             </div>
           </div>
         </div>
+      ) : null}
+      {isSettingsOpen ? (
+        <AppSettingsDialog
+          open={isSettingsOpen}
+          locale={locale}
+          onClose={() => setIsSettingsOpen(false)}
+          onSaved={(config) => setAiConfigReady(config.ready)}
+        />
       ) : null}
       {importPreviewFile ? (
         <div

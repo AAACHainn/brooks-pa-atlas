@@ -82,6 +82,7 @@ npm run test:navigator
 npm run test:search
 npm run test:thumbnails
 npm run test:ocr
+npm run test:ai
 npm run prisma:generate
 npm run db:migrate
 npm run db:init
@@ -102,6 +103,7 @@ docker compose down
 - `npm run test:search` 运行图片关键词搜索的字面量匹配测试，确保 `%`、`_` 和反斜杠不会被当作通配符。
 - `npm run test:thumbnails` 运行缩略图路径、缓存、尺寸、并发合并和图片查询键测试。
 - `npm run test:ocr` 运行索引子树批量 OCR 的文本判断、终态和进度计算测试。
+- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现和多模态 Chat Completions 测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
 - `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库，并继续执行全部增量 migrations。
@@ -127,6 +129,7 @@ docker compose down
 - `src/app/atlas-workbench.tsx`：主工作台客户端组件，绝大多数前端交互在这里。
 - `src/app/index-navigator-panel.tsx`：统一索引节点导航器和管理设置弹窗。
 - `src/app/app-dialog.tsx`：全局统一的应用内提示、确认和文本输入弹窗，提供危险级别样式、焦点管理和键盘操作。
+- `src/app/app-settings-dialog.tsx`：可扩展的全局设置弹窗，当前提供 AI 端点和内置技能配置。
 - `src/app/exam-mode.tsx`：考试模式客户端组件，包含试卷管理、制题、遮罩、考试和结果复盘。
 - `src/app/api/atlas/route.ts`：工作台聚合查询接口。
 - `src/app/api/exam/**/route.ts`：考试模式 API，负责试卷、题目、发布、考试记录和提交评分。
@@ -157,6 +160,8 @@ docker compose down
 - `src/app/api/ocr/retry/route.ts`：重试失败 OCR。
 - `src/app/api/ocr/index-nodes/[id]/batch/route.ts`：读取索引子树 OCR 统计并启动持久化批量 OCR 任务。
 - `src/app/api/ocr/jobs/**/route.ts`：恢复和查询批量 OCR 任务进度。
+- `src/app/api/settings/ai/**/route.ts`：读取/保存脱敏 AI 设置、拉取模型和测试兼容端点。
+- `src/app/api/ai/ocr-refine/route.ts`：读取原图并调用 AI 精校当前 OCR 草稿，不直接保存结果。
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
 - `src/lib/backup.ts`：备份 manifest、zip 导出、zip 校验和合并恢复逻辑。
 - `src/lib/index-tree.ts`：索引树创建、路径补全、树形查询。
@@ -174,6 +179,9 @@ docker compose down
 - `src/lib/image-annotations.ts`：图片文字标注的校验和序列化 helper。
 - `src/lib/ocr-queue.ts`：本地 OCR 并发队列。
 - `src/lib/ocr-batch-jobs.ts`：索引子树批量 OCR 的任务快照、确认校验、恢复和进度统计。
+- `src/lib/ai-config.ts`：版本化 AI 配置 schema、默认技能、密钥合并/脱敏和端点 URL 解析。
+- `src/lib/ai-client.ts`：OpenAI-compatible 模型发现和非流式 Chat Completions 客户端。
+- `src/lib/ai-ocr-refinement.ts`：精校图片压缩、多模态消息构造和 OCR 精校调用。
 - `prisma/schema.prisma`：Prisma 数据模型。
 - `prisma/migrations/20260505000000_init/migration.sql`：初始 SQLite schema。
 - `scripts/init-db.mjs`：本地 SQLite 初始化脚本。
@@ -218,7 +226,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - `ChartImageTag`：图片与标签的多对多关联；图片删除时级联删除关联，无图片使用的标签会自动清理。
 - `ImportBatch`：一次批量导入任务，保存总数、成功数、失败数、重复数、OCR 进度、状态、开始和结束时间。
 - `ImportItem`：导入批次中的单张图片记录，保存原始文件名、相对路径、保存路径、分组、状态、错误和映射索引。
-- `AppSetting`：本地设置，目前用于 OCR 并发数等键值配置。
+- `AppSetting`：本地设置，用于 OCR 并发数及版本化 `ai.config.v1` AI 配置等键值；AI API Key 明文保存在本地 SQLite，但任何客户端 DTO 都不能返回完整密钥。
 - `OcrBatchJob` / `OcrBatchJobItem`：持久化索引子树批量 OCR 任务及启动时的图片清单，进度只统计该任务自己的图片。
 - `ExamPaper`：试卷，支持草稿和发布状态，保存标题、描述、默认选项模板和发布时间。
 - `ExamQuestion`：试题，关联已有 `ChartImage`，保存题型、题干、选项、正确答案、解析和遮罩坐标 JSON。
@@ -309,6 +317,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - 支持删除单张图片，删除前必须二次确认。
 - 索引右键菜单支持批量 OCR 当前节点及全部后代图片；存在非空 OCR 文本时必须输入 `确认重新OCR`，任务使用右下角后台进度卡且全局同时只运行一个批量任务。
 - OCR 文本可在图片详情面板手动编辑校准；OCR 卡片内会提示未保存修改，并提供独立的“保存 OCR 文本”按钮。保存非空文本会把状态设为 `COMPLETED`，清空文本会把状态设为 `SKIPPED`。
+- 管理顶部设置弹窗可配置多个 OpenAI-compatible AI 端点、唯一启用端点和内置技能；OCR 卡片的“AI 精校”把原图和当前草稿发给外部模型，结果只进入未保存草稿，用户仍需手动保存。
 - 单张图片可从详情面板手动执行 OCR；如果已有 OCR 文本，前端会先确认覆盖。OCR 失败可重试。
 - 最近导入批次可撤销，撤销前必须二次确认。
 - 概览区可折叠。
@@ -459,6 +468,17 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 
 README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
+### AI 阅读伴侣规则
+
+- AI 配置保存在 `AppSetting` 的 `ai.config.v1`，不需要新增 migration；配置是当前实例本地设置，不进入备份 zip，恢复也不覆盖。
+- 支持多个 OpenAI-compatible 端点，但同时只有一个启用端点。Base URL 模式追加 `/chat/completions` 和 `/models`，高级模式可分别指定完整 URL；只接受 HTTP/HTTPS。
+- API Key 可为空；非空时只在服务端以 Bearer header 发送。设置 GET 仅返回 `hasApiKey`，空白保存保留旧密钥，只有显式清除才删除；日志和外部错误不能包含密钥或原始响应正文。
+- 内置技能 `ocrRefinement` 保存可编辑提示词和可选模型覆盖；未覆盖时使用启用端点的默认模型。
+- 精校把原图在内存中转换为最长边不超过 1920px、quality 85 的 JPEG，并与当前 OCR 草稿一并发送；不写入衍生图片文件。
+- 外部请求超时为 120 秒。精校 API 不更新 `ChartImage`；只有用户点击现有“保存 OCR 文本”后才写数据库。
+- 所选精校模型必须支持 Chat Completions 图片输入；连接测试只验证最小文本请求，不代表图片能力可用。
+- 当前项目没有登录，AI 配置和付费调用接口只适用于可信本机或可信局域网部署。
+
 ## 14. API 行为
 
 `GET /api/atlas`
@@ -473,6 +493,15 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 参数 `tagId` 可叠加精确标签筛选条件；重复传递多个 `tagId` 时按 AND 组合，只返回同时包含全部所选标签的图片。
 - 导航选项每个分类内单选、不同分类间按 AND；动态匹配目录数和零结果禁用由前端基础数据本地计算。`scope=images` 只使用已选导航条件筛选图片；目录匹配只检查节点直接关联，匹配节点的全部后代图片会纳入结果并去重。
 - OCR 文本和错误会截断返回，避免接口太大。
+
+AI 设置与调用 API：
+
+- `GET /api/settings/ai`：返回脱敏后的端点、技能和 `ready` 状态，只返回 `hasApiKey`，绝不能返回完整密钥。
+- `PUT /api/settings/ai`：整体保存端点、唯一启用端点和内置技能；同 id 端点未传新密钥时保留旧值，`clearApiKey` 才显式清除。
+- `POST /api/settings/ai/models`：使用端点草稿或已保存密钥请求 Models URL，返回去重排序后的模型 id。
+- `POST /api/settings/ai/test`：使用指定模型执行最小非流式文本请求，只验证 Chat Completions 连接。
+- `POST /api/ai/ocr-refine`：接收 `imageId` 和最多 100,000 字符的非空 `ocrText`，把压缩原图和当前草稿发送给 `ocrRefinement` 技能，成功只返回 `{ refinedText }`，不更新图片记录。
+- AI 上游超时返回 `504`，配置不完整返回 `409`，上游或响应错误返回 `502`；错误响应只保留清理后的状态信息，不透传上游正文。
 
 `GET /api/index-navigator`
 

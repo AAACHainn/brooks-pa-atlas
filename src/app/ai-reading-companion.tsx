@@ -13,7 +13,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -363,6 +363,7 @@ export default function AiReadingCompanion({
     frame: { x: 0, y: 0, width: defaultWindowWidth, height: minimumWindowHeight },
   });
   const messagePaneRef = useRef<HTMLDivElement | null>(null);
+  const savedMessageScrollRef = useRef<{ scrollTop: number; stickToBottom: boolean } | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const thinkingStartedAtRef = useRef(0);
   const { showAlert, showConfirm, showPrompt, dialogElement } = useAppDialog({
@@ -435,6 +436,18 @@ export default function AiReadingCompanion({
     const pane = messagePaneRef.current;
     if (pane) pane.scrollTop = pane.scrollHeight;
   }, [assistantDraft, assistantReasoningDraft, messages.length]);
+
+  useLayoutEffect(() => {
+    if (!open || minimized) return;
+    const pane = messagePaneRef.current;
+    if (!pane) return;
+    const saved = savedMessageScrollRef.current;
+    if (saved) {
+      pane.scrollTop = saved.stickToBottom
+        ? pane.scrollHeight
+        : Math.min(saved.scrollTop, Math.max(0, pane.scrollHeight - pane.clientHeight));
+    }
+  }, [minimized, open]);
 
   useEffect(() => {
     if (!thinkingActive) return;
@@ -708,7 +721,18 @@ export default function AiReadingCompanion({
     }
   }
 
+  function rememberMessageScrollPosition() {
+    const pane = messagePaneRef.current;
+    if (!pane) return;
+    const distanceFromBottom = pane.scrollHeight - pane.clientHeight - pane.scrollTop;
+    savedMessageScrollRef.current = {
+      scrollTop: pane.scrollTop,
+      stickToBottom: distanceFromBottom <= 24,
+    };
+  }
+
   function toggleMinimized() {
+    if (!minimized) rememberMessageScrollPosition();
     setMinimized((current) => {
       const next = !current;
       window.localStorage.setItem("brooks-pa-atlas.aiReading.minimized", String(next));
@@ -783,8 +807,7 @@ export default function AiReadingCompanion({
           </button>
         </div>
 
-        {!minimized ? (
-          <>
+        <div className={`${minimized ? "hidden" : "flex"} min-h-0 flex-1 flex-col`}>
             <div className="flex shrink-0 items-center gap-1 border-b border-zinc-200 bg-zinc-50 p-2">
               <select
                 value={activeId ?? ""}
@@ -896,8 +919,7 @@ export default function AiReadingCompanion({
               </div>
               <p className="mt-1.5 text-[10px] leading-4 text-zinc-400">{t.recentContext}</p>
             </div>
-          </>
-        ) : null}
+        </div>
         {!minimized ? (
           <>
             <div aria-hidden="true" onPointerDown={(event) => beginResize("n", event)} className="absolute inset-x-3 top-0 z-20 h-2 cursor-n-resize" />

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { AiServiceError, streamAiChatCompletion } from "@/lib/ai-client";
+import { AiServiceError, streamAiChatCompletionEvents } from "@/lib/ai-client";
 import {
   buildReadingCompanionMessages,
   readingConversationTitle,
@@ -147,12 +147,35 @@ export async function POST(
         }),
       );
       let assistantText = "";
+      let reasoningContent = "";
+      const thinkingStartedAt = Date.now();
+      let reasoningDurationMs: number | null = null;
+      let thinkingFinished = false;
+      controller.enqueue(encodeEvent({ type: "thinking_start" }));
       try {
-        for await (const delta of streamAiChatCompletion(endpoint, model, aiMessages, {
+        for await (const event of streamAiChatCompletionEvents(endpoint, model, aiMessages, {
           signal: request.signal,
         })) {
-          assistantText += delta;
-          controller.enqueue(encodeEvent({ type: "delta", text: delta }));
+          if (event.type === "reasoning") {
+            reasoningContent += event.text;
+            controller.enqueue(encodeEvent({ type: "reasoning_delta", text: event.text }));
+            continue;
+          }
+          if (!thinkingFinished) {
+            thinkingFinished = true;
+            reasoningDurationMs = Date.now() - thinkingStartedAt;
+            controller.enqueue(
+              encodeEvent({ type: "thinking_done", durationMs: reasoningDurationMs }),
+            );
+          }
+          assistantText += event.text;
+          controller.enqueue(encodeEvent({ type: "delta", text: event.text }));
+        }
+        if (!thinkingFinished) {
+          reasoningDurationMs = Date.now() - thinkingStartedAt;
+          controller.enqueue(
+            encodeEvent({ type: "thinking_done", durationMs: reasoningDurationMs }),
+          );
         }
         const saved = await prisma.$transaction(async (tx) => {
           const message = await tx.aiReadingMessage.create({
@@ -161,6 +184,8 @@ export async function POST(
               role: "ASSISTANT",
               sequence: userMessage.sequence + 1,
               content: assistantText,
+              reasoningContent: reasoningContent.trim() ? reasoningContent : null,
+              reasoningDurationMs,
             },
             include: {
               chartImage: { select: { id: true, title: true, originalName: true } },

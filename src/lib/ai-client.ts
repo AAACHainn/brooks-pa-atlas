@@ -157,50 +157,78 @@ export async function fetchAiModels(
   ].sort((left, right) => left.localeCompare(right));
 }
 
-function extractTextContent(payload: unknown) {
-  if (typeof payload !== "object" || payload === null || !("choices" in payload)) return "";
+function firstChoiceContainer(payload: unknown, field: "message" | "delta") {
+  if (typeof payload !== "object" || payload === null || !("choices" in payload)) return null;
   const choices = (payload as { choices?: unknown }).choices;
-  if (!Array.isArray(choices) || choices.length === 0) return "";
-  const message =
-    typeof choices[0] === "object" && choices[0] !== null && "message" in choices[0]
-      ? (choices[0] as { message?: unknown }).message
-      : null;
-  const content =
-    typeof message === "object" && message !== null && "content" in message
-      ? (message as { content?: unknown }).content
-      : null;
-  if (typeof content === "string") return content;
+  if (!Array.isArray(choices) || choices.length === 0) return null;
+  const choice = choices[0];
+  if (typeof choice !== "object" || choice === null || !(field in choice)) return null;
+  const container = (choice as Record<string, unknown>)[field];
+  return typeof container === "object" && container !== null
+    ? (container as Record<string, unknown>)
+    : null;
+}
+
+function arrayContentText(content: unknown, reasoning: boolean) {
   if (!Array.isArray(content)) return "";
   return content
     .map((part) =>
-      typeof part === "object" && part !== null && "text" in part
-        ? String((part as { text: unknown }).text)
+      typeof part === "object" && part !== null
+        ? (() => {
+            const record = part as Record<string, unknown>;
+            const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+            const isReasoning = type.includes("reason") || type.includes("think");
+            if (isReasoning !== reasoning) return "";
+            if (typeof record.text === "string") return record.text;
+            if (typeof record.content === "string") return record.content;
+            return "";
+          })()
         : "",
     )
     .join("");
 }
 
-function extractDeltaText(payload: unknown) {
-  if (typeof payload !== "object" || payload === null || !("choices" in payload)) return "";
-  const choices = (payload as { choices?: unknown }).choices;
-  if (!Array.isArray(choices) || choices.length === 0) return "";
-  const delta =
-    typeof choices[0] === "object" && choices[0] !== null && "delta" in choices[0]
-      ? (choices[0] as { delta?: unknown }).delta
-      : null;
-  const content =
-    typeof delta === "object" && delta !== null && "content" in delta
-      ? (delta as { content?: unknown }).content
-      : null;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) =>
-      typeof part === "object" && part !== null && "text" in part
-        ? String((part as { text: unknown }).text)
-        : "",
-    )
-    .join("");
+function answerText(container: Record<string, unknown> | null) {
+  if (!container) return "";
+  if (typeof container.content === "string") return container.content;
+  return arrayContentText(container.content, false);
+}
+
+function reasoningText(container: Record<string, unknown> | null) {
+  if (!container) return "";
+  const directFields = ["reasoning_content", "reasoning", "thinking"] as const;
+  for (const field of directFields) {
+    const value = container[field];
+    if (typeof value === "string") return value;
+    if (typeof value === "object" && value !== null) {
+      const record = value as Record<string, unknown>;
+      if (typeof record.text === "string") return record.text;
+      if (typeof record.content === "string") return record.content;
+    }
+  }
+  const details = container.reasoning_details;
+  if (Array.isArray(details)) {
+    const text = details
+      .map((detail) => {
+        if (typeof detail !== "object" || detail === null) return "";
+        const record = detail as Record<string, unknown>;
+        if (typeof record.text === "string") return record.text;
+        if (typeof record.content === "string") return record.content;
+        return "";
+      })
+      .join("");
+    if (text) return text;
+  }
+  return arrayContentText(container.content, true);
+}
+
+function extractTextContent(payload: unknown) {
+  return answerText(firstChoiceContainer(payload, "message"));
+}
+
+function extractResponseParts(payload: unknown, field: "message" | "delta") {
+  const container = firstChoiceContainer(payload, field);
+  return { content: answerText(container), reasoning: reasoningText(container) };
 }
 
 export function normalizeAiText(value: string) {
@@ -242,7 +270,12 @@ export async function createAiChatCompletion(
   return text;
 }
 
-export async function* streamAiChatCompletion(
+export type AiChatStreamEvent = {
+  type: "content" | "reasoning";
+  text: string;
+};
+
+export async function* streamAiChatCompletionEvents(
   endpoint: StoredAiEndpoint,
   model: string,
   messages: ChatMessage[],
@@ -261,7 +294,7 @@ export async function* streamAiChatCompletion(
       Array.isArray(message.content) &&
       message.content.some((part) => part.type === "image_url"),
   );
-  let emitted = false;
+  let emittedContent = false;
 
   try {
     const response = await (options.fetchImpl ?? fetch)(chatCompletionsUrl, {
@@ -296,12 +329,14 @@ export async function* streamAiChatCompletion(
           cause: error,
         });
       }
-      const text = normalizeAiText(extractTextContent(payload));
+      const parts = extractResponseParts(payload, "message");
+      const text = normalizeAiText(parts.content);
       if (!text) {
         throw new AiServiceError("invalid-response", "AI service returned an empty response.");
       }
-      emitted = true;
-      yield text;
+      if (parts.reasoning) yield { type: "reasoning", text: parts.reasoning };
+      emittedContent = true;
+      yield { type: "content", text };
       return;
     }
 
@@ -314,7 +349,7 @@ export async function* streamAiChatCompletion(
     let pending = "";
 
     function consumeLines(lines: string[]) {
-      const deltas: string[] = [];
+      const events: AiChatStreamEvent[] = [];
       let finished = false;
       for (const rawLine of lines) {
         const line = rawLine.trim();
@@ -334,10 +369,11 @@ export async function* streamAiChatCompletion(
             cause: error,
           });
         }
-        const delta = extractDeltaText(payload);
-        if (delta) deltas.push(delta);
+        const parts = extractResponseParts(payload, "delta");
+        if (parts.reasoning) events.push({ type: "reasoning", text: parts.reasoning });
+        if (parts.content) events.push({ type: "content", text: parts.content });
       }
-      return { deltas, finished };
+      return { events, finished };
     }
 
     let finished = false;
@@ -347,9 +383,9 @@ export async function* streamAiChatCompletion(
       const lines = pending.split(/\r?\n/);
       pending = done ? "" : (lines.pop() ?? "");
       const parsedLines = consumeLines(lines);
-      for (const delta of parsedLines.deltas) {
-        emitted = true;
-        yield delta;
+      for (const event of parsedLines.events) {
+        if (event.type === "content") emittedContent = true;
+        yield event;
       }
       if (parsedLines.finished) {
         finished = true;
@@ -359,12 +395,12 @@ export async function* streamAiChatCompletion(
       if (done) break;
     }
     if (!finished && pending.trim()) {
-      for (const delta of consumeLines([pending]).deltas) {
-        emitted = true;
-        yield delta;
+      for (const event of consumeLines([pending]).events) {
+        if (event.type === "content") emittedContent = true;
+        yield event;
       }
     }
-    if (!emitted) {
+    if (!emittedContent) {
       throw new AiServiceError("invalid-response", "AI service returned an empty response.");
     }
   } catch (error) {
@@ -372,6 +408,17 @@ export async function* streamAiChatCompletion(
   } finally {
     clearTimeout(timeout);
     options.signal?.removeEventListener("abort", abortFromCaller);
+  }
+}
+
+export async function* streamAiChatCompletion(
+  endpoint: StoredAiEndpoint,
+  model: string,
+  messages: ChatMessage[],
+  options: { fetchImpl?: AiFetch; timeoutMs?: number; signal?: AbortSignal } = {},
+) {
+  for await (const event of streamAiChatCompletionEvents(endpoint, model, messages, options)) {
+    if (event.type === "content") yield event.text;
   }
 }
 

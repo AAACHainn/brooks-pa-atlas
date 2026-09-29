@@ -6,6 +6,7 @@ import {
   createAiChatCompletion,
   fetchAiModels,
   streamAiChatCompletion,
+  streamAiChatCompletionEvents,
 } from "@/lib/ai-client";
 import { buildOcrRefinementMessages } from "@/lib/ai-ocr-refinement";
 import type { StoredAiEndpoint } from "@/lib/ai-config";
@@ -182,4 +183,54 @@ test("streaming chat accepts providers that return normal JSON", async () => {
     chunks.push(chunk);
   }
   assert.deepEqual(chunks, ["Complete"]);
+});
+
+test("streaming chat exposes provider reasoning separately from answer content", async () => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"Inspect chart"}}]}\n\n'));
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning_content":" carefully"}}]}\n\n'));
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Final answer"}}]}\n\n'));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+  const events = [];
+  for await (const event of streamAiChatCompletionEvents(
+    endpoint(),
+    "reasoning-model",
+    [{ role: "user", content: "test" }],
+    {
+      fetchImpl: async () =>
+        new Response(stream, { headers: { "Content-Type": "text/event-stream" } }),
+    },
+  )) {
+    events.push(event);
+  }
+  assert.deepEqual(events, [
+    { type: "reasoning", text: "Inspect chart" },
+    { type: "reasoning", text: " carefully" },
+    { type: "content", text: "Final answer" },
+  ]);
+});
+
+test("normal JSON fallback exposes reasoning content", async () => {
+  const events = [];
+  for await (const event of streamAiChatCompletionEvents(
+    endpoint(),
+    "reasoning-model",
+    [{ role: "user", content: "test" }],
+    {
+      fetchImpl: async () => Response.json({
+        choices: [{ message: { reasoning_content: "Reason", content: "Answer" } }],
+      }),
+    },
+  )) {
+    events.push(event);
+  }
+  assert.deepEqual(events, [
+    { type: "reasoning", text: "Reason" },
+    { type: "content", text: "Answer" },
+  ]);
 });

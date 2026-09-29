@@ -2,6 +2,7 @@
 
 import {
   Bot,
+  BrainCircuit,
   ChevronDown,
   ChevronUp,
   Loader2,
@@ -34,6 +35,8 @@ type Message = {
   role: "USER" | "ASSISTANT";
   sequence: number;
   content: string;
+  reasoningContent: string | null;
+  reasoningDurationMs: number | null;
   createdAt: string;
   image: {
     id: string | null;
@@ -72,6 +75,11 @@ const labels = {
     placeholder: "围绕当前图片提问…",
     send: "发送",
     sending: "回答中",
+    thinking: "思考过程",
+    thinkingActive: "思考中",
+    thoughtFor: "已思考",
+    waitingVisibleThinking: "等待模型返回可显示的思考内容…",
+    noVisibleThinking: "当前模型没有提供可显示的思考内容。",
     loadOlder: "加载更早消息",
     loading: "加载中",
     loadFailed: "无法加载伴读会话。",
@@ -105,6 +113,11 @@ const labels = {
     placeholder: "Ask about the current image…",
     send: "Send",
     sending: "Responding",
+    thinking: "Thinking",
+    thinkingActive: "Thinking",
+    thoughtFor: "Thought for",
+    waitingVisibleThinking: "Waiting for visible reasoning from the model…",
+    noVisibleThinking: "The current model did not provide visible reasoning content.",
     loadOlder: "Load older messages",
     loading: "Loading",
     loadFailed: "Could not load reading conversations.",
@@ -252,6 +265,67 @@ function MarkdownContent({ content }: { content: string }) {
   );
 }
 
+function formattedThinkingTime(durationMs: number, locale: Locale) {
+  const seconds = Math.max(0, durationMs) / 1000;
+  const value = seconds < 10 ? seconds.toFixed(1) : Math.round(seconds).toString();
+  return locale === "zh" ? `${value} 秒` : `${value}s`;
+}
+
+function ReasoningPanel({
+  content,
+  durationMs,
+  active,
+  locale,
+  defaultExpanded = false,
+}: {
+  content: string;
+  durationMs: number;
+  active: boolean;
+  locale: Locale;
+  defaultExpanded?: boolean;
+}) {
+  const t = labels[locale];
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const time = formattedThinkingTime(durationMs, locale);
+
+  return (
+    <section className="mb-2 overflow-hidden rounded-lg border border-amber-200 bg-amber-50/70 text-zinc-700">
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-xs font-medium hover:bg-amber-100/70"
+        aria-expanded={expanded}
+      >
+        {active ? (
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-amber-700" />
+        ) : (
+          <BrainCircuit className="h-3.5 w-3.5 shrink-0 text-amber-700" />
+        )}
+        <span>{t.thinking}</span>
+        <span className="font-normal text-zinc-500">
+          {active ? t.thinkingActive : t.thoughtFor} · {time}
+        </span>
+        {expanded ? (
+          <ChevronUp className="ml-auto h-3.5 w-3.5 shrink-0" />
+        ) : (
+          <ChevronDown className="ml-auto h-3.5 w-3.5 shrink-0" />
+        )}
+      </button>
+      {expanded ? (
+        <div className="border-t border-amber-200 px-3 py-2 text-xs leading-5 text-zinc-600">
+          {content ? (
+            <MarkdownContent content={content} />
+          ) : (
+            <p className="italic text-zinc-500">
+              {active ? t.waitingVisibleThinking : t.noVisibleThinking}
+            </p>
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export default function AiReadingCompanion({
   open,
   locale,
@@ -276,6 +350,9 @@ export default function AiReadingCompanion({
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [assistantDraft, setAssistantDraft] = useState("");
+  const [assistantReasoningDraft, setAssistantReasoningDraft] = useState("");
+  const [thinkingActive, setThinkingActive] = useState(false);
+  const [thinkingElapsedMs, setThinkingElapsedMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [minimized, setMinimized] = useState(false);
   const [frame, setFrame] = useState<FloatingFrame | null>(null);
@@ -287,6 +364,7 @@ export default function AiReadingCompanion({
   });
   const messagePaneRef = useRef<HTMLDivElement | null>(null);
   const activeIdRef = useRef<string | null>(null);
+  const thinkingStartedAtRef = useRef(0);
   const { showAlert, showConfirm, showPrompt, dialogElement } = useAppDialog({
     confirm: t.confirm,
     cancel: t.cancel,
@@ -356,7 +434,17 @@ export default function AiReadingCompanion({
   useEffect(() => {
     const pane = messagePaneRef.current;
     if (pane) pane.scrollTop = pane.scrollHeight;
-  }, [assistantDraft, messages.length]);
+  }, [assistantDraft, assistantReasoningDraft, messages.length]);
+
+  useEffect(() => {
+    if (!thinkingActive) return;
+    const updateElapsed = () => {
+      setThinkingElapsedMs(Date.now() - thinkingStartedAtRef.current);
+    };
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 100);
+    return () => window.clearInterval(timer);
+  }, [thinkingActive]);
 
   useEffect(() => {
     function handleResize() {
@@ -537,6 +625,9 @@ export default function AiReadingCompanion({
     setInput("");
     setError(null);
     setAssistantDraft("");
+    setAssistantReasoningDraft("");
+    setThinkingActive(false);
+    setThinkingElapsedMs(0);
     setSending(true);
     try {
       const response = await fetch(
@@ -564,9 +655,10 @@ export default function AiReadingCompanion({
         for (const line of lines) {
           if (!line.trim()) continue;
           const event = JSON.parse(line) as {
-            type: "start" | "delta" | "done" | "error";
+            type: "start" | "thinking_start" | "reasoning_delta" | "thinking_done" | "delta" | "done" | "error";
             text?: string;
             error?: string;
+            durationMs?: number;
             userMessage?: Message;
             assistantMessage?: Message;
             conversation?: { id: string; title: string | null };
@@ -576,6 +668,15 @@ export default function AiReadingCompanion({
             if (event.conversation) {
               setConversations((items) => items.map((item) => item.id === conversationId ? { ...item, title: event.conversation!.title, messageCount: item.messageCount + 1, preview: content, updatedAt: new Date().toISOString() } : item));
             }
+          } else if (event.type === "thinking_start") {
+            thinkingStartedAtRef.current = Date.now();
+            setThinkingElapsedMs(0);
+            setThinkingActive(true);
+          } else if (event.type === "reasoning_delta") {
+            setAssistantReasoningDraft((current) => current + (event.text ?? ""));
+          } else if (event.type === "thinking_done") {
+            setThinkingActive(false);
+            setThinkingElapsedMs(event.durationMs ?? 0);
           } else if (event.type === "delta") {
             draft += event.text ?? "";
             setAssistantDraft(draft);
@@ -583,6 +684,9 @@ export default function AiReadingCompanion({
             completed = true;
             setMessages((current) => [...current, event.assistantMessage!]);
             setAssistantDraft("");
+            setAssistantReasoningDraft("");
+            setThinkingActive(false);
+            setThinkingElapsedMs(0);
             setConversations((items) => items.map((item) => item.id === conversationId ? { ...item, messageCount: item.messageCount + 1, preview: event.assistantMessage!.content, updatedAt: new Date().toISOString() } : item));
           } else if (event.type === "error") {
             throw new Error(event.error ?? t.operationFailed);
@@ -593,6 +697,9 @@ export default function AiReadingCompanion({
       if (!completed) throw new Error(t.operationFailed);
     } catch (caught) {
       setAssistantDraft("");
+      setAssistantReasoningDraft("");
+      setThinkingActive(false);
+      setThinkingElapsedMs(0);
       setInput(content);
       const message = caught instanceof Error ? caught.message : t.operationFailed;
       setError(`${message}\n${t.retryHint}`);
@@ -714,7 +821,7 @@ export default function AiReadingCompanion({
               ) : null}
               {loading && messages.length === 0 ? (
                 <div className="grid h-full place-items-center text-zinc-400"><Loader2 className="h-5 w-5 animate-spin" /></div>
-              ) : messages.length === 0 && !assistantDraft ? (
+              ) : messages.length === 0 && !assistantDraft && !thinkingActive ? (
                 <div className="grid h-full place-items-center px-6 text-center text-sm leading-6 text-zinc-500">{t.noMessages}</div>
               ) : null}
               {messages.map((message) => (
@@ -726,17 +833,34 @@ export default function AiReadingCompanion({
                       </div>
                     ) : null}
                     {message.role === "ASSISTANT" ? (
-                      <MarkdownContent content={message.content} />
+                      <>
+                        {message.reasoningContent || message.reasoningDurationMs !== null ? (
+                          <ReasoningPanel
+                            content={message.reasoningContent ?? ""}
+                            durationMs={message.reasoningDurationMs ?? 0}
+                            active={false}
+                            locale={locale}
+                          />
+                        ) : null}
+                        <MarkdownContent content={message.content} />
+                      </>
                     ) : (
                       <p className="whitespace-pre-wrap break-words">{message.content}</p>
                     )}
                   </div>
                 </article>
               ))}
-              {assistantDraft ? (
+              {thinkingActive || assistantReasoningDraft || assistantDraft ? (
                 <div className="flex justify-start">
                   <div className="max-w-[88%] rounded-xl border border-cyan-200 bg-white px-3 py-2 text-sm leading-6 text-zinc-800 shadow-sm">
-                    <MarkdownContent content={assistantDraft} />
+                    <ReasoningPanel
+                      content={assistantReasoningDraft}
+                      durationMs={thinkingElapsedMs}
+                      active={thinkingActive}
+                      locale={locale}
+                      defaultExpanded
+                    />
+                    {assistantDraft ? <MarkdownContent content={assistantDraft} /> : null}
                   </div>
                 </div>
               ) : null}

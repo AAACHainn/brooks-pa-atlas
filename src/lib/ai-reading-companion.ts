@@ -64,6 +64,8 @@ export function serializeReadingMessage(message: {
   role: "USER" | "ASSISTANT";
   sequence: number;
   content: string;
+  reasoningContent: string | null;
+  reasoningDurationMs: number | null;
   imageContextJson: string | null;
   createdAt: Date | string;
   chartImage: { id: string; title: string | null; originalName: string } | null;
@@ -74,6 +76,8 @@ export function serializeReadingMessage(message: {
     role: message.role,
     sequence: message.sequence,
     content: message.content,
+    reasoningContent: message.reasoningContent,
+    reasoningDurationMs: message.reasoningDurationMs,
     createdAt:
       message.createdAt instanceof Date ? message.createdAt.toISOString() : message.createdAt,
     image: snapshot

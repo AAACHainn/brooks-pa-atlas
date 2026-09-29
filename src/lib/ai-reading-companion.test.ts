@@ -7,6 +7,7 @@ import {
   readingImageLimit,
   selectRecentReadingImageIds,
   selectRecentReadingMessages,
+  serializeReadingMessage,
   type ReadingHistoryMessage,
   type ReadingImageSnapshot,
 } from "@/lib/ai-reading-companion";
@@ -49,6 +50,22 @@ function snapshot(name: string): ReadingImageSnapshot {
 test("conversation titles normalize whitespace and stop at 40 characters", () => {
   assert.equal(readingConversationTitle("  explain\n this chart  "), "explain this chart");
   assert.equal([...readingConversationTitle("图".repeat(50))].length, 40);
+});
+
+test("serialized assistant messages retain visible reasoning and duration", () => {
+  const serialized = serializeReadingMessage({
+    id: "assistant-1",
+    role: "ASSISTANT",
+    sequence: 1,
+    content: "Answer",
+    reasoningContent: "Visible provider reasoning",
+    reasoningDurationMs: 1250,
+    imageContextJson: null,
+    createdAt: new Date("2026-09-29T00:00:00.000Z"),
+    chartImage: null,
+  });
+  assert.equal(serialized.reasoningContent, "Visible provider reasoning");
+  assert.equal(serialized.reasoningDurationMs, 1250);
 });
 
 test("reading messages include untrusted context and multimodal image data", () => {

@@ -149,6 +149,8 @@ model AiReadingMessage {
   role             AiReadingMessageRole
   sequence         Int
   content          String
+  reasoningContent String?
+  reasoningDurationMs Int?
   chartImageId     String?
   imageContextJson String?
   createdAt        DateTime             @default(now())

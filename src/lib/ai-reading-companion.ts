@@ -7,6 +7,12 @@ export const readingTextBudget = 60_000;
 export const readingImageLimit = 4;
 export const readingMessagePageSize = 50;
 
+export function parseReadingMessageBefore(value: string | null) {
+  if (value === null || value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
 const readingAnnotationSchema = z.object({
   text: z.string(),
   x: z.number(),

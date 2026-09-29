@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildReadingCompanionMessages,
+  parseReadingMessageBefore,
   readingConversationTitle,
   readingImageLimit,
   selectRecentReadingImageIds,
@@ -11,6 +12,14 @@ import {
   type ReadingHistoryMessage,
   type ReadingImageSnapshot,
 } from "@/lib/ai-reading-companion";
+
+test("message history pagination leaves a missing cursor unbounded", () => {
+  assert.equal(parseReadingMessageBefore(null), null);
+  assert.equal(parseReadingMessageBefore(""), null);
+  assert.equal(parseReadingMessageBefore("not-a-number"), null);
+  assert.equal(parseReadingMessageBefore("0"), 0);
+  assert.equal(parseReadingMessageBefore("50"), 50);
+});
 
 function snapshot(name: string): ReadingImageSnapshot {
   return {

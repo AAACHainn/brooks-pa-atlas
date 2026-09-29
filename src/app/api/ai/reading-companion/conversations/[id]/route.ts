@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
+  parseReadingMessageBefore,
   readingMessagePageSize,
   serializeReadingMessage,
 } from "@/lib/ai-reading-companion";
@@ -18,8 +19,7 @@ export async function GET(
 ) {
   const { id } = await context.params;
   const url = new URL(request.url);
-  const parsedBefore = Number(url.searchParams.get("before"));
-  const before = Number.isInteger(parsedBefore) && parsedBefore >= 0 ? parsedBefore : null;
+  const before = parseReadingMessageBefore(url.searchParams.get("before"));
   const conversation = await prisma.aiReadingConversation.findUnique({ where: { id } });
   if (!conversation) {
     return NextResponse.json({ error: "Conversation not found." }, { status: 404 });

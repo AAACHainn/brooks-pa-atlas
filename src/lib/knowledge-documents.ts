@@ -22,7 +22,10 @@ export function listKnowledgeDocuments() {
     FROM KnowledgeDocument d ORDER BY d.indexPathSnapshot, d.title`).all() as Array<Record<string, unknown>>;
   const versionStatement = db.prepare(`SELECT id, versionNumber, sourceFileName, sourceHash, status, approvalMode,
     processorModel, error, activatedAt, createdAt,
-    (SELECT COUNT(*) FROM KnowledgeChunk WHERE versionId = KnowledgeDocumentVersion.id) AS chunkCount
+    (SELECT COUNT(*) FROM KnowledgeChunk WHERE versionId = KnowledgeDocumentVersion.id) AS chunkCount,
+    (SELECT COUNT(*) FROM KnowledgeChunkEmbedding e
+      JOIN KnowledgeChunk c ON c.id = e.chunkId
+      WHERE c.versionId = KnowledgeDocumentVersion.id) AS vectorCount
     FROM KnowledgeDocumentVersion WHERE documentId = ? ORDER BY versionNumber DESC`);
   return documents.map((document) => ({
     ...document,
@@ -130,9 +133,10 @@ export async function deleteKnowledgeDocument(id: string) {
 export function activateKnowledgeVersion(documentId: string, versionId: string) {
   const db = knowledgeDb();
   db.transaction(() => {
-    const version = db.prepare("SELECT id FROM KnowledgeDocumentVersion WHERE id = ? AND documentId = ?")
-      .get(versionId, documentId);
+    const version = db.prepare("SELECT id, status FROM KnowledgeDocumentVersion WHERE id = ? AND documentId = ?")
+      .get(versionId, documentId) as { id: string; status: string } | undefined;
     if (!version) throw new Error("Knowledge version not found.");
+    if (version.status !== "INACTIVE") throw new Error("Only a completed inactive version can be activated.");
     const chunkCount = db.prepare("SELECT COUNT(*) AS count FROM KnowledgeChunk WHERE versionId = ?")
       .get(versionId) as { count: number };
     if (!chunkCount.count) throw new Error("Cannot activate an empty knowledge version.");
@@ -141,6 +145,47 @@ export function activateKnowledgeVersion(documentId: string, versionId: string) 
     db.prepare("UPDATE KnowledgeDocumentVersion SET status = 'ACTIVE', error = NULL, activatedAt = ?, updatedAt = ? WHERE id = ?")
       .run(new Date().toISOString(), new Date().toISOString(), versionId);
   })();
+}
+
+export async function deleteKnowledgeVersion(documentId: string, versionId: string) {
+  const db = knowledgeDb();
+  const deleted = db.transaction(() => {
+    const version = db.prepare(`SELECT id, status, sourcePath FROM KnowledgeDocumentVersion
+      WHERE id = ? AND documentId = ?`).get(versionId, documentId) as { id: string; status: string; sourcePath: string } | undefined;
+    if (!version) throw new Error("Knowledge version not found.");
+    if (!["INACTIVE", "FAILED", "REJECTED"].includes(version.status)) {
+      throw new Error("只能删除已停用、失败或已拒绝的历史版本。");
+    }
+    const chunkCount = db.prepare("SELECT COUNT(*) AS count FROM KnowledgeChunk WHERE versionId = ?")
+      .get(versionId) as { count: number };
+    const vectorCount = db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeChunkEmbedding e
+      JOIN KnowledgeChunk c ON c.id = e.chunkId WHERE c.versionId = ?`).get(versionId) as { count: number };
+    db.prepare("DELETE FROM KnowledgeChunkFts WHERE versionId = ?").run(versionId);
+    db.prepare("DELETE FROM KnowledgeDocumentVersion WHERE id = ?").run(versionId);
+    const remainingVersions = db.prepare("SELECT COUNT(*) AS count FROM KnowledgeDocumentVersion WHERE documentId = ?")
+      .get(documentId) as { count: number };
+    if (remainingVersions.count === 0) db.prepare("DELETE FROM KnowledgeDocument WHERE id = ?").run(documentId);
+    return {
+      deletedChunks: chunkCount.count,
+      deletedVectors: vectorCount.count,
+      removedEmptyDocument: remainingVersions.count === 0,
+      sourcePath: version.sourcePath,
+    };
+  })();
+  const remainingSourceReference = db.prepare("SELECT 1 FROM KnowledgeDocumentVersion WHERE sourcePath = ? LIMIT 1")
+    .get(deleted.sourcePath);
+  if (!remainingSourceReference) {
+    try {
+      await unlink(safeSourcePath(deleted.sourcePath));
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+  }
+  return {
+    deletedChunks: deleted.deletedChunks,
+    deletedVectors: deleted.deletedVectors,
+    removedEmptyDocument: deleted.removedEmptyDocument,
+  };
 }
 
 export function rebuildKnowledgeFts() {

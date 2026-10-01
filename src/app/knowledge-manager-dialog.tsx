@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, Check, FileSearch, Loader2, Search, Trash2, UploadCloud, X } from "lucide-react";
+import { BookOpen, Check, FileSearch, Loader2, Search, UploadCloud, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAppDialog } from "@/app/app-dialog";
@@ -12,15 +12,20 @@ import KnowledgeImportProgress, {
   type KnowledgeImportJobItemView,
   type KnowledgeImportJobView,
 } from "@/app/knowledge-import-progress";
+import KnowledgeLibraryPanel, {
+  type KnowledgeDocumentRow,
+  type KnowledgeMaintenanceJob,
+  type KnowledgeVersionRow,
+} from "@/app/knowledge-library-panel";
 
 type Locale = "zh" | "en";
 type SelectedSubtitle = { id: string; file: File; indexNodeId: string };
 type JobItem = KnowledgeImportJobItemView;
 type Job = KnowledgeImportJobView;
-type Version = { id: string; versionNumber: number; sourceFileName: string; status: string; approvalMode: string; chunkCount: number; error: string | null };
-type DocumentRow = { id: string; title: string; lessonCode: string | null; indexNodeId: string | null; indexPathSnapshot: string; bindingStatus: string; chunkCount: number; activeVersionId: string | null; versions: Version[] };
+type Version = KnowledgeVersionRow;
+type DocumentRow = KnowledgeDocumentRow;
 type Review = { id: string; title: string; sourceFileName: string; rawText: string; chunks: Array<{ ordinal: number; startMs: number | null; endMs: number | null; originalText: string; cleanedText: string; topic: string; keywords: string[] }> };
-type MaintenanceJob = { id: string; status: string; totalItems: number; processedItems: number; error: string | null };
+type MaintenanceJob = KnowledgeMaintenanceJob;
 
 const text = {
   zh: {
@@ -34,6 +39,8 @@ const text = {
     rebuildFts: "重建全文索引", rebuildVectors: "重建全部向量", maintenanceStarted: "向量重建已在后台启动。",
     testQuestion: "输入测试问题", search: "检索", currentNode: "当前索引范围", sources: "检索结果",
     confirmDelete: "删除字幕文档？", confirmDeleteMessage: "该文档的所有版本、片段和仅由它使用的原字幕文件将被逐个删除。",
+    confirmDeleteVersion: "删除历史版本？", confirmDeleteVersionMessage: "该版本的字幕片段、关键词、全文索引、向量和版本记录都会删除；原字幕文件仅在没有其他版本引用时删除。此操作不会影响当前启用版本。",
+    deleteVersion: "删除版本", versionDeleted: "历史版本已删除。",
     operationFailed: "操作失败", unmatched: "未匹配，请手动选择", resultEmpty: "没有检索到字幕片段。",
     reviewStats: "差异统计", characters: "字符", retained: "整理后占原文", ranking: "排序分", scope: "范围",
     collapseIndex: "收起索引", expandIndex: "展开索引", noMatchingIndex: "没有匹配的索引", searchIndex: "搜索索引名称或路径",
@@ -49,6 +56,8 @@ const text = {
     rebuildFts: "Rebuild full-text index", rebuildVectors: "Rebuild all vectors", maintenanceStarted: "Vector rebuild started in the background.",
     testQuestion: "Enter a test question", search: "Search", currentNode: "Current index scope", sources: "Results",
     confirmDelete: "Delete subtitle document?", confirmDeleteMessage: "All versions, chunks, and source files used only by this document will be deleted one file at a time.",
+    confirmDeleteVersion: "Delete historical version?", confirmDeleteVersionMessage: "This deletes the version record, subtitle chunks, keywords, full-text index, and vectors. The source file is deleted only when no other version references it. The active version is not affected.",
+    deleteVersion: "Delete version", versionDeleted: "Historical version deleted.",
     operationFailed: "Operation failed", unmatched: "Unmatched; select manually", resultEmpty: "No subtitle chunks found.",
     reviewStats: "Difference summary", characters: "characters", retained: "retained", ranking: "score", scope: "scope",
     collapseIndex: "Collapse index", expandIndex: "Expand index", noMatchingIndex: "No matching index", searchIndex: "Search index name or path",
@@ -79,6 +88,7 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
   const [question, setQuestion] = useState("");
   const [results, setResults] = useState<Array<Record<string, unknown>>>([]);
   const [maintenanceJob, setMaintenanceJob] = useState<MaintenanceJob | null>(null);
+  const [deletingVersionId, setDeletingVersionId] = useState<string | null>(null);
   const folderRef = useRef<HTMLInputElement | null>(null);
   const reviewStats = useMemo(() => {
     if (!review) return null;
@@ -204,6 +214,27 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
     await loadDocuments();
   }
 
+  async function deleteVersion(document: DocumentRow, version: Version) {
+    if (!await showConfirm({
+      title: t.confirmDeleteVersion,
+      message: t.confirmDeleteVersionMessage,
+      tone: "danger",
+      confirmLabel: t.deleteVersion,
+    })) return;
+    setDeletingVersionId(version.id);
+    try {
+      const response = await fetch(`/api/knowledge/documents/${document.id}/versions/${version.id}`, { method: "DELETE" });
+      const result = await response.json().catch(() => null) as { error?: string } | null;
+      if (!response.ok) throw new Error(result?.error ?? t.operationFailed);
+      await loadDocuments();
+      await showAlert({ title: t.title, message: t.versionDeleted, tone: "success" });
+    } catch (error) {
+      await showAlert({ title: t.operationFailed, message: error instanceof Error ? error.message : t.operationFailed, tone: "danger" });
+    } finally {
+      setDeletingVersionId(null);
+    }
+  }
+
   async function testSearch() {
     if (!question.trim()) return;
     setBusy(true);
@@ -276,7 +307,20 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
               onApproveAll={(items) => void (async () => { for (const item of items) await decide(item, "approve"); })()}
             /> : null}
           </div> : null}
-          {tab === "library" ? <div className="space-y-4"><div className="flex flex-wrap items-center gap-2"><button type="button" disabled={busy} onClick={() => void runMaintenance("fts")} className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 transition-colors hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50">{t.rebuildFts}</button><button type="button" disabled={busy || maintenanceJob?.status === "RUNNING"} onClick={() => void runMaintenance("embeddings")} className="rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-800 transition-colors hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50">{t.rebuildVectors}</button>{maintenanceJob ? <span className={`text-xs ${maintenanceJob.status === "FAILED" ? "text-rose-700" : "text-zinc-500"}`}>{maintenanceJob.processedItems}/{maintenanceJob.totalItems} · {maintenanceJob.status}{maintenanceJob.error ? ` · ${maintenanceJob.error}` : ""}</span> : null}</div>{documents.length ? documents.map((document) => <section key={document.id} className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-start gap-3"><div className="min-w-0 flex-1"><h3 className="font-semibold text-zinc-900">{document.lessonCode ? `${document.lessonCode} · ` : ""}{document.title}</h3><p className="mt-1 text-xs text-zinc-500">{document.indexPathSnapshot} · {document.bindingStatus} · {document.chunkCount} chunks</p><IndexTreeSelector className="mt-3 max-w-xl" value={document.indexNodeId ?? ""} onChange={(indexNodeId) => indexNodeId && void patchDocument(document, { indexNodeId })} nodes={indexTree} invalid={!document.indexNodeId} labels={{ choose: t.mapping, collapse: t.collapseIndex, expand: t.expandIndex, noResults: t.noMatchingIndex, searchPlaceholder: t.searchIndex, unclassified: t.unmatched }} /></div><button type="button" onClick={() => void patchDocument(document, { enabled: document.bindingStatus === "DISABLED" })} className="rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700 transition-colors hover:border-zinc-300 hover:bg-zinc-50">{document.bindingStatus === "DISABLED" ? t.enable : t.disable}</button><button type="button" onClick={() => void deleteDocument(document)} className="rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs text-rose-700 transition-colors hover:bg-rose-100"><Trash2 className="mr-1 inline h-3 w-3" />{t.delete}</button></div><div className="mt-3 space-y-2">{document.versions.map((version) => <div key={version.id} className="flex items-center gap-2 rounded-md border border-zinc-100 bg-zinc-50 px-3 py-2 text-xs text-zinc-700"><span>v{version.versionNumber} · {version.sourceFileName} · {version.status} · {version.chunkCount}</span>{document.activeVersionId === version.id ? <span className="ml-auto rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800">{t.active}</span> : version.chunkCount ? <button type="button" className="ml-auto font-medium text-cyan-700 hover:text-cyan-900" onClick={() => void activate(document, version)}>{t.activate}</button> : null}</div>)}</div></section>) : <p className="rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 py-16 text-center text-sm text-zinc-500">{t.empty}</p>}</div> : null}
+          {tab === "library" ? <KnowledgeLibraryPanel
+            busy={busy}
+            deletingVersionId={deletingVersionId}
+            documents={documents}
+            indexTree={indexTree}
+            initialIndexNodeId={initialIndexNodeId}
+            locale={locale}
+            maintenanceJob={maintenanceJob}
+            onActivate={(document, version) => void activate(document, version)}
+            onDeleteDocument={(document) => void deleteDocument(document)}
+            onDeleteVersion={(document, version) => void deleteVersion(document, version)}
+            onPatchDocument={(document, patch) => void patchDocument(document, patch)}
+            onRunMaintenance={(kind) => void runMaintenance(kind)}
+          /> : null}
           {tab === "test" ? <div className="space-y-4"><div className="flex gap-2"><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder={t.testQuestion} className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /><button type="button" onClick={() => void testSearch()} disabled={busy || !question.trim()} className="inline-flex h-10 items-center gap-2 rounded-md bg-cyan-800 px-4 text-sm font-medium text-white transition-colors hover:bg-cyan-900 disabled:cursor-not-allowed disabled:opacity-50">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}{t.search}</button></div><p className="text-xs text-zinc-500">{t.currentNode}: {indexes.find((node) => node.id === initialIndexNodeId)?.path ?? "—"}</p><div className="space-y-2">{results.length ? results.map((result) => <article key={String(result.id)} className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"><p className="text-xs font-semibold text-cyan-800">[{String(result.citation)}] {String(result.lessonCode ?? "")} · {String(result.title)} · {timestamp(result.startMs as number | null)}–{timestamp(result.endMs as number | null)}</p><p className="mt-1 text-[11px] text-zinc-500">{t.scope}: {String(result.scope)} · {t.ranking}: {Number(result.score).toFixed(5)}</p><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-700">{String(result.text)}</p></article>) : <p className="rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 p-8 text-center text-sm text-zinc-500">{t.resultEmpty}</p>}</div></div> : null}
         </main>
       </div>

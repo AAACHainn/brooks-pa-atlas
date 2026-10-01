@@ -29,6 +29,11 @@ export type KnowledgeImportJobItemView = {
   currentWindow: number | null;
   currentAttempt: number | null;
   maxAttempts: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheHit: boolean;
+  diagnosticInput: string | null;
+  diagnosticOutput: string | null;
 };
 
 export type KnowledgeImportJobView = {
@@ -39,6 +44,7 @@ export type KnowledgeImportJobView = {
   processedItems: number;
   completedItems: number;
   failedItems: number;
+  processingMode: "QUICK" | "AI";
   items: KnowledgeImportJobItemView[];
 };
 
@@ -58,6 +64,8 @@ const phaseLabels = {
     READING_SOURCE: "读取并解析字幕",
     PARSED: "字幕解析完成",
     AI_PROCESSING: "AI 字幕整理",
+    DETERMINISTIC_CHUNKING: "程序清洗与确定性分段",
+    CACHE_REUSE: "复用已有处理结果",
     CHUNKING: "生成知识片段",
     EMBEDDING: "生成 Embedding",
     FTS_INDEXING: "建立全文索引",
@@ -75,6 +83,8 @@ const phaseLabels = {
     READING_SOURCE: "Reading and parsing subtitles",
     PARSED: "Parsed",
     AI_PROCESSING: "AI subtitle cleanup",
+    DETERMINISTIC_CHUNKING: "Program cleanup and deterministic chunking",
+    CACHE_REUSE: "Reusing cached processing",
     CHUNKING: "Creating knowledge chunks",
     EMBEDDING: "Creating embeddings",
     FTS_INDEXING: "Building full-text index",
@@ -168,6 +178,11 @@ export default function KnowledgeImportProgress({
                 ? `已处理 ${processed}/${job.totalItems} · 成功 ${counts.completed} · 失败 ${counts.failed} · 审核中 ${counts.awaiting} · 处理中 ${counts.running} · 等待 ${counts.queued}`
                 : `Processed ${processed}/${job.totalItems} · ${counts.completed} completed · ${counts.failed} failed · ${counts.awaiting} awaiting review · ${counts.running} running · ${counts.queued} queued`}
             </p>
+            <p className="mt-1 text-xs font-medium text-cyan-800">
+              {job.processingMode === "QUICK"
+                ? (locale === "zh" ? "快速导入 · 不调用聊天模型" : "Quick import · no chat model")
+                : (locale === "zh" ? "AI 深度整理 · 仅返回分段元数据" : "AI deep processing · metadata only")}
+            </p>
           </div>
           <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusTone(job.status)}`}>
             {labels[job.status as keyof typeof labels] ?? job.status}
@@ -223,8 +238,14 @@ export default function KnowledgeImportProgress({
                           {item.progressCompleted}/{item.progressTotal || "—"}
                           {item.progressUnit === "windows" ? (locale === "zh" ? " 段" : " windows") : null}
                           {item.progressUnit === "batches" ? (locale === "zh" ? " 批" : " batches") : null}
+                          {item.progressUnit === "cached" ? (locale === "zh" ? "（已复用）" : " (reused)") : null}
                         </span>
                       </div>
+                      {item.phase === "AI_PROCESSING" && (item.inputTokens > 0 || item.outputTokens > 0) ? <p className="mt-2 text-[11px] text-zinc-500">
+                        {locale === "zh"
+                          ? `累计 Token：输入 ${item.inputTokens.toLocaleString()} · 输出 ${item.outputTokens.toLocaleString()}`
+                          : `Tokens: ${item.inputTokens.toLocaleString()} input · ${item.outputTokens.toLocaleString()} output`}
+                      </p> : null}
                       {item.progressTotal > 0 ? (
                         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-cyan-100">
                           <div className="h-full rounded-full bg-cyan-700 transition-all" style={{ width: `${progressPercent}%` }} />
@@ -255,8 +276,18 @@ export default function KnowledgeImportProgress({
                     <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
                       <p className="font-medium">{locale === "zh" ? `${failurePhase}失败` : `Failed during ${failurePhase}`}</p>
                       <p className="mt-1 break-words">{item.error}</p>
+                      {item.diagnosticInput || item.diagnosticOutput ? <details className="mt-2 rounded-md border border-rose-200 bg-white p-2 text-zinc-700">
+                        <summary className="cursor-pointer font-medium text-rose-800">{locale === "zh" ? "查看失败窗口输入与输出" : "View failed window input and output"}</summary>
+                        <p className="mt-2 text-[11px] text-zinc-500">{locale === "zh" ? `Token：输入 ${item.inputTokens.toLocaleString()} · 输出 ${item.outputTokens.toLocaleString()} · 最多尝试 ${item.maxAttempts ?? 2} 次` : `Tokens: ${item.inputTokens.toLocaleString()} input · ${item.outputTokens.toLocaleString()} output · up to ${item.maxAttempts ?? 2} attempts`}</p>
+                        {item.diagnosticInput ? <><p className="mt-2 font-medium">{locale === "zh" ? "窗口输入" : "Window input"}</p><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-zinc-50 p-2 text-[11px] leading-5">{item.diagnosticInput}</pre></> : null}
+                        {item.diagnosticOutput ? <><p className="mt-2 font-medium">{locale === "zh" ? "模型输出（最多 32,000 字符）" : "Model output (up to 32,000 characters)"}</p><pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-zinc-50 p-2 text-[11px] leading-5">{item.diagnosticOutput}</pre></> : null}
+                      </details> : null}
                     </div>
                   ) : null}
+
+                  {item.cacheHit ? <p className="mt-2 text-xs font-medium text-emerald-700">
+                    {locale === "zh" ? "已复用相同字幕的片段与可用向量，没有重复调用整理模型。" : "Reused chunks and available vectors from the same subtitle."}
+                  </p> : null}
 
                   <div className="mt-3 flex flex-wrap gap-2">
                     {item.status === "AWAITING_REVIEW" ? <>

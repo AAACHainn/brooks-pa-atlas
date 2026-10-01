@@ -14,6 +14,7 @@ export type KnowledgeVersionRow = {
   sourceFileName: string;
   status: string;
   approvalMode: string;
+  processingMode: "QUICK" | "AI";
   processorModel: string | null;
   chunkCount: number;
   vectorCount: number;
@@ -73,6 +74,7 @@ const copy = {
     active: "当前版本",
     activate: "回退/启用此版本",
     aiSegmented: "AI 分段",
+    programSegmented: "程序分段",
     all: "全部文档",
     chunks: "片段",
     delete: "删除文档",
@@ -107,6 +109,7 @@ const copy = {
     active: "Active version",
     activate: "Activate this version",
     aiSegmented: "AI segmented",
+    programSegmented: "Program segmented",
     all: "All documents",
     chunks: "chunks",
     delete: "Delete document",
@@ -248,7 +251,7 @@ export default function KnowledgeLibraryPanel({
               <button type="button" onClick={() => onPatchDocument(document, { enabled: document.bindingStatus === "DISABLED" })} className="rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700 transition-colors hover:border-zinc-300 hover:bg-zinc-50">{document.bindingStatus === "DISABLED" ? t.enable : t.disable}</button>
               <button type="button" onClick={() => onDeleteDocument(document)} className="rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs text-rose-700 transition-colors hover:bg-rose-100"><Trash2 className="mr-1 inline h-3 w-3" />{t.delete}</button>
             </div>
-            <div className="mt-3 space-y-2">{document.versions.map((version) => <div key={version.id} className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-100 bg-zinc-50 px-3 py-2 text-xs text-zinc-700"><span className="min-w-0 flex-1 truncate">v{version.versionNumber} · {version.sourceFileName} · {version.status}</span>{version.processorModel ? <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 font-medium text-violet-800"><Sparkles className="h-3 w-3" />{t.aiSegmented}</span> : null}<button type="button" disabled={version.chunkCount === 0} title={t.viewChunks} onClick={() => onViewChunks(version)} className="rounded-full bg-white px-2 py-0.5 text-cyan-700 ring-1 ring-zinc-200 transition-colors hover:bg-cyan-50 hover:ring-cyan-200 disabled:cursor-default disabled:text-zinc-400 disabled:hover:bg-white disabled:hover:ring-zinc-200">{version.chunkCount} {t.chunks}</button><span className="rounded-full bg-white px-2 py-0.5 text-zinc-500 ring-1 ring-zinc-200">{version.vectorCount} {t.vectors}</span>{document.activeVersionId === version.id ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800">{t.active}</span> : <>{version.status === "INACTIVE" && version.chunkCount > 0 ? <button type="button" className="font-medium text-cyan-700 hover:text-cyan-900" onClick={() => onActivate(document, version)}>{t.activate}</button> : null}{["INACTIVE", "FAILED", "REJECTED"].includes(version.status) ? <button type="button" disabled={deletingVersionId === version.id} className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2 py-1 text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-50" onClick={() => onDeleteVersion(document, version)}>{deletingVersionId === version.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}{t.deleteVersion}</button> : null}</>}</div>)}</div>
+            <div className="mt-3 space-y-2">{document.versions.map((version) => <div key={version.id} className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-100 bg-zinc-50 px-3 py-2 text-xs text-zinc-700"><span className="min-w-0 flex-1 truncate">v{version.versionNumber} · {version.sourceFileName} · {version.status}</span>{version.processingMode === "AI" || version.processorModel ? <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 font-medium text-violet-800"><Sparkles className="h-3 w-3" />{t.aiSegmented}</span> : <span className="rounded-full bg-cyan-100 px-2 py-0.5 font-medium text-cyan-800">{t.programSegmented}</span>}<button type="button" disabled={version.chunkCount === 0} title={t.viewChunks} onClick={() => onViewChunks(version)} className="rounded-full bg-white px-2 py-0.5 text-cyan-700 ring-1 ring-zinc-200 transition-colors hover:bg-cyan-50 hover:ring-cyan-200 disabled:cursor-default disabled:text-zinc-400 disabled:hover:bg-white disabled:hover:ring-zinc-200">{version.chunkCount} {t.chunks}</button><span className="rounded-full bg-white px-2 py-0.5 text-zinc-500 ring-1 ring-zinc-200">{version.vectorCount} {t.vectors}</span>{document.activeVersionId === version.id ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800">{t.active}</span> : <>{version.status === "INACTIVE" && version.chunkCount > 0 ? <button type="button" className="font-medium text-cyan-700 hover:text-cyan-900" onClick={() => onActivate(document, version)}>{t.activate}</button> : null}{["INACTIVE", "FAILED", "REJECTED"].includes(version.status) ? <button type="button" disabled={deletingVersionId === version.id} className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2 py-1 text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-50" onClick={() => onDeleteVersion(document, version)}>{deletingVersionId === version.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}{t.deleteVersion}</button> : null}</>}</div>)}</div>
           </article>) : <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-zinc-300 bg-white text-sm text-zinc-500">{t.empty}</div>}
         </div>
       </section>

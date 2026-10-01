@@ -12,6 +12,8 @@ export type KnowledgeProcessedSegment = {
   keywords: string[];
 };
 
+export type KnowledgeImportProcessingMode = "QUICK" | "AI";
+
 export type KnowledgeSource = {
   id: string;
   documentId: string;
@@ -42,6 +44,7 @@ export type KnowledgeImportJobSnapshot = {
   status: string;
   phase: string;
   manualReview: boolean;
+  processingMode: KnowledgeImportProcessingMode;
   totalItems: number;
   processedItems: number;
   completedItems: number;
@@ -67,5 +70,10 @@ export type KnowledgeImportJobSnapshot = {
     currentWindow: number | null;
     currentAttempt: number | null;
     maxAttempts: number | null;
+    inputTokens: number;
+    outputTokens: number;
+    cacheHit: boolean;
+    diagnosticInput: string | null;
+    diagnosticOutput: string | null;
   }>;
 };

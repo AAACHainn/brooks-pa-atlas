@@ -24,13 +24,28 @@ function input(overrides: Partial<AiConfigInput> = {}): AiConfigInput {
     activeEmbeddingEndpointId: "embedding-1",
     skills: { ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" },
       readingCompanion: { prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" },
-      subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "" } }, ...overrides };
+      subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "", retryModelOverride: "", disableReasoning: true, maxOutputTokens: 4096 } }, ...overrides };
 }
 
-test("missing or invalid persisted AI config falls back to v3 defaults", () => {
+test("missing or invalid persisted AI config falls back to v4 defaults", () => {
   assert.deepEqual(parseStoredAiConfig(null), defaultStoredAiConfig());
   assert.deepEqual(parseStoredAiConfig("not-json"), defaultStoredAiConfig());
-  assert.equal(parseStoredAiConfig("{}").version, 3);
+  assert.equal(parseStoredAiConfig("{}").version, 4);
+});
+
+test("v3 gains bounded metadata-only subtitle processing options", () => {
+  const parsed = parseStoredAiConfig(JSON.stringify({
+    ...defaultStoredAiConfig(),
+    version: 3,
+    skills: {
+      ...defaultStoredAiConfig().skills,
+      subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "cheap-chat" },
+    },
+  }));
+  assert.equal(parsed.version, 4);
+  assert.equal(parsed.skills.subtitleKnowledge.modelOverride, "cheap-chat");
+  assert.equal(parsed.skills.subtitleKnowledge.disableReasoning, true);
+  assert.equal(parsed.skills.subtitleKnowledge.maxOutputTokens, 4096);
 });
 
 test("v2 migrates chat and embedding providers into separate collections without losing secrets", () => {
@@ -38,7 +53,7 @@ test("v2 migrates chat and embedding providers into separate collections without
     activeEndpointId: "shared", embeddingEndpointId: "shared",
     skills: { ocrRefinement: { prompt: "legacy", modelOverride: "" }, readingCompanion: { prompt: "read", modelOverride: "" }, subtitleKnowledge: { prompt: "subtitle", modelOverride: "" } } };
   const parsed = parseStoredAiConfig(JSON.stringify(legacy));
-  assert.equal(parsed.version, 3);
+  assert.equal(parsed.version, 4);
   assert.equal(parsed.endpoints[0].id, "shared");
   assert.equal(parsed.embeddingEndpoints[0].id, "shared");
   assert.equal(parsed.embeddingEndpoints[0].embeddingModel, "embed-v2");

@@ -17,7 +17,13 @@ import { closeKnowledgeDatabaseForTests, knowledgeDb, vectorBuffer } from "@/lib
 
 async function initializeKnowledgeDatabase(databasePath: string) {
   const db = new Database(databasePath);
-  for (const migration of ["20260930000000_init", "20260930020000_maintenance_jobs"]) {
+  for (const migration of [
+    "20260930000000_init",
+    "20260930020000_maintenance_jobs",
+    "20261001000000_import_progress",
+    "20261001010000_import_processing_modes",
+    "20261001020000_import_diagnostics",
+  ]) {
     db.exec(await readFile(path.join(process.cwd(), "knowledge", "migrations", migration, "migration.sql"), "utf8"));
   }
   db.close();

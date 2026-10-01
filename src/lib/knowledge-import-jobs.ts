@@ -7,17 +7,26 @@ import { acquireHeavyTaskOrThrow, releaseHeavyTask } from "@/lib/background-task
 import { knowledgeDb, getKnowledgeSourceRoot } from "@/lib/knowledge-db";
 import {
   EMBEDDING_BATCH_SIZE,
+  activeEmbeddingProfile,
   embedTexts,
   ensureEmbeddingProfile,
   storeChunkEmbeddings,
 } from "@/lib/knowledge-embeddings";
 import { expandKnowledgeKeywords, normalizeKnowledgeKeyword } from "@/lib/knowledge-keywords";
 import {
+  KNOWLEDGE_PROCESSING_RULE_VERSION,
+  collapseRollingSubtitleCues,
+  createDeterministicSegments,
   createSubtitleWindows,
   materializeChunk,
   processSubtitleWindow,
+  subtitlePromptHash,
 } from "@/lib/knowledge-processing";
-import type { KnowledgeImportJobSnapshot, KnowledgeProcessedSegment } from "@/lib/knowledge-types";
+import type {
+  KnowledgeImportJobSnapshot,
+  KnowledgeImportProcessingMode,
+  KnowledgeProcessedSegment,
+} from "@/lib/knowledge-types";
 import { parseSubtitle } from "@/lib/subtitle-parser";
 
 const runningJobs = new Map<string, Promise<void>>();
@@ -53,6 +62,14 @@ type ItemRow = {
   progressUnit: string | null;
   stageStartedAt: string | null;
   lastProgressAt: string | null;
+  cacheHit: number;
+};
+
+type ProcessingIdentity = {
+  mode: KnowledgeImportProcessingMode;
+  endpointId: string | null;
+  model: string | null;
+  promptHash: string | null;
 };
 
 function nowSql() {
@@ -89,6 +106,16 @@ function lessonCodeFromFile(fileName: string) {
   return stem.match(/(?:^|[^a-z0-9])([0-9]{1,3}[a-z]?)(?:[^a-z0-9]|$)/i)?.[1]?.toUpperCase() ?? stem;
 }
 
+async function processingIdentity(mode: KnowledgeImportProcessingMode): Promise<ProcessingIdentity> {
+  if (mode === "QUICK") return { mode, endpointId: null, model: null, promptHash: null };
+  const config = await readStoredAiConfig();
+  const endpoint = config.endpoints.find((item) => item.id === config.activeEndpointId);
+  const skill = config.skills.subtitleKnowledge;
+  const model = skill.modelOverride || endpoint?.defaultModel || "";
+  if (!endpoint || !model) throw new Error("AI 深度整理尚未配置可用的聊天模型，请改用快速导入或先完成大模型配置。");
+  return { mode, endpointId: endpoint.id, model, promptHash: subtitlePromptHash(skill.prompt, skill) };
+}
+
 export function assertKnowledgeImportLimits(sources: ImportSource[]) {
   if (sources.length < 1 || sources.length > 200) throw new Error("每批必须包含 1–200 个字幕文件。");
   let total = 0;
@@ -115,8 +142,14 @@ async function saveSource(source: ImportSource) {
   return { hash, sourcePath: path.relative(process.cwd(), fullPath).replace(/\\/g, "/") };
 }
 
-export async function createKnowledgeImportJob(sources: ImportSource[], manualReview: boolean) {
+export async function createKnowledgeImportJob(
+  sources: ImportSource[],
+  manualReview: boolean,
+  processingMode: KnowledgeImportProcessingMode = "QUICK",
+) {
   assertKnowledgeImportLimits(sources);
+  if (processingMode !== "QUICK" && processingMode !== "AI") throw new Error("无效的字幕处理模式。");
+  if (processingMode === "AI") await processingIdentity(processingMode);
   const db = knowledgeDb();
   const active = db.prepare("SELECT id FROM KnowledgeImportJob WHERE activeKey = 'GLOBAL' LIMIT 1").get();
   if (active) throw new Error("已有知识导入任务正在运行，请等待完成。");
@@ -130,9 +163,9 @@ export async function createKnowledgeImportJob(sources: ImportSource[], manualRe
     for (const source of sources) prepared.push({ source, ...await saveSource(source) });
     db.transaction(() => {
       db.prepare(`INSERT INTO KnowledgeImportJob
-        (id, activeKey, status, phase, manualReview, totalItems)
-        VALUES (?, 'GLOBAL', 'RUNNING', 'QUEUED', ?, ?)`)
-        .run(jobId, manualReview ? 1 : 0, prepared.length);
+        (id, activeKey, status, phase, manualReview, processingMode, totalItems)
+        VALUES (?, 'GLOBAL', 'RUNNING', 'QUEUED', ?, ?, ?)`)
+        .run(jobId, manualReview ? 1 : 0, processingMode, prepared.length);
       const insert = db.prepare(`INSERT INTO KnowledgeImportItem
         (id, jobId, sourceFileName, sourceMimeType, sourceSizeBytes, sourceHash, sourcePath,
          targetIndexNodeId, targetIndexPath)
@@ -161,7 +194,12 @@ function resolveSourcePath(sourcePath: string) {
   return full;
 }
 
-function prepareDocumentAndVersion(item: ItemRow, rawText: string, manualReview: boolean) {
+function prepareDocumentAndVersion(
+  item: ItemRow,
+  rawText: string,
+  manualReview: boolean,
+  identity: ProcessingIdentity,
+) {
   const db = knowledgeDb();
   return db.transaction(() => {
     let document = db.prepare("SELECT id FROM KnowledgeDocument WHERE indexNodeId = ? LIMIT 1")
@@ -183,14 +221,65 @@ function prepareDocumentAndVersion(item: ItemRow, rawText: string, manualReview:
     const versionId = randomUUID();
     db.prepare(`INSERT INTO KnowledgeDocumentVersion
       (id, documentId, versionNumber, sourceFileName, sourceMimeType, sourceSizeBytes, sourceHash,
-       sourcePath, rawText, status, approvalMode)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSING', ?)`)
+       sourcePath, rawText, status, approvalMode, processingMode, processingRuleVersion,
+       processorEndpointId, processorModel, processorPromptHash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSING', ?, ?, ?, ?, ?, ?)`)
       .run(versionId, document.id, row.nextVersion, item.sourceFileName, item.sourceMimeType,
-        item.sourceSizeBytes, item.sourceHash, item.sourcePath, rawText, manualReview ? "MANUAL" : "AUTO");
+        item.sourceSizeBytes, item.sourceHash, item.sourcePath, rawText, manualReview ? "MANUAL" : "AUTO",
+        identity.mode, KNOWLEDGE_PROCESSING_RULE_VERSION, identity.endpointId, identity.model, identity.promptHash);
     db.prepare("UPDATE KnowledgeImportItem SET documentId = ?, versionId = ?, phase = 'PARSED', updatedAt = ? WHERE id = ?")
       .run(document.id, versionId, nowSql(), item.id);
     return { documentId: document.id, versionId };
   })();
+}
+
+function reuseProcessedVersion(item: ItemRow, identity: ProcessingIdentity) {
+  if (!item.versionId) return false;
+  const db = knowledgeDb();
+  const cached = db.prepare(`SELECT v.id FROM KnowledgeDocumentVersion v
+    WHERE v.id <> ? AND v.sourceHash = ? AND v.processingMode = ? AND v.processingRuleVersion = ?
+      AND COALESCE(v.processorModel, '') = COALESCE(?, '')
+      AND COALESCE(v.processorPromptHash, '') = COALESCE(?, '')
+      AND v.status IN ('ACTIVE', 'INACTIVE', 'AWAITING_REVIEW')
+      AND EXISTS (SELECT 1 FROM KnowledgeChunk c WHERE c.versionId = v.id)
+    ORDER BY v.createdAt DESC LIMIT 1`).get(
+    item.versionId,
+    item.sourceHash,
+    identity.mode,
+    KNOWLEDGE_PROCESSING_RULE_VERSION,
+    identity.model,
+    identity.promptHash,
+  ) as { id: string } | undefined;
+  if (!cached) return false;
+  const chunks = db.prepare(`SELECT id, ordinal, sourceCueStart, sourceCueEnd, startMs, endMs,
+    originalText, cleanedText, topic, keywordsJson FROM KnowledgeChunk
+    WHERE versionId = ? ORDER BY ordinal`).all(cached.id) as Array<Record<string, unknown>>;
+  const insertChunk = db.prepare(`INSERT INTO KnowledgeChunk
+    (id, versionId, ordinal, sourceCueStart, sourceCueEnd, startMs, endMs, originalText, cleanedText, topic, keywordsJson)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insertKeyword = db.prepare(`INSERT OR IGNORE INTO KnowledgeChunkKeyword
+    (chunkId, keyword, normalizedKeyword) VALUES (?, ?, ?)`);
+  const insertEmbedding = db.prepare(`INSERT OR REPLACE INTO KnowledgeChunkEmbedding
+    (chunkId, profileId, embedding) VALUES (?, ?, ?)`);
+  db.transaction(() => {
+    db.prepare("DELETE FROM KnowledgeChunk WHERE versionId = ?").run(item.versionId);
+    for (const chunk of chunks) {
+      const chunkId = randomUUID();
+      insertChunk.run(chunkId, item.versionId, chunk.ordinal, chunk.sourceCueStart, chunk.sourceCueEnd,
+        chunk.startMs, chunk.endMs, chunk.originalText, chunk.cleanedText, chunk.topic, chunk.keywordsJson);
+      const keywords = db.prepare("SELECT keyword, normalizedKeyword FROM KnowledgeChunkKeyword WHERE chunkId = ?")
+        .all(chunk.id) as Array<{ keyword: string; normalizedKeyword: string }>;
+      for (const keyword of keywords) insertKeyword.run(chunkId, keyword.keyword, keyword.normalizedKeyword);
+      const embeddings = db.prepare("SELECT profileId, embedding FROM KnowledgeChunkEmbedding WHERE chunkId = ?")
+        .all(chunk.id) as Array<{ profileId: string; embedding: Buffer }>;
+      for (const embedding of embeddings) insertEmbedding.run(chunkId, embedding.profileId, embedding.embedding);
+    }
+    db.prepare(`UPDATE KnowledgeDocumentVersion SET cacheSourceVersionId = ?, updatedAt = ? WHERE id = ?`)
+      .run(cached.id, nowSql(), item.versionId);
+    db.prepare("UPDATE KnowledgeImportItem SET cacheHit = 1, updatedAt = ? WHERE id = ?")
+      .run(nowSql(), item.id);
+  })();
+  return true;
 }
 
 function persistWindows(itemId: string, windows: ReturnType<typeof createSubtitleWindows>) {
@@ -226,15 +315,23 @@ async function processWindows(item: ItemRow, windows: ReturnType<typeof createSu
               .run(now, now, item.id);
           })();
         },
+        onResponse: ({ raw, inputTokens, outputTokens }) => {
+          const now = nowSql();
+          db.prepare(`UPDATE KnowledgeProcessingWindow SET responsePreview = ?, inputTokens = ?, outputTokens = ?,
+            updatedAt = ? WHERE itemId = ? AND ordinal = ?`)
+            .run(raw.slice(0, 32_000), inputTokens, outputTokens, now, item.id, ordinal);
+        },
       });
       const finishedAt = nowSql();
       db.prepare(`UPDATE KnowledgeProcessingWindow
-        SET outputJson = ?, status = 'COMPLETED', retryCount = ?, error = NULL, finishedAt = ?, updatedAt = ?
+        SET outputJson = ?, status = 'COMPLETED', retryCount = ?, inputTokens = ?, outputTokens = ?,
+          error = NULL, finishedAt = ?, updatedAt = ?
         WHERE itemId = ? AND ordinal = ?`)
-        .run(JSON.stringify(result.segments), result.attempts - 1, finishedAt, finishedAt, item.id, ordinal);
-      db.prepare(`UPDATE KnowledgeDocumentVersion SET processorEndpointId = ?, processorModel = ?,
+        .run(JSON.stringify(result.segments), result.attempts - 1, result.inputTokens, result.outputTokens,
+          finishedAt, finishedAt, item.id, ordinal);
+      db.prepare(`UPDATE KnowledgeDocumentVersion SET processorEndpointId = ?,
         processorPromptHash = ?, updatedAt = ? WHERE id = ?`)
-        .run(result.endpointId, result.model, result.promptHash, finishedAt, item.versionId);
+        .run(result.endpointId, result.promptHash, finishedAt, item.versionId);
       const completed = db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeProcessingWindow
         WHERE itemId = ? AND status = 'COMPLETED'`).get(item.id) as { count: number };
       updateItemProgress(item.id, completed.count, windows.length);
@@ -251,11 +348,16 @@ async function processWindows(item: ItemRow, windows: ReturnType<typeof createSu
   }
 }
 
-function insertChunks(item: ItemRow, cues: ReturnType<typeof parseSubtitle>) {
+function insertChunks(
+  item: ItemRow,
+  cues: ReturnType<typeof parseSubtitle>,
+  preparedSegments?: KnowledgeProcessedSegment[],
+) {
   const db = knowledgeDb();
-  const outputs = db.prepare(`SELECT outputJson FROM KnowledgeProcessingWindow
+  const outputs = preparedSegments ? [] : db.prepare(`SELECT outputJson FROM KnowledgeProcessingWindow
     WHERE itemId = ? ORDER BY ordinal`).all(item.id) as Array<{ outputJson: string }>;
-  const segments = outputs.flatMap((row) => JSON.parse(row.outputJson) as KnowledgeProcessedSegment[]);
+  const segments = preparedSegments
+    ?? outputs.flatMap((row) => JSON.parse(row.outputJson) as KnowledgeProcessedSegment[]);
   const chunks = segments.map((segment) => materializeChunk(cues, segment));
   db.transaction(() => {
     db.prepare("DELETE FROM KnowledgeChunk WHERE versionId = ?").run(item.versionId);
@@ -285,13 +387,26 @@ async function createVectorsAndIndex(item: ItemRow) {
   const db = knowledgeDb();
   const chunks = db.prepare(`SELECT id, cleanedText FROM KnowledgeChunk WHERE versionId = ? ORDER BY ordinal`)
     .all(item.versionId) as Array<{ id: string; cleanedText: string }>;
-  const totalBatches = Math.ceil(chunks.length / EMBEDDING_BATCH_SIZE);
-  setItemStage(item.id, "EMBEDDING", 0, totalBatches, "batches");
-  const embedded = await embedTexts(chunks.map((chunk) => chunk.cleanedText), {
-    onBatchCompleted: (completed, total) => updateItemProgress(item.id, completed, total),
-  });
-  const profile = ensureEmbeddingProfile(embedded.endpointId, embedded.model, embedded.vectors[0]?.length ?? 0);
-  storeChunkEmbeddings(chunks.map((chunk, index) => ({ chunkId: chunk.id, vector: embedded.vectors[index] })), profile.id);
+  const config = await readStoredAiConfig();
+  const configuredEmbedding = config.embeddingEndpoints.find((endpoint) => endpoint.id === config.activeEmbeddingEndpointId);
+  const profile = activeEmbeddingProfile();
+  const reusableVectorCount = profile && configuredEmbedding
+    && profile.endpointId === configuredEmbedding.id && profile.model === configuredEmbedding.embeddingModel
+    ? (db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeChunkEmbedding e
+        JOIN KnowledgeChunk c ON c.id = e.chunkId WHERE c.versionId = ? AND e.profileId = ?`)
+        .get(item.versionId, profile.id) as { count: number }).count
+    : 0;
+  if (reusableVectorCount === chunks.length && chunks.length > 0) {
+    setItemStage(item.id, "EMBEDDING", 1, 1, "cached");
+  } else {
+    const totalBatches = Math.ceil(chunks.length / EMBEDDING_BATCH_SIZE);
+    setItemStage(item.id, "EMBEDDING", 0, totalBatches, "batches");
+    const embedded = await embedTexts(chunks.map((chunk) => chunk.cleanedText), {
+      onBatchCompleted: (completed, total) => updateItemProgress(item.id, completed, total),
+    });
+    const targetProfile = ensureEmbeddingProfile(embedded.endpointId, embedded.model, embedded.vectors[0]?.length ?? 0);
+    storeChunkEmbeddings(chunks.map((chunk, index) => ({ chunkId: chunk.id, vector: embedded.vectors[index] })), targetProfile.id);
+  }
   const version = db.prepare(`SELECT v.documentId, d.title, d.lessonCode FROM KnowledgeDocumentVersion v
     JOIN KnowledgeDocument d ON d.id = v.documentId WHERE v.id = ?`).get(item.versionId) as {
       documentId: string; title: string; lessonCode: string | null;
@@ -322,7 +437,11 @@ function activateVersion(versionId: string) {
   })();
 }
 
-async function processItem(itemId: string, manualReview: boolean) {
+async function processItem(
+  itemId: string,
+  manualReview: boolean,
+  processingMode: KnowledgeImportProcessingMode,
+) {
   const db = knowledgeDb();
   let item = db.prepare("SELECT * FROM KnowledgeImportItem WHERE id = ?").get(itemId) as ItemRow;
   db.prepare("UPDATE KnowledgeImportItem SET status = 'RUNNING', error = NULL, updatedAt = ? WHERE id = ?")
@@ -330,19 +449,30 @@ async function processItem(itemId: string, manualReview: boolean) {
   setItemStage(itemId, "READING_SOURCE", 0, 1, "steps");
   const buffer = await readFile(resolveSourcePath(item.sourcePath));
   const rawText = buffer.toString("utf8").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
-  const cues = parseSubtitle(buffer, item.sourceFileName);
+  const cues = collapseRollingSubtitleCues(parseSubtitle(buffer, item.sourceFileName));
   updateItemProgress(itemId, 1, 1);
-  if (!item.versionId) prepareDocumentAndVersion(item, rawText, manualReview);
+  const identity = await processingIdentity(processingMode);
+  if (!item.versionId) prepareDocumentAndVersion(item, rawText, manualReview, identity);
   item = db.prepare("SELECT * FROM KnowledgeImportItem WHERE id = ?").get(itemId) as ItemRow;
-  const windows = createSubtitleWindows(cues);
-  persistWindows(item.id, windows);
-  const completedWindows = db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeProcessingWindow
-    WHERE itemId = ? AND status = 'COMPLETED'`).get(item.id) as { count: number };
-  setItemStage(item.id, "AI_PROCESSING", completedWindows.count, windows.length, "windows");
-  await processWindows(item, windows);
-  setItemStage(item.id, "CHUNKING", 0, 1, "steps");
-  insertChunks(item, cues);
-  updateItemProgress(item.id, 1, 1);
+  const cacheHit = reuseProcessedVersion(item, identity);
+  if (!cacheHit) {
+    if (processingMode === "AI") {
+      const windows = createSubtitleWindows(cues);
+      persistWindows(item.id, windows);
+      const completedWindows = db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeProcessingWindow
+        WHERE itemId = ? AND status = 'COMPLETED'`).get(item.id) as { count: number };
+      setItemStage(item.id, "AI_PROCESSING", completedWindows.count, windows.length, "windows");
+      await processWindows(item, windows);
+      setItemStage(item.id, "CHUNKING", 0, 1, "steps");
+      insertChunks(item, cues);
+    } else {
+      setItemStage(item.id, "DETERMINISTIC_CHUNKING", 0, 1, "steps");
+      insertChunks(item, cues, createDeterministicSegments(cues));
+    }
+    updateItemProgress(item.id, 1, 1);
+  } else {
+    setItemStage(item.id, "CACHE_REUSE", 1, 1, "steps");
+  }
   await createVectorsAndIndex(item);
   if (manualReview) {
     setItemStage(item.id, "AWAITING_REVIEW", 1, 1, "steps");
@@ -362,13 +492,16 @@ async function processItem(itemId: string, manualReview: boolean) {
 
 async function runKnowledgeImportJob(jobId: string) {
   const db = knowledgeDb();
-  const job = db.prepare("SELECT manualReview FROM KnowledgeImportJob WHERE id = ?").get(jobId) as { manualReview: number } | undefined;
+  const job = db.prepare("SELECT manualReview, processingMode FROM KnowledgeImportJob WHERE id = ?").get(jobId) as {
+    manualReview: number;
+    processingMode: KnowledgeImportProcessingMode;
+  } | undefined;
   if (!job) return;
   const items = db.prepare(`SELECT id FROM KnowledgeImportItem WHERE jobId = ?
     AND status IN ('PENDING', 'RUNNING') ORDER BY createdAt`).all(jobId) as Array<{ id: string }>;
   for (const { id } of items) {
     try {
-      await processItem(id, Boolean(job.manualReview));
+      await processItem(id, Boolean(job.manualReview), job.processingMode);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const item = db.prepare("SELECT versionId, phase FROM KnowledgeImportItem WHERE id = ?").get(id) as { versionId: string | null; phase: string };
@@ -422,13 +555,18 @@ export function knowledgeImportJobSnapshot(jobId: string): KnowledgeImportJobSna
   if (!job) return null;
   const items = db.prepare("SELECT * FROM KnowledgeImportItem WHERE jobId = ? ORDER BY sourceFileName, id")
     .all(jobId) as ItemRow[];
-  const windows = db.prepare(`SELECT w.itemId, w.ordinal, w.status, w.retryCount, w.startedAt, w.finishedAt, w.updatedAt
+  const windows = db.prepare(`SELECT w.itemId, w.ordinal, w.status, w.retryCount, w.inputTokens, w.outputTokens,
+    w.inputJson, w.responsePreview, w.startedAt, w.finishedAt, w.updatedAt
     FROM KnowledgeProcessingWindow w JOIN KnowledgeImportItem i ON i.id = w.itemId
     WHERE i.jobId = ? ORDER BY w.itemId, w.ordinal`).all(jobId) as Array<{
       itemId: string;
       ordinal: number;
       status: string;
       retryCount: number;
+      inputTokens: number;
+      outputTokens: number;
+      inputJson: string;
+      responsePreview: string | null;
       startedAt: string | null;
       finishedAt: string | null;
       updatedAt: string;
@@ -441,7 +579,8 @@ export function knowledgeImportJobSnapshot(jobId: string): KnowledgeImportJobSna
   }
   return {
     id: String(job.id), status: String(job.status), phase: String(job.phase),
-    manualReview: Boolean(job.manualReview), totalItems: Number(job.totalItems),
+    manualReview: Boolean(job.manualReview), processingMode: String(job.processingMode) as KnowledgeImportProcessingMode,
+    totalItems: Number(job.totalItems),
     processedItems: Number(job.processedItems), completedItems: Number(job.completedItems),
     failedItems: Number(job.failedItems), error: job.error ? String(job.error) : null,
     items: items.map((item) => {
@@ -450,6 +589,10 @@ export function knowledgeImportJobSnapshot(jobId: string): KnowledgeImportJobSna
         ?? (item.phase === "AI_PROCESSING"
           ? itemWindows.find((window) => window.status !== "COMPLETED")
           : undefined);
+      const diagnosticWindow = currentWindow
+        ?? [...itemWindows].reverse().find((window) => window.status === "FAILED");
+      const inputTokens = itemWindows.reduce((sum, window) => sum + Number(window.inputTokens || 0), 0);
+      const outputTokens = itemWindows.reduce((sum, window) => sum + Number(window.outputTokens || 0), 0);
       return {
         id: item.id, sourceFileName: item.sourceFileName,
         targetIndexNodeId: item.targetIndexNodeId, targetIndexPath: item.targetIndexPath,
@@ -460,8 +603,13 @@ export function knowledgeImportJobSnapshot(jobId: string): KnowledgeImportJobSna
         progressUnit: item.progressUnit, stageStartedAt: item.stageStartedAt,
         lastProgressAt: item.lastProgressAt,
         currentWindow: currentWindow ? currentWindow.ordinal + 1 : null,
-        currentAttempt: currentWindow ? currentWindow.retryCount + 1 : null,
-        maxAttempts: currentWindow ? 2 : null,
+        currentAttempt: diagnosticWindow ? diagnosticWindow.retryCount + 1 : null,
+        maxAttempts: diagnosticWindow ? 2 : null,
+        inputTokens,
+        outputTokens,
+        cacheHit: Boolean(item.cacheHit),
+        diagnosticInput: diagnosticWindow?.inputJson ?? null,
+        diagnosticOutput: diagnosticWindow?.responsePreview ?? null,
       };
     }),
   };
@@ -491,7 +639,7 @@ export function decideKnowledgeImportItem(itemId: string, decision: "approve" | 
     try {
       db.prepare(`UPDATE KnowledgeImportItem SET status = 'PENDING', phase = 'QUEUED', retryCount = retryCount + 1,
         error = NULL, errorPhase = NULL, progressCompleted = 0, progressTotal = 0, progressUnit = NULL,
-        stageStartedAt = NULL, lastProgressAt = ?, updatedAt = ? WHERE id = ?`).run(nowSql(), nowSql(), item.id);
+        stageStartedAt = NULL, cacheHit = 0, lastProgressAt = ?, updatedAt = ? WHERE id = ?`).run(nowSql(), nowSql(), item.id);
       db.prepare("UPDATE KnowledgeImportJob SET activeKey = 'GLOBAL', status = 'RUNNING', phase = 'QUEUED', finishedAt = NULL, updatedAt = ? WHERE id = ?")
         .run(nowSql(), item.jobId);
       startKnowledgeImportJob(item.jobId);

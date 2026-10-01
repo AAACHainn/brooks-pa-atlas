@@ -237,7 +237,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - `ChartImageTag`：图片与标签的多对多关联；图片删除时级联删除关联，无图片使用的标签会自动清理。
 - `ImportBatch`：一次批量导入任务，保存总数、成功数、失败数、重复数、OCR 进度、状态、开始和结束时间。
 - `ImportItem`：导入批次中的单张图片记录，保存原始文件名、相对路径、保存路径、分组、状态、错误和映射索引。
-- `AppSetting`：本地设置，用于 OCR 并发数及版本化 `ai.config.v3` AI 配置等键值；读取时兼容迁移 `ai.config.v1` / `ai.config.v2`。AI API Key 明文保存在本地 SQLite，但任何客户端 DTO 都不能返回完整密钥。
+- `AppSetting`：本地设置，用于 OCR 并发数及版本化 `ai.config.v4` AI 配置等键值；读取时兼容迁移 `ai.config.v1` / `ai.config.v2` / `ai.config.v3`。AI API Key 明文保存在本地 SQLite，但任何客户端 DTO 都不能返回完整密钥。
 - `OcrBatchJob` / `OcrBatchJobItem`：持久化索引子树批量 OCR 任务及启动时的图片清单，进度只统计该任务自己的图片。
 - `AiReadingConversation` / `AiReadingMessage`：全局 AI 阅读伴侣会话与消息；消息保存发送时的图片引用、资料快照、知识引用快照、兼容端点返回的可见思考内容和耗时，图片或字幕后来删除后仍保留文字历史。
 - `ExamPaper`：试卷，支持草稿和发布状态，保存标题、描述、默认选项模板和发布时间。
@@ -497,20 +497,23 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 ### AI 与字幕知识库规则
 
-- AI 配置保存在 `AppSetting` 的 `ai.config.v3`，读取时兼容迁移 `ai.config.v1` / `ai.config.v2`；配置是当前实例本地设置，不进入备份 zip，恢复也不覆盖。
+- AI 配置保存在 `AppSetting` 的 `ai.config.v4`，读取时兼容迁移 `ai.config.v1` / `ai.config.v2` / `ai.config.v3`；配置是当前实例本地设置，不进入备份 zip，恢复也不覆盖。
 - 大模型与 Embedding 使用两个独立页签和两组端点，各自保存供应商、Base URL、API Key、模型列表与唯一启用端点。大模型 Base URL 追加 `/chat/completions`、`/models`；Embedding Base URL 追加 `/embeddings`、`/models`；高级模式可分别指定完整 URL，只接受 HTTP/HTTPS。
 - API Key 可为空；非空时只在服务端以 Bearer header 发送。设置 GET 仅返回 `hasApiKey`，空白保存保留旧密钥，只有显式清除才删除；日志和外部错误不能包含密钥或原始响应正文。
-- 内置技能 `ocrRefinement`、`readingCompanion`、`subtitleKnowledge` 保存可编辑提示词和可选模型覆盖；未覆盖时使用启用聊天端点的默认模型。
+- 内置技能 `ocrRefinement`、`readingCompanion`、`subtitleKnowledge` 保存可编辑提示词和可选模型覆盖；字幕知识技能还保存可选失败重试模型、关闭推理开关和单窗口最大输出 Token，未覆盖时使用启用聊天端点的默认模型。
 - 精校把原图在内存中转换为最长边不超过 1920px、quality 85 的 JPEG，并与当前 OCR 草稿一并发送；不写入衍生图片文件。
 - 外部请求超时为 120 秒。精校 API 不更新 `ChartImage`；只有用户点击现有“保存 OCR 文本”后才写数据库。
 - 所选精校模型必须支持 Chat Completions 图片输入；连接测试只验证最小文本请求，不代表图片能力可用。
 - 当前项目没有登录，AI 配置和付费调用接口只适用于可信本机或可信局域网部署。
 - 字幕知识使用独立 `knowledge.db`（`better-sqlite3` + `sqlite-vec`），启用 WAL、外键、5 秒 busy timeout 和受限页缓存；主库与知识库禁止用 `ATTACH` 做跨库事务。
-- 字幕导入支持 `.srt/.vtt/.ass/.txt`，单文件 10MiB、单批 200 个文件和 100MiB 总量。节点映射始终在导入前确认；人工预览每次默认关闭且不记忆。
-- AI 输出必须通过 cue 恰好覆盖一次、顺序不变、无未知 cue/空片段、清洗长度为规范化原文 60%–140% 的硬校验；失败只自动重试一次。时间范围只能由源 cue 计算。
+- 字幕导入支持 `.srt/.vtt/.ass/.txt`，单文件 10MiB、单批 200 个文件和 100MiB 总量。节点映射始终在导入前确认；人工预览每次默认关闭且不记忆。处理方式每次默认选择“快速导入”，不得记忆成 AI 模式。
+- 快速导入不得调用聊天模型：程序完成完全重复与滚动累积字幕去重、基础规范化、按时间/长度确定性分段，然后直接生成 Embedding 和 FTS。AI 深度整理是可选模式，只允许模型返回 `cueStart`、`cueEnd`、主题和关键词；字幕正文必须由程序按 cue 合并，禁止接受模型返回的正文或时间码。
+- AI 字幕窗口固定使用 `temperature: 0`、JSON 模式和最大输出 Token，默认关闭可关闭的 thinking/reasoning；使用明确的推理模型但端点无法关闭推理时应拒绝执行。输出 Token 超过输入 Token 两倍立即熔断整份文档，不得继续后续窗口或自动重试。
+- AI 输出必须通过范围有效、顺序不变、无重叠和 cue 全覆盖校验；少量遗漏 cue 由程序补齐，严重遗漏、重叠、倒序或无法修复的 JSON 才完整重试一次，第二次优先使用技能中配置的便宜重试模型。时间范围只能由源 cue 计算。
+- 相同字幕按 `sourceHash + processingMode + processingRuleVersion + processorModel + processorPromptHash` 复用已有片段；匹配当前启用 Embedding profile 的向量也一并复用。失败 AI 窗口必须持久化输入、截断后的输出预览、输入/输出 Token 和重试次数，供进度卡排查。
 - 同一节点只关联一个逻辑字幕文档；重新导入创建版本，片段、关键词、FTS 与向量全部完成后才在单个知识库事务中替换启用版本。人工模式只允许整份批准或拒绝。
 - 知识文档管理使用左右分栏：左侧按字幕绑定节点的直属父节点分组并显示数量，右侧显示当前分组文档并支持标题、课号、路径和源文件搜索；两栏各自滚动，避免数百份文档堆叠成长页面。
-- 版本行分别显示知识片段数和 Embedding 记录数；片段数是可点击入口，打开后按序查看原字幕、AI 清洗文本、时间范围、主题和关键词。`processorModel` 非空表示该版本的分段边界来自字幕整理 AI，界面必须显示“AI 分段”标签。
+- 版本行分别显示知识片段数和 Embedding 记录数；片段数是可点击入口，打开后按序查看原字幕、知识文本、时间范围、主题和关键词。`processorModel` 非空表示该版本的分段边界来自字幕整理 AI，界面必须显示“AI 分段”标签。
 - “重建全文索引”和“重建全部向量”属于高级维护工具，默认折叠，不作为日常主操作展示；两个按钮旁必须提供可悬浮/聚焦的说明图标。全文索引重建需要普通确认，向量重建必须展示端点、模型、启用片段数和费用警告并二次确认；达到 1000 个片段时必须输入确认短语。
 - 已停用、失败或已拒绝的历史版本允许整版删除，即使向量数为 0 也必须提供删除入口；删除范围包括版本记录、字幕片段、关键词、FTS 和全部 Embedding，当前启用版本禁止删除。删除后如果文档不再有任何版本，应同时清理空文档；原字幕文件仅在没有其他版本引用时逐个删除。
 - 字幕 AI 整理按持久化窗口逐个处理，进度必须记录完成窗口数、当前窗口/尝试次数和最后更新时间；Embedding 按最多 20 条一批调用并记录批次进度，避免超过 OpenAI-compatible 供应商的批量限制。

@@ -21,7 +21,8 @@ const versionSchema = z.object({
   id: z.string(), versionNumber: z.number().int().positive(), sourceFileName: z.string(), sourceMimeType: z.string(),
   sourceSizeBytes: z.number().int().nonnegative(), sourceHash: z.string().regex(/^[a-f0-9]{64}$/), sourcePath: z.string(), rawText: z.string(),
   status: z.string(), approvalMode: z.string(), processorEndpointId: z.string().nullable(), processorModel: z.string().nullable(),
-  processorPromptHash: z.string().nullable(), error: z.string().nullable(), activatedAt: z.string().nullable(), chunks: z.array(chunkSchema),
+  processorPromptHash: z.string().nullable(), processingMode: z.enum(["QUICK", "AI"]).default("AI"),
+  processingRuleVersion: z.string().default("legacy-v1"), error: z.string().nullable(), activatedAt: z.string().nullable(), chunks: z.array(chunkSchema),
 });
 const documentSchema = z.object({
   id: z.string(), title: z.string(), lessonCode: z.string().nullable(), indexPath: z.string(),
@@ -96,6 +97,8 @@ export async function collectKnowledgeBackup(options: {
         processorEndpointId: version.processorEndpointId ? String(version.processorEndpointId) : null,
         processorModel: version.processorModel ? String(version.processorModel) : null,
         processorPromptHash: version.processorPromptHash ? String(version.processorPromptHash) : null,
+        processingMode: version.processingMode === "QUICK" ? "QUICK" : "AI",
+        processingRuleVersion: String(version.processingRuleVersion ?? "legacy-v1"),
         error: version.error ? String(version.error) : null, activatedAt: iso(version.activatedAt), chunks,
       });
     }
@@ -191,9 +194,11 @@ export async function prepareKnowledgeRestore(knowledge: BackupKnowledge, indexI
         const relativeSource = path.relative(process.cwd(), localSource).replace(/\\/g, "/");
         if (current) {
           db.prepare(`UPDATE KnowledgeDocumentVersion SET sourceFileName = ?, sourceMimeType = ?, sourceSizeBytes = ?, sourcePath = ?,
-            rawText = ?, approvalMode = ?, processorEndpointId = ?, processorModel = ?, processorPromptHash = ?, error = ?, updatedAt = ? WHERE id = ?`)
+            rawText = ?, approvalMode = ?, processorEndpointId = ?, processorModel = ?, processorPromptHash = ?,
+            processingMode = ?, processingRuleVersion = ?, error = ?, updatedAt = ? WHERE id = ?`)
             .run(version.sourceFileName, version.sourceMimeType, version.sourceSizeBytes, relativeSource, version.rawText, version.approvalMode,
-              version.processorEndpointId, version.processorModel, version.processorPromptHash, version.error, new Date().toISOString(), versionId);
+              version.processorEndpointId, version.processorModel, version.processorPromptHash, version.processingMode,
+              version.processingRuleVersion, version.error, new Date().toISOString(), versionId);
           db.prepare("DELETE FROM KnowledgeChunkFts WHERE versionId = ?").run(versionId);
           db.prepare("DELETE FROM KnowledgeChunk WHERE versionId = ?").run(versionId);
         } else {
@@ -201,11 +206,13 @@ export async function prepareKnowledgeRestore(knowledge: BackupKnowledge, indexI
             .get(documentId) as { value: number };
           db.prepare(`INSERT INTO KnowledgeDocumentVersion
             (id, documentId, versionNumber, sourceFileName, sourceMimeType, sourceSizeBytes, sourceHash, sourcePath, rawText,
-             status, approvalMode, processorEndpointId, processorModel, processorPromptHash, error, activatedAt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'INACTIVE', ?, ?, ?, ?, ?, ?)`)
+             status, approvalMode, processorEndpointId, processorModel, processorPromptHash, error, activatedAt,
+             processingMode, processingRuleVersion)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'INACTIVE', ?, ?, ?, ?, ?, ?, ?, ?)`)
             .run(versionId, documentId, next.value, version.sourceFileName, version.sourceMimeType, version.sourceSizeBytes,
               version.sourceHash, relativeSource, version.rawText, version.approvalMode, version.processorEndpointId,
-              version.processorModel, version.processorPromptHash, version.error, version.activatedAt);
+              version.processorModel, version.processorPromptHash, version.error, version.activatedAt,
+              version.processingMode, version.processingRuleVersion);
         }
         for (const chunk of version.chunks) {
           const chunkId = randomUUID();

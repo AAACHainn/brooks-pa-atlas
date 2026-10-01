@@ -90,6 +90,27 @@ test("chat completion sends multimodal messages and extracts fenced text", async
   assert.equal((body as { stream: boolean }).stream, false);
 });
 
+test("structured chat applies output limits, JSON mode, and reports usage", async () => {
+  let requestBody: Record<string, unknown> = {};
+  let usage: { inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null } | null = null;
+  const text = await createAiChatCompletion(endpoint(), "plain-chat", [{ role: "user", content: "segment" }], {
+    maxOutputTokens: 4096,
+    temperature: 0,
+    jsonMode: true,
+    disableReasoning: true,
+    onUsage: (value) => { usage = value; },
+    fetchImpl: async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({ choices: [{ message: { content: "{\"segments\":[]}" } }], usage: { prompt_tokens: 10, completion_tokens: 4 } });
+    },
+  });
+  assert.equal(text, '{"segments":[]}');
+  assert.equal(requestBody.max_tokens, 4096);
+  assert.equal(requestBody.temperature, 0);
+  assert.deepEqual(requestBody.response_format, { type: "json_object" });
+  assert.deepEqual(usage, { inputTokens: 10, outputTokens: 4, reasoningTokens: null });
+});
+
 test("chat completion accepts array content and rejects empty responses", async () => {
   const text = await createAiChatCompletion(
     endpoint(),

@@ -3,6 +3,7 @@ import {
   AI_CONFIG_SETTING_KEY,
   LEGACY_AI_CONFIG_SETTING_KEY,
   LEGACY_AI_CONFIG_V2_SETTING_KEY,
+  LEGACY_AI_CONFIG_V3_SETTING_KEY,
   type AiConfigInput,
   mergeAiConfigSecrets,
   parseStoredAiConfig,
@@ -11,13 +12,14 @@ import {
 
 export async function readStoredAiConfig() {
   const settings = await prisma.appSetting.findMany({
-    where: { key: { in: [AI_CONFIG_SETTING_KEY, LEGACY_AI_CONFIG_V2_SETTING_KEY, LEGACY_AI_CONFIG_SETTING_KEY] } },
+    where: { key: { in: [AI_CONFIG_SETTING_KEY, LEGACY_AI_CONFIG_V3_SETTING_KEY, LEGACY_AI_CONFIG_V2_SETTING_KEY, LEGACY_AI_CONFIG_SETTING_KEY] } },
     select: { key: true, value: true },
   });
   const current = settings.find((setting) => setting.key === AI_CONFIG_SETTING_KEY);
+  const legacyV3 = settings.find((setting) => setting.key === LEGACY_AI_CONFIG_V3_SETTING_KEY);
   const legacyV2 = settings.find((setting) => setting.key === LEGACY_AI_CONFIG_V2_SETTING_KEY);
   const legacy = settings.find((setting) => setting.key === LEGACY_AI_CONFIG_SETTING_KEY);
-  return parseStoredAiConfig(current?.value ?? legacyV2?.value ?? legacy?.value);
+  return parseStoredAiConfig(current?.value ?? legacyV3?.value ?? legacyV2?.value ?? legacy?.value);
 }
 
 export async function readAiConfigDto() {

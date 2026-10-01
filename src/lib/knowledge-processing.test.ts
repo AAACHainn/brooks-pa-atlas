@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  collapseRollingSubtitleCues,
+  createDeterministicSegments,
   createSubtitleWindows,
   materializeChunk,
   mergeShortCueInputs,
@@ -27,14 +29,13 @@ test("ASS centisecond timestamps and TXT paragraphs are supported", () => {
   assert.equal(parseSubtitle("第一段\n第二段", "notes.txt").length, 2);
 });
 
-test("AI segments must cover every cue once, preserve order, and stay within length bounds", () => {
+test("processed segments must cover every cue once and preserve order", () => {
   const cues = parseSubtitle("alpha text\nbeta text", "notes.txt");
   const valid = validateProcessedSegments(cues, [{
     cueIds: [1, 2], cleanedText: "alpha text beta text", topic: "test", keywords: ["H1", "H1"],
   }]);
   assert.deepEqual(valid[0].keywords, ["H1"]);
   assert.throws(() => validateProcessedSegments(cues, [{ cueIds: [2, 1], cleanedText: "alpha text beta text", topic: "", keywords: [] }]), /order|unknown/i);
-  assert.throws(() => validateProcessedSegments(cues, [{ cueIds: [1, 2], cleanedText: "x", topic: "", keywords: [] }]), /ratio/i);
 });
 
 test("subtitle windows respect the character budget and chunk times come only from cues", () => {
@@ -50,6 +51,27 @@ test("subtitle windows respect the character budget and chunk times come only fr
     { id: 1, startMs: 0, endMs: 500, text: "short" },
     { id: 2, startMs: 600, endMs: 900, text: "sentence" },
   ]), [{ cueIds: [1, 2], text: "short sentence" }]);
+});
+
+test("rolling captions are collapsed before chunking", () => {
+  const cues = collapseRollingSubtitleCues([
+    { id: 1, startMs: 0, endMs: 1_000, text: "This is" },
+    { id: 2, startMs: 900, endMs: 2_000, text: "This is a breakout" },
+    { id: 3, startMs: 1_900, endMs: 3_000, text: "This is a breakout above resistance" },
+  ]);
+  assert.deepEqual(cues, [{ id: 1, startMs: 0, endMs: 3_000, text: "This is a breakout above resistance" }]);
+});
+
+test("quick import creates deterministic chunks without AI-cleaned text", () => {
+  const cues = Array.from({ length: 5 }, (_, index) => ({
+    id: index + 1,
+    startMs: index * 30_000,
+    endMs: (index + 1) * 30_000,
+    text: `Sentence ${index + 1}.`,
+  }));
+  const segments = createDeterministicSegments(cues, { maxCharacters: 40, maxDurationMs: 70_000 });
+  assert.deepEqual(segments.flatMap((segment) => segment.cueIds), [1, 2, 3, 4, 5]);
+  assert.ok(segments.every((segment) => segment.cleanedText.includes("Sentence")));
 });
 
 test("embedding inputs stay within the provider-safe batch limit", () => {

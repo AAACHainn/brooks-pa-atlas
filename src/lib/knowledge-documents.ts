@@ -21,7 +21,7 @@ export function listKnowledgeDocuments() {
       WHERE v.documentId = d.id AND v.status = 'ACTIVE') AS chunkCount
     FROM KnowledgeDocument d ORDER BY d.indexPathSnapshot, d.title`).all() as Array<Record<string, unknown>>;
   const versionStatement = db.prepare(`SELECT id, versionNumber, sourceFileName, sourceHash, status, approvalMode,
-    processorModel, error, activatedAt, createdAt,
+    processingMode, processorModel, error, activatedAt, createdAt,
     (SELECT COUNT(*) FROM KnowledgeChunk WHERE versionId = KnowledgeDocumentVersion.id) AS chunkCount,
     (SELECT COUNT(*) FROM KnowledgeChunkEmbedding e
       JOIN KnowledgeChunk c ON c.id = e.chunkId

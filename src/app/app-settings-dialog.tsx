@@ -41,9 +41,11 @@ const labels = {
     noModel: "请选择模型", addModelPlaceholder: "输入模型 ID", add: "添加", noModels: "暂无模型，可拉取或手动添加。",
     skillTitle: "AI 精校 OCR", skillDescription: "结合原图校对当前 OCR 草稿。模型返回结果后只更新未保存草稿。",
     readingSkillTitle: "AI 阅读伴侣", readingSkillDescription: "结合当前图片及全部学习资料进行翻译、讲解、比较和讨论。",
-    subtitleSkillTitle: "字幕知识整理", subtitleSkillDescription: "把字幕整理为结构化知识片段，使用“大模型”页启用的模型。",
-    subtitlePrivacy: "字幕整理调用大模型端点；生成向量时单独调用 Embedding 端点，不会把 PPT 图片发给 Embedding 服务。",
+    subtitleSkillTitle: "字幕知识整理", subtitleSkillDescription: "AI 深度整理只判断分段、主题和关键词，不再重写字幕正文。建议选择便宜的非推理模型。",
+    subtitlePrivacy: "只有选择“AI 深度整理”时才调用大模型；快速导入只调用 Embedding。PPT 图片不会发送给 Embedding 服务。",
     prompt: "提示词", modelOverride: "模型覆盖", inheritModel: "继承启用的大模型端点",
+    retryModel: "失败重试模型（可选）", retryModelHint: "建议选择更便宜的非推理模型；留空则继续使用首次模型。",
+    disableReasoning: "关闭 thinking / reasoning", maxOutputTokens: "单窗口最大输出 Token",
     privacy: "精校时会把当前图片和 OCR 文本发送到启用的大模型端点。",
     readingPrivacy: "伴读时会把近期会话、参考图片及其学习资料发送到启用的大模型端点。",
     cancel: "取消", save: "保存设置", saving: "保存中", loadFailed: "无法加载 AI 设置。", saveFailed: "无法保存 AI 设置。",
@@ -69,9 +71,11 @@ const labels = {
     addModelPlaceholder: "Enter model ID", add: "Add", noModels: "No models yet. Fetch or add one manually.",
     skillTitle: "AI OCR refinement", skillDescription: "Proofread the OCR draft against the image.",
     readingSkillTitle: "AI reading companion", readingSkillDescription: "Explain and discuss the current image with its study context.",
-    subtitleSkillTitle: "Subtitle knowledge processing", subtitleSkillDescription: "Structure subtitles with the active language model.",
-    subtitlePrivacy: "Subtitle processing uses the language-model endpoint; vector generation separately uses the embedding endpoint.",
+    subtitleSkillTitle: "Subtitle knowledge processing", subtitleSkillDescription: "AI deep processing only chooses ranges, topics, and keywords; it no longer rewrites subtitle text. Prefer a low-cost non-reasoning model.",
+    subtitlePrivacy: "The language model is called only in AI deep mode. Quick import calls only the Embedding endpoint.",
     prompt: "Prompt", modelOverride: "Model override", inheritModel: "Inherit active language-model endpoint",
+    retryModel: "Retry model (optional)", retryModelHint: "Prefer a cheaper non-reasoning model. Empty uses the primary model again.",
+    disableReasoning: "Disable thinking / reasoning", maxOutputTokens: "Maximum output tokens per window",
     privacy: "Refinement sends the image and OCR text to the active language-model endpoint.",
     readingPrivacy: "Reading companion sends recent conversation, reference images, and study context to the active language-model endpoint.",
     cancel: "Cancel", save: "Save settings", saving: "Saving", loadFailed: "Could not load AI settings.",
@@ -170,7 +174,7 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
       const result = await response.json().catch(() => null) as { config?: AiConfigDto; error?: string } | null;
       if (!response.ok || !result?.config) throw new Error(result?.error ?? t.loadFailed); setConfig(toDraft(result.config));
     }).catch((error) => { setConfig(toDraft({ version: AI_CONFIG_VERSION, endpoints: [], embeddingEndpoints: [], activeEndpointId: null, activeEmbeddingEndpointId: null,
-      skills: { ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" }, readingCompanion: { prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" }, subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "" } },
+      skills: { ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" }, readingCompanion: { prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" }, subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "", retryModelOverride: "", disableReasoning: true, maxOutputTokens: 4096 } },
       skillReady: { ocrRefinement: false, readingCompanion: false, subtitleKnowledge: false }, embeddingReady: false, ready: false }));
       void showAlert({ title: t.operationFailed, message: error instanceof Error ? error.message : t.loadFailed, tone: "danger" });
     }).finally(() => setLoading(false)); return () => window.clearTimeout(timer);
@@ -191,6 +195,34 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
 
   const renderEndpoints = (mode: "chat" | "embedding") => { if (!config) return null; const endpoints: EndpointDraft[] = mode === "chat" ? config.endpoints : config.embeddingEndpoints; return <div className="space-y-4"><div className="flex justify-end"><button type="button" onClick={() => addEndpoint(mode)} className="inline-flex h-9 items-center gap-2 rounded-md bg-cyan-800 px-4 text-sm font-medium text-white transition-colors hover:bg-cyan-900"><Plus className="h-4 w-4" />{mode === "chat" ? t.addChatEndpoint : t.addEmbeddingEndpoint}</button></div>{!endpoints.length ? <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 text-sm text-zinc-500">{mode === "chat" ? t.chatEmpty : t.embeddingEmpty}</div> : null}{endpoints.map((endpoint) => { const key = `${mode}:${endpoint.id}`; return <EndpointCard key={key} mode={mode} endpoint={endpoint} active={mode === "chat" ? config.activeEndpointId === endpoint.id : config.activeEmbeddingEndpointId === endpoint.id} t={t} busy={busyEndpoint === key} testing={testingEndpoint === key} manualModel={manualModels[key] ?? ""} keyVisible={visibleKeys.has(key)} onActivate={() => setConfig((current) => current ? mode === "chat" ? { ...current, activeEndpointId: endpoint.id } : { ...current, activeEmbeddingEndpointId: endpoint.id } : current)} onPatch={(patch) => updateEndpoint(mode, endpoint.id, patch)} onDelete={() => void deleteEndpoint(mode, endpoint)} onFetch={() => void fetchModels(mode, endpoint)} onTest={() => void testConnection(mode, endpoint)} onManualModel={(value) => setManualModels((current) => ({ ...current, [key]: value }))} onAddModel={() => addManualModel(mode, endpoint)} onToggleKey={() => setVisibleKeys((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })} />; })}</div>; };
 
+  const renderSkills = () => {
+    if (!config) return null;
+    const definitions = [
+      { key: OCR_REFINEMENT_SKILL_KEY, title: t.skillTitle, description: t.skillDescription, privacy: t.privacy },
+      { key: READING_COMPANION_SKILL_KEY, title: t.readingSkillTitle, description: t.readingSkillDescription, privacy: t.readingPrivacy },
+      { key: SUBTITLE_KNOWLEDGE_SKILL_KEY, title: t.subtitleSkillTitle, description: t.subtitleSkillDescription, privacy: t.subtitlePrivacy },
+    ] as const;
+    return <div className="space-y-4">{definitions.map((definition) => {
+      const skill = config.skills[definition.key];
+      const subtitleSkill = definition.key === SUBTITLE_KNOWLEDGE_SKILL_KEY
+        ? config.skills.subtitleKnowledge
+        : null;
+      const modelOptions = activeEndpoint?.models ?? [];
+      return <section key={definition.key} className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
+        <h3 className="text-sm font-semibold">{definition.title}</h3>
+        <p className="mt-1 text-xs text-zinc-500">{definition.description}</p>
+        <label className="mt-5 block text-xs font-medium text-zinc-600">{t.modelOverride}<select value={skill.modelOverride} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, [definition.key]: { ...skill, modelOverride: e.target.value } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"><option value="">{t.inheritModel}</option>{skill.modelOverride && !modelOptions.includes(skill.modelOverride) ? <option>{skill.modelOverride}</option> : null}{modelOptions.map((model) => <option key={model}>{model}</option>)}</select></label>
+        {subtitleSkill ? <div className="mt-4 grid gap-4 rounded-lg border border-violet-200 bg-violet-50/40 p-4 sm:grid-cols-2">
+          <label className="text-xs font-medium text-zinc-600">{t.retryModel}<select value={subtitleSkill.retryModelOverride} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, retryModelOverride: e.target.value } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"><option value="">{t.inheritModel}</option>{subtitleSkill.retryModelOverride && !modelOptions.includes(subtitleSkill.retryModelOverride) ? <option>{subtitleSkill.retryModelOverride}</option> : null}{modelOptions.map((model) => <option key={model}>{model}</option>)}</select><span className="mt-1 block text-[11px] font-normal text-zinc-500">{t.retryModelHint}</span></label>
+          <label className="text-xs font-medium text-zinc-600">{t.maxOutputTokens}<input type="number" min={512} max={8192} step={256} value={subtitleSkill.maxOutputTokens} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, maxOutputTokens: Number(e.target.value) } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /></label>
+          <label className="flex items-center gap-2 text-xs font-medium text-zinc-700 sm:col-span-2"><input type="checkbox" checked={subtitleSkill.disableReasoning} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, disableReasoning: e.target.checked } } } : current)} className="h-4 w-4" />{t.disableReasoning}</label>
+        </div> : null}
+        <label className="mt-4 block text-xs font-medium text-zinc-600">{t.prompt}<textarea value={skill.prompt} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, [definition.key]: { ...skill, prompt: e.target.value } } } : current)} className="mt-1 min-h-52 w-full resize-y rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm leading-6 outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /></label>
+        <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{definition.privacy}</p>
+      </section>;
+    })}</div>;
+  };
+
   return <>
     <div className="fixed inset-0 z-40 grid place-items-center bg-zinc-950/50 p-4 sm:p-6" role="dialog" aria-modal="true" onClick={() => !saving && onClose()}>
       <div className="flex max-h-[min(52rem,calc(100vh-2rem))] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
@@ -207,7 +239,7 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
               {(["endpoints", "embeddings", "skills"] as const).map((item) => <button key={item} type="button" onClick={() => setTab(item)} className={`border-b-2 px-4 py-2 text-sm font-medium transition-colors ${tab === item ? "border-cyan-700 text-cyan-800" : "border-transparent text-zinc-500 hover:border-zinc-300 hover:text-zinc-800"}`}>{t[item]}</button>)}
             </div>
             <main className="min-h-0 flex-1 overflow-y-auto p-5">
-              {loading || !config ? <div className="grid min-h-64 place-items-center"><Loader2 className="h-5 w-5 animate-spin text-cyan-700" /></div> : tab === "endpoints" ? renderEndpoints("chat") : tab === "embeddings" ? renderEndpoints("embedding") : <div className="space-y-4">{([{ key: OCR_REFINEMENT_SKILL_KEY, title: t.skillTitle, description: t.skillDescription, privacy: t.privacy }, { key: READING_COMPANION_SKILL_KEY, title: t.readingSkillTitle, description: t.readingSkillDescription, privacy: t.readingPrivacy }, { key: SUBTITLE_KNOWLEDGE_SKILL_KEY, title: t.subtitleSkillTitle, description: t.subtitleSkillDescription, privacy: t.subtitlePrivacy }] as const).map((definition) => { const skill = config.skills[definition.key]; return <section key={definition.key} className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm"><h3 className="text-sm font-semibold">{definition.title}</h3><p className="mt-1 text-xs text-zinc-500">{definition.description}</p><label className="mt-5 block text-xs font-medium text-zinc-600">{t.modelOverride}<select value={skill.modelOverride} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, [definition.key]: { ...skill, modelOverride: e.target.value } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"><option value="">{t.inheritModel}</option>{skill.modelOverride && !activeEndpoint?.models.includes(skill.modelOverride) ? <option>{skill.modelOverride}</option> : null}{activeEndpoint?.models.map((model) => <option key={model}>{model}</option>)}</select></label><label className="mt-4 block text-xs font-medium text-zinc-600">{t.prompt}<textarea value={skill.prompt} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, [definition.key]: { ...skill, prompt: e.target.value } } } : current)} className="mt-1 min-h-52 w-full resize-y rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm leading-6 outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /></label><p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{definition.privacy}</p></section>; })}</div>}
+              {loading || !config ? <div className="grid min-h-64 place-items-center"><Loader2 className="h-5 w-5 animate-spin text-cyan-700" /></div> : tab === "endpoints" ? renderEndpoints("chat") : tab === "embeddings" ? renderEndpoints("embedding") : renderSkills()}
             </main>
             <footer className="flex justify-end gap-2 border-t border-zinc-200 bg-zinc-50 px-5 py-3">
               <button type="button" onClick={onClose} disabled={saving} className="h-9 rounded-md border border-zinc-200 bg-white px-4 text-sm text-zinc-700 transition-colors hover:border-zinc-300 hover:bg-zinc-50 disabled:opacity-50">{t.cancel}</button>

@@ -9,6 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const mappingsSchema = z.array(z.object({ fileIndex: z.number().int().nonnegative(), indexNodeId: z.string().min(1) })).min(1).max(200);
+const processingModeSchema = z.enum(["QUICK", "AI"]);
 
 export async function POST(request: Request) {
   try {
@@ -16,6 +17,7 @@ export async function POST(request: Request) {
     const files = form.getAll("files").filter((value): value is File => value instanceof File);
     const mappings = mappingsSchema.parse(JSON.parse(String(form.get("mappings") ?? "null")));
     const manualReview = form.get("manualReview") === "true";
+    const processingMode = processingModeSchema.parse(String(form.get("processingMode") ?? "QUICK"));
     if (files.length !== mappings.length) throw new Error("每个字幕文件都必须确认一个目标索引。");
     const nodeIds = [...new Set(mappings.map((mapping) => mapping.indexNodeId))];
     const nodes = await prisma.indexNode.findMany({ where: { id: { in: nodeIds } }, select: { id: true, path: true } });
@@ -32,7 +34,7 @@ export async function POST(request: Request) {
         targetIndexPath: node.path,
       };
     }));
-    return NextResponse.json({ job: await createKnowledgeImportJob(sources, manualReview) }, { status: 202 });
+    return NextResponse.json({ job: await createKnowledgeImportJob(sources, manualReview, processingMode) }, { status: 202 });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not start knowledge import." },

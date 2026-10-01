@@ -330,22 +330,75 @@ export function normalizeAiText(value: string) {
   return (fenced?.[1] ?? trimmed).trim();
 }
 
+export type AiChatUsage = {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  reasoningTokens: number | null;
+};
+
+type AiChatCompletionOptions = {
+  fetchImpl?: AiFetch;
+  timeoutMs?: number;
+  maxOutputTokens?: number;
+  temperature?: number;
+  jsonMode?: boolean;
+  disableReasoning?: boolean;
+  onUsage?: (usage: AiChatUsage) => void | Promise<void>;
+};
+
+function chatUsage(payload: unknown): AiChatUsage {
+  const usage = typeof payload === "object" && payload !== null && "usage" in payload
+    && typeof (payload as { usage?: unknown }).usage === "object"
+    && (payload as { usage?: unknown }).usage !== null
+    ? (payload as { usage: Record<string, unknown> }).usage
+    : null;
+  const details = usage && typeof usage.completion_tokens_details === "object" && usage.completion_tokens_details !== null
+    ? usage.completion_tokens_details as Record<string, unknown>
+    : null;
+  const numberOrNull = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : null;
+  return {
+    inputTokens: numberOrNull(usage?.prompt_tokens ?? usage?.input_tokens),
+    outputTokens: numberOrNull(usage?.completion_tokens ?? usage?.output_tokens),
+    reasoningTokens: numberOrNull(details?.reasoning_tokens),
+  };
+}
+
+function reasoningControl(endpoint: StoredAiEndpoint, model: string, disabled: boolean | undefined) {
+  if (!disabled) return {};
+  const identity = `${endpoint.baseUrl} ${endpoint.chatCompletionsUrl} ${model}`.toLowerCase();
+  if (/qwen|dashscope|aliyun|alibabacloud/.test(identity)) return { enable_thinking: false };
+  if (endpoint.provider === "openai") return { reasoning_effort: "none" };
+  if (/reasoner|reasoning|\br1\b/.test(model.toLowerCase())) {
+    throw new AiServiceError("configuration", "字幕整理请选择非推理模型；当前端点无法可靠关闭该模型的推理输出。");
+  }
+  return {};
+}
+
 export async function createAiChatCompletion(
   endpoint: StoredAiEndpoint,
   model: string,
   messages: ChatMessage[],
-  options: { fetchImpl?: AiFetch; timeoutMs?: number } = {},
+  options: AiChatCompletionOptions = {},
 ) {
   if (!model.trim()) {
     throw new AiServiceError("configuration", "An AI model is required.");
   }
   const { chatCompletionsUrl } = resolveAiEndpointUrls(endpoint);
+  const body = {
+    model: model.trim(),
+    messages,
+    stream: false,
+    ...(options.maxOutputTokens ? { max_tokens: options.maxOutputTokens } : {}),
+    ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+    ...(options.jsonMode ? { response_format: { type: "json_object" } } : {}),
+    ...reasoningControl(endpoint, model, options.disableReasoning),
+  };
   const payload = await fetchJson(
     chatCompletionsUrl,
     {
       method: "POST",
       headers: requestHeaders(endpoint.apiKey),
-      body: JSON.stringify({ model: model.trim(), messages, stream: false }),
+      body: JSON.stringify(body),
     },
     {
       ...options,
@@ -356,6 +409,7 @@ export async function createAiChatCompletion(
       ),
     },
   );
+  await options.onUsage?.(chatUsage(payload));
   const text = normalizeAiText(extractTextContent(payload));
   if (!text) {
     throw new AiServiceError("invalid-response", "AI service returned an empty response.");

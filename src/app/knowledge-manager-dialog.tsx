@@ -32,10 +32,12 @@ const text = {
   zh: {
     title: "字幕知识库", importTab: "导入字幕", libraryTab: "知识文档", testTab: "检索测试",
     choose: "选择字幕文件", chooseFolder: "选择字幕文件夹", root: "批量匹配根节点", autoMap: "自动匹配",
-    mapping: "目标索引（导入前必须确认）", manual: "人工预览后再入库", manualHint: "默认关闭：AI 整理通过程序硬校验后自动批准。",
+    mapping: "目标索引（导入前必须确认）", manual: "人工预览后再入库", manualHint: "默认关闭：处理与程序校验通过后自动批准。",
+    processingMode: "字幕处理方式", quickMode: "快速导入（推荐）", quickModeHint: "程序去重、滚动字幕合并和确定性分段，直接生成 Embedding；不调用聊天模型。",
+    aiMode: "AI 深度整理", aiModeHint: "聊天模型只返回分段范围、主题和关键词，不重写字幕正文；适合断句较差的字幕。",
     start: "开始导入", noFiles: "请选择 .srt、.vtt、.ass 或 .txt 文件。", progress: "导入进度",
     approve: "批准", approveAll: "全部批准", reject: "拒绝", retry: "重试", review: "预览",
-    original: "原字幕", cleaned: "AI 整理结果", close: "关闭", empty: "知识库中还没有字幕文档。",
+    original: "原字幕", cleaned: "知识文本", close: "关闭", empty: "知识库中还没有字幕文档。",
     active: "当前版本", activate: "回退/启用此版本", disable: "停用", enable: "启用", delete: "删除文档",
     rebuildFts: "重建全文索引", rebuildVectors: "重建全部向量", maintenanceStarted: "向量重建已在后台启动。",
     confirmRebuildFts: "确认重建全文索引？", confirmRebuildFtsMessage: "系统会从现有知识片段重新生成 FTS 全文索引。不会调用 AI，也不会修改字幕、片段或向量，但执行期间会短暂占用数据库。",
@@ -53,10 +55,12 @@ const text = {
   en: {
     title: "Subtitle knowledge base", importTab: "Import", libraryTab: "Documents", testTab: "Search test",
     choose: "Choose subtitle files", chooseFolder: "Choose subtitle folder", root: "Batch mapping root", autoMap: "Auto map",
-    mapping: "Target index (confirmation required)", manual: "Review before activation", manualHint: "Off by default: validated AI output is approved automatically.",
+    mapping: "Target index (confirmation required)", manual: "Review before activation", manualHint: "Off by default: validated processing results are approved automatically.",
+    processingMode: "Subtitle processing", quickMode: "Quick import (recommended)", quickModeHint: "Program cleanup, rolling-caption deduplication, and deterministic chunks; no chat model call.",
+    aiMode: "AI deep processing", aiModeHint: "The chat model returns only ranges, topics, and keywords; subtitle text is not rewritten.",
     start: "Start import", noFiles: "Choose .srt, .vtt, .ass, or .txt files.", progress: "Import progress",
     approve: "Approve", approveAll: "Approve all", reject: "Reject", retry: "Retry", review: "Preview",
-    original: "Original", cleaned: "AI result", close: "Close", empty: "No subtitle documents yet.",
+    original: "Original", cleaned: "Knowledge text", close: "Close", empty: "No subtitle documents yet.",
     active: "Active version", activate: "Activate this version", disable: "Disable", enable: "Enable", delete: "Delete document",
     rebuildFts: "Rebuild full-text index", rebuildVectors: "Rebuild all vectors", maintenanceStarted: "Vector rebuild started in the background.",
     confirmRebuildFts: "Rebuild the full-text index?", confirmRebuildFtsMessage: "The FTS index will be regenerated from existing chunks. This does not call AI or change subtitles, chunks, or vectors, but briefly uses the database.",
@@ -90,6 +94,7 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
   const [files, setFiles] = useState<SelectedSubtitle[]>([]);
   const [rootId, setRootId] = useState(initialIndexNodeId ?? indexes[0]?.id ?? "");
   const [manualReview, setManualReview] = useState(false);
+  const [processingMode, setProcessingMode] = useState<"QUICK" | "AI">("QUICK");
   const [job, setJob] = useState<Job | null>(null);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [review, setReview] = useState<Review | null>(null);
@@ -124,6 +129,7 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
     if (!open) return;
     const timer = window.setTimeout(() => {
       setManualReview(false);
+      setProcessingMode("QUICK");
       setRootId(initialIndexNodeId ?? indexes[0]?.id ?? "");
       void loadDocuments().catch((error) => showAlert({ title: t.operationFailed, message: error instanceof Error ? error.message : t.operationFailed, tone: "danger" }));
     }, 0);
@@ -193,6 +199,7 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
       files.forEach((entry) => form.append("files", entry.file));
       form.set("mappings", JSON.stringify(files.map((entry, fileIndex) => ({ fileIndex, indexNodeId: entry.indexNodeId }))));
       form.set("manualReview", String(manualReview));
+      form.set("processingMode", processingMode);
       const response = await fetch("/api/knowledge/import-jobs", { method: "POST", body: form });
       const result = await response.json() as { job?: Job; error?: string };
       if (!response.ok || !result.job) throw new Error(result.error ?? t.operationFailed);
@@ -357,6 +364,13 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
               <button type="button" disabled={!rootId || !files.length || busy} onClick={() => void autoMap()} className="h-10 rounded-md border border-cyan-200 bg-cyan-50 px-3 text-sm font-medium text-cyan-800 transition-colors hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-50">{t.autoMap}</button>
             </div>
             {files.length ? <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white"><table className="w-full table-fixed text-left text-sm"><thead className="bg-zinc-50 text-xs text-zinc-500"><tr><th className="w-1/3 p-3 font-medium">{t.choose}</th><th className="p-3 font-medium">{t.mapping}</th><th className="w-10" /></tr></thead><tbody>{files.map((entry) => <tr key={entry.id} className="border-t border-zinc-100"><td className="truncate p-3" title={entry.file.name}>{entry.file.name}</td><td className="p-3"><IndexTreeSelector value={entry.indexNodeId} onChange={(indexNodeId) => setFiles((items) => items.map((item) => item.id === entry.id ? { ...item, indexNodeId } : item))} nodes={indexTree} invalid={!entry.indexNodeId} labels={{ choose: t.mapping, collapse: t.collapseIndex, expand: t.expandIndex, noResults: t.noMatchingIndex, searchPlaceholder: t.searchIndex, unclassified: t.unmatched }} /></td><td className="p-3"><button type="button" onClick={() => setFiles((items) => items.filter((item) => item.id !== entry.id))} className="grid h-8 w-8 place-items-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-rose-600"><X className="h-4 w-4" /></button></td></tr>)}</tbody></table></div> : <p className="rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 p-8 text-center text-sm text-zinc-500">{t.noFiles}</p>}
+            <fieldset className="rounded-lg border border-zinc-200 bg-zinc-50/60 p-4">
+              <legend className="px-1 text-sm font-semibold text-zinc-800">{t.processingMode}</legend>
+              <div className="mt-2 grid gap-3 md:grid-cols-2">
+                <label className={`flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors ${processingMode === "QUICK" ? "border-cyan-300 bg-cyan-50 ring-1 ring-cyan-100" : "border-zinc-200 bg-white hover:border-zinc-300"}`}><input type="radio" name="subtitle-processing-mode" value="QUICK" checked={processingMode === "QUICK"} onChange={() => setProcessingMode("QUICK")} className="mt-0.5 h-4 w-4 text-cyan-700" /><span><strong className="text-sm text-zinc-900">{t.quickMode}</strong><span className="mt-1 block text-xs leading-5 text-zinc-600">{t.quickModeHint}</span></span></label>
+                <label className={`flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors ${processingMode === "AI" ? "border-violet-300 bg-violet-50 ring-1 ring-violet-100" : "border-zinc-200 bg-white hover:border-zinc-300"}`}><input type="radio" name="subtitle-processing-mode" value="AI" checked={processingMode === "AI"} onChange={() => setProcessingMode("AI")} className="mt-0.5 h-4 w-4 text-violet-700" /><span><strong className="text-sm text-zinc-900">{t.aiMode}</strong><span className="mt-1 block text-xs leading-5 text-zinc-600">{t.aiModeHint}</span></span></label>
+              </div>
+            </fieldset>
             <label className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm"><input type="checkbox" checked={manualReview} onChange={(e) => setManualReview(e.target.checked)} className="mt-0.5 h-4 w-4" /><span><strong>{t.manual}</strong><span className="mt-0.5 block text-xs text-amber-800">{t.manualHint}</span></span></label>
             <button disabled={!allMapped || busy} onClick={() => void startImport()} className="inline-flex h-10 items-center gap-2 rounded-md bg-cyan-800 px-4 text-sm font-medium text-white disabled:opacity-50">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{t.start}</button>
             {job ? <KnowledgeImportProgress

@@ -623,7 +623,7 @@ flowchart TD
 
 | 模块 | 职责 |
 | --- | --- |
-| `backup.ts` | manifest v5、分页导出、ZIP 流、校验、zip-slip 防护、合并恢复 |
+| `backup.ts` / `knowledge-backup.ts` | manifest v6、双数据库逻辑导出、ZIP 流、校验、zip-slip 防护、合并恢复与知识索引重建 |
 | `backup-jobs.ts` | 进程内任务状态、持久 ZIP/JSON 记录、进度、Range 下载、单记录删除 |
 | `download-response.ts` | 安全生成附件 `Content-Disposition` |
 
@@ -736,7 +736,7 @@ flowchart LR
 
 - 为 `/api/atlas`、图片详情、导入任务、备份任务、考试和 AI 流建立共享 DTO/schema。
 - 先补 Route Handler contract 测试，再移动实现；否则大型组件与路由之间的隐式字段约定容易回归。
-- 保留图库相对路径、hash 去重、备份 v1-v5 兼容、文件逐个删除和考试图片 Restrict 等不变量。
+- 保留图库相对路径、hash 去重、备份 v1-v6 兼容、字幕文件逐个明确路径删除和考试图片 Restrict 等不变量。
 
 ### 12.2 第二优先级：拆前端单体
 

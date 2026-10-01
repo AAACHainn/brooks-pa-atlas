@@ -44,6 +44,19 @@ type Message = {
     originalName: string;
     available: boolean;
   } | null;
+  knowledge: {
+    sources: Array<{
+      id: string;
+      citation: string;
+      title: string;
+      lessonCode: string | null;
+      startMs: number | null;
+      endMs: number | null;
+      scope: "current" | "related";
+    }>;
+    semanticSearchUsed: boolean;
+    warning: "semantic_unavailable" | "no_current_binding" | null;
+  } | null;
 };
 
 type ReferenceImage = { id: string; title: string | null; originalName: string };
@@ -88,6 +101,9 @@ const labels = {
     configure: "配置阅读伴侣",
     configureHint: "请先选择可用的 AI 端点和视觉模型。",
     recentContext: "模型接收近期会话和最多 4 张参考图；全部历史仍保存在本地。",
+    knowledgeSources: "字幕来源",
+    semanticUnavailable: "本次未使用语义检索。",
+    noCurrentBinding: "当前图片没有课程字幕关联，已使用全库检索。",
   },
   en: {
     title: "AI reading companion",
@@ -126,6 +142,9 @@ const labels = {
     configure: "Configure reading companion",
     configureHint: "Select an available AI endpoint and vision-capable model first.",
     recentContext: "The model receives recent chat and up to 4 reference images; all history stays saved locally.",
+    knowledgeSources: "Subtitle sources",
+    semanticUnavailable: "Semantic retrieval was unavailable for this answer.",
+    noCurrentBinding: "The current image has no linked course subtitle; the full library was searched.",
   },
 } as const;
 
@@ -133,6 +152,17 @@ const defaultWindowWidth = 440;
 const minimumWindowWidth = 320;
 const minimumWindowHeight = 320;
 const viewportMargin = 12;
+
+function knowledgeTime(value: number | null) {
+  if (value === null) return "--:--";
+  const seconds = Math.floor(value / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+    : `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
 
 function clampedSize(size: { width: number; height: number }) {
   const maxWidth = Math.max(1, window.innerWidth - viewportMargin * 2);
@@ -866,6 +896,29 @@ export default function AiReadingCompanion({
                           />
                         ) : null}
                         <MarkdownContent content={message.content} />
+                        {message.knowledge?.sources.length ? (
+                          <details className="mt-2 rounded-md border border-cyan-100 bg-cyan-50/60 px-2 py-1.5 text-[11px] leading-4 text-cyan-950">
+                            <summary className="cursor-pointer font-semibold">{t.knowledgeSources} · {message.knowledge.sources.length}</summary>
+                            <div className="mt-1.5 space-y-1.5">
+                              {message.knowledge.warning ? (
+                                <p className="text-amber-700">
+                                  {message.knowledge.warning === "semantic_unavailable" ? t.semanticUnavailable : t.noCurrentBinding}
+                                </p>
+                              ) : null}
+                              {message.knowledge.sources.map((source) => (
+                                <p key={`${message.id}-${source.citation}`}>
+                                  <span className="font-semibold">[{source.citation}]</span>{" "}
+                                  {source.lessonCode ? `${source.lessonCode} · ` : ""}{source.title}{" · "}
+                                  {knowledgeTime(source.startMs)}–{knowledgeTime(source.endMs)}
+                                </p>
+                              ))}
+                            </div>
+                          </details>
+                        ) : message.knowledge?.warning ? (
+                          <p className="mt-2 text-[11px] text-amber-700">
+                            {message.knowledge.warning === "semantic_unavailable" ? t.semanticUnavailable : t.noCurrentBinding}
+                          </p>
+                        ) : null}
                       </>
                     ) : (
                       <p className="whitespace-pre-wrap break-words">{message.content}</p>

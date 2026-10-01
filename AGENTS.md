@@ -49,7 +49,7 @@ Brooks PA Atlas 是一个本地 Web App，用于把 Brooks Encyclopedia of Chart
 - 用无限层级索引树组织图表图片。
 - 导入后图片立刻入库并可浏览，OCR 是可选项；默认跳过 OCR，用户可在导入时开启自动 OCR，或之后对单张图片手动 OCR。
 - 首页直接进入 Atlas 工作台，不做营销页。
-- 第一版不做登录、云同步、AI 分类和 AI 分析。
+- 当前不做登录或云同步；AI 能力包括 OCR 精校、图片阅读伴侣和独立字幕 RAG 知识库。
 
 ## 3. 技术栈
 
@@ -104,6 +104,7 @@ docker compose down
 - `npm run test:thumbnails` 运行缩略图路径、缓存、尺寸、并发合并和图片查询键测试。
 - `npm run test:ocr` 运行索引子树批量 OCR 的文本判断、终态和进度计算测试。
 - `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、阅读伴侣上下文和多模态 Chat Completions 测试。
+- `npm run test:knowledge` 运行字幕格式/时间码解析、AI cue 覆盖、顺序、长度比例、窗口和片段时间范围测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
 - `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库，并继续执行全部增量 migrations。
@@ -131,6 +132,8 @@ docker compose down
 - `src/app/app-dialog.tsx`：全局统一的应用内提示、确认和文本输入弹窗，提供危险级别样式、焦点管理和键盘操作。
 - `src/app/app-settings-dialog.tsx`：可扩展的全局设置弹窗，当前提供 AI 端点和内置技能配置。
 - `src/app/ai-reading-companion.tsx`：浏览模式 AI 阅读伴侣悬浮窗，负责全局多会话、流式消息、拖动和收起交互。
+- `src/app/knowledge-manager-dialog.tsx`：字幕知识库导入、节点映射、人工审核、版本管理、维护和检索测试弹窗。
+- `src/app/index-tree-selector.tsx`：工作台详情与字幕知识库共用的树形索引选择器，支持层级展开、路径搜索和键盘选择；不要再用平铺的原生下拉框复制索引选择逻辑。
 - `src/app/exam-mode.tsx`：考试模式客户端组件，包含试卷管理、制题、遮罩、考试和结果复盘。
 - `src/app/api/atlas/route.ts`：工作台聚合查询接口。
 - `src/app/api/exam/**/route.ts`：考试模式 API，负责试卷、题目、发布、考试记录和提交评分。
@@ -164,6 +167,7 @@ docker compose down
 - `src/app/api/settings/ai/**/route.ts`：读取/保存脱敏 AI 设置、拉取模型和测试兼容端点。
 - `src/app/api/ai/ocr-refine/route.ts`：读取原图并调用 AI 精校当前 OCR 草稿，不直接保存结果。
 - `src/app/api/ai/reading-companion/**/route.ts`：阅读伴侣会话、分页消息、清空、删除和 NDJSON 流式对话接口。
+- `src/app/api/knowledge/**/route.ts`：字幕映射预览、持久化导入任务、审核、文档版本、维护与混合检索接口。
 - `src/lib/db.ts`：Prisma Client + better-sqlite3 adapter。
 - `src/lib/backup.ts`：备份 manifest、zip 导出、zip 校验和合并恢复逻辑。
 - `src/lib/index-tree.ts`：索引树创建、路径补全、树形查询。
@@ -185,6 +189,9 @@ docker compose down
 - `src/lib/ai-client.ts`：OpenAI-compatible 模型发现、非流式与 SSE 流式 Chat Completions 客户端。
 - `src/lib/ai-ocr-refinement.ts`：精校图片压缩、多模态消息构造和 OCR 精校调用。
 - `src/lib/ai-reading-companion.ts` / `src/lib/ai-reading-context.ts`：阅读伴侣上下文窗口、图片资料快照、多模态消息和服务端图片上下文查询。
+- `src/lib/knowledge-*.ts` / `src/lib/subtitle-parser.ts`：独立知识库连接、字幕解析、AI 硬校验、导入任务、Embedding、混合检索、管理和逻辑备份恢复。
+- `src/lib/background-task-coordinator.ts`：单进程重任务互斥租约，避免批量 OCR、PDF、缩略图、知识导入和向量重建在 2C2G 实例上并行争抢资源。
+- `knowledge/migrations/`：独立 `knowledge.db` SQL migrations；由 `db:init` / `db:migrate` 与主库 migrations 分别提交。
 - `prisma/schema.prisma`：Prisma 数据模型。
 - `prisma/migrations/20260505000000_init/migration.sql`：初始 SQLite schema。
 - `scripts/init-db.mjs`：本地 SQLite 初始化脚本。
@@ -202,12 +209,12 @@ docker compose down
 - `.next/`
 - `node_modules/`
 - `src/generated/prisma/`
-- `dev.db`、`dev.db-*`
+- `dev.db`、`dev.db-*`、`knowledge.db`、`knowledge.db-*`
 - `data/library/`
 - `next-env.d.ts`
 - 运行日志，例如 `.codex-dev-server.log`、`dev-server.log`、`dev-server.err.log`
 
-Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统一挂载到 `/app/data`：数据库为 `/app/data/dev.db`，图库为 `/app/data/library/images`。重新构建容器不会清空该卷。
+Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统一挂载到 `/app/data`：主库为 `/app/data/dev.db`，知识库为 `/app/data/knowledge.db`，图库为 `/app/data/library/images`，字幕源文件为 `/app/data/library/knowledge/sources`。重新构建容器不会清空该卷。
 
 注意：
 
@@ -229,9 +236,9 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - `ChartImageTag`：图片与标签的多对多关联；图片删除时级联删除关联，无图片使用的标签会自动清理。
 - `ImportBatch`：一次批量导入任务，保存总数、成功数、失败数、重复数、OCR 进度、状态、开始和结束时间。
 - `ImportItem`：导入批次中的单张图片记录，保存原始文件名、相对路径、保存路径、分组、状态、错误和映射索引。
-- `AppSetting`：本地设置，用于 OCR 并发数及版本化 `ai.config.v1` AI 配置等键值；AI API Key 明文保存在本地 SQLite，但任何客户端 DTO 都不能返回完整密钥。
+- `AppSetting`：本地设置，用于 OCR 并发数及版本化 `ai.config.v3` AI 配置等键值；读取时兼容迁移 `ai.config.v1` / `ai.config.v2`。AI API Key 明文保存在本地 SQLite，但任何客户端 DTO 都不能返回完整密钥。
 - `OcrBatchJob` / `OcrBatchJobItem`：持久化索引子树批量 OCR 任务及启动时的图片清单，进度只统计该任务自己的图片。
-- `AiReadingConversation` / `AiReadingMessage`：全局 AI 阅读伴侣会话与消息；消息保存发送时的图片引用、资料快照、兼容端点返回的可见思考内容和耗时，图片删除后仍保留文字历史。
+- `AiReadingConversation` / `AiReadingMessage`：全局 AI 阅读伴侣会话与消息；消息保存发送时的图片引用、资料快照、知识引用快照、兼容端点返回的可见思考内容和耗时，图片或字幕后来删除后仍保留文字历史。
 - `ExamPaper`：试卷，支持草稿和发布状态，保存标题、描述、默认选项模板和发布时间。
 - `ExamQuestion`：试题，关联已有 `ChartImage`，保存题型、题干、选项、正确答案、解析和遮罩坐标 JSON。
 - `ExamAttempt`：一次考试记录，保存开始/提交时间、耗时、正确数、总题数和正确率。
@@ -475,16 +482,23 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 
 README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
-### AI 阅读伴侣规则
+### AI 与字幕知识库规则
 
-- AI 配置保存在 `AppSetting` 的 `ai.config.v1`，不需要新增 migration；配置是当前实例本地设置，不进入备份 zip，恢复也不覆盖。
-- 支持多个 OpenAI-compatible 端点，但同时只有一个启用端点。Base URL 模式追加 `/chat/completions` 和 `/models`，高级模式可分别指定完整 URL；只接受 HTTP/HTTPS。
+- AI 配置保存在 `AppSetting` 的 `ai.config.v3`，读取时兼容迁移 `ai.config.v1` / `ai.config.v2`；配置是当前实例本地设置，不进入备份 zip，恢复也不覆盖。
+- 大模型与 Embedding 使用两个独立页签和两组端点，各自保存供应商、Base URL、API Key、模型列表与唯一启用端点。大模型 Base URL 追加 `/chat/completions`、`/models`；Embedding Base URL 追加 `/embeddings`、`/models`；高级模式可分别指定完整 URL，只接受 HTTP/HTTPS。
 - API Key 可为空；非空时只在服务端以 Bearer header 发送。设置 GET 仅返回 `hasApiKey`，空白保存保留旧密钥，只有显式清除才删除；日志和外部错误不能包含密钥或原始响应正文。
-- 内置技能 `ocrRefinement` 保存可编辑提示词和可选模型覆盖；未覆盖时使用启用端点的默认模型。
+- 内置技能 `ocrRefinement`、`readingCompanion`、`subtitleKnowledge` 保存可编辑提示词和可选模型覆盖；未覆盖时使用启用聊天端点的默认模型。
 - 精校把原图在内存中转换为最长边不超过 1920px、quality 85 的 JPEG，并与当前 OCR 草稿一并发送；不写入衍生图片文件。
 - 外部请求超时为 120 秒。精校 API 不更新 `ChartImage`；只有用户点击现有“保存 OCR 文本”后才写数据库。
 - 所选精校模型必须支持 Chat Completions 图片输入；连接测试只验证最小文本请求，不代表图片能力可用。
 - 当前项目没有登录，AI 配置和付费调用接口只适用于可信本机或可信局域网部署。
+- 字幕知识使用独立 `knowledge.db`（`better-sqlite3` + `sqlite-vec`），启用 WAL、外键、5 秒 busy timeout 和受限页缓存；主库与知识库禁止用 `ATTACH` 做跨库事务。
+- 字幕导入支持 `.srt/.vtt/.ass/.txt`，单文件 10MiB、单批 200 个文件和 100MiB 总量。节点映射始终在导入前确认；人工预览每次默认关闭且不记忆。
+- AI 输出必须通过 cue 恰好覆盖一次、顺序不变、无未知 cue/空片段、清洗长度为规范化原文 60%–140% 的硬校验；失败只自动重试一次。时间范围只能由源 cue 计算。
+- 同一节点只关联一个逻辑字幕文档；重新导入创建版本，片段、关键词、FTS 与向量全部完成后才在单个知识库事务中替换启用版本。人工模式只允许整份批准或拒绝。
+- 混合检索并行使用当前课程/全库的 FTS5、短关键词和向量结果，以 RRF 合并，最多 8 个片段；当前课程结果充足时至少 4 个。Embedding 失败必须降级而不能中断原图片伴读。
+- 阅读伴侣的助手消息把字幕引用写入 `knowledgeContextJson`，历史显示不得重新查询当前版本替换旧引用。
+- 删除字幕文档或源文件时只能逐个明确路径删除；不得删除知识目录、使用通配符或递归删除。
 
 ## 14. API 行为
 
@@ -507,8 +521,10 @@ AI 设置与调用 API：
 - `PUT /api/settings/ai`：整体保存端点、唯一启用端点和内置技能；同 id 端点未传新密钥时保留旧值，`clearApiKey` 才显式清除。
 - `POST /api/settings/ai/models`：使用端点草稿或已保存密钥请求 Models URL，返回去重排序后的模型 id。
 - `POST /api/settings/ai/test`：使用指定模型执行最小非流式文本请求，只验证 Chat Completions 连接。
+- `POST /api/settings/ai/test-embedding`：请求一个测试向量并返回维度，只验证 Embeddings 连接。
 - `POST /api/ai/ocr-refine`：接收 `imageId` 和最多 100,000 字符的非空 `ocrText`，把压缩原图和当前草稿发送给 `ocrRefinement` 技能，成功只返回 `{ refinedText }`，不更新图片记录。
 - AI 上游超时返回 `504`，配置不完整返回 `409`，上游或响应错误返回 `502`；错误响应只保留清理后的状态信息，不透传上游正文。
+- `/api/knowledge/**` 提供映射预览、导入任务、逐文档审核、文档/版本管理、FTS/向量维护和检索测试；知识导入任务全局同时只运行一个并持久化窗口结果。
 
 `GET /api/index-navigator`
 
@@ -533,8 +549,8 @@ AI 设置与调用 API：
 
 - 导出 `brooks-pa-atlas-backup-YYYYMMDD-HHmmssZ.zip`。
 - 备份图片、导航关联和分类使用固定大小分页查询；按索引子树导出时通过索引关系和路径前缀筛选，避免大型图库触发 SQLite 查询参数上限。
-- zip 顶层包含 `manifest.json` 和 `images/<hash>.<ext>` 图片文件。
-- manifest 格式为 `brooks-pa-atlas.backup` v5，保存索引树、导航分类/选项/节点关联、图片元数据、标签、图片文字标注、试卷、题目、考试记录和 zip 内相对图片路径；恢复仍兼容 v1–v4。
+- zip 顶层包含 `manifest.json`、`images/<hash>.<ext>`、`knowledge/sources/*` 和 `knowledge/embeddings/*`。
+- manifest 格式为 `brooks-pa-atlas.backup` v6，除 v5 数据外保存字幕文档/版本/片段/关键词/Embedding profile 和向量 zip 路径；不直接复制运行中的 `knowledge.db`，恢复仍兼容 v1–v5。
 - 不保存 Windows 或 Linux 绝对路径，便于跨部署环境恢复。
 - 导出前会校验数据库中每张图片的图库文件存在；如果缺失则返回错误，不生成不完整备份。
 - 后台导出任务的百分比在图片校验阶段保持为 `0%`，进入 zip 打包后按实际已读取图片字节数递增，完成后才到 `100%`；前端打包阶段同步显示“已处理字节 / 总字节”，不再把图片校验数量误当成整体备份进度。
@@ -552,10 +568,11 @@ AI 设置与调用 API：
 - 按 SHA-256 hash 恢复图片；相同 hash 更新元数据和索引归属，不创建重复图片。
 - 如果相同 hash 的数据库记录存在但图库文件丢失，会从备份重新写入当前环境图库目录并更新 `libraryPath`。
 - 不删除当前系统中备份外的索引、图片或文件；不恢复旧 `ImportBatch` / `ImportItem` 历史。
-- v2–v5 恢复会通过图片 SHA-256 hash 重新映射试题图片；缺失图片时拒绝恢复对应考试数据，避免断开的题目引用。
-- v3–v5 恢复会覆盖备份内图片的标签；恢复旧版 v1 / v2 备份时保留当前系统中已有图片的标签。
-- v4–v5 恢复会覆盖备份内图片的文字标注；恢复旧版 v1–v3 备份时保留当前系统中已有图片的文字标注。
+- v2–v6 恢复会通过图片 SHA-256 hash 重新映射试题图片；缺失图片时拒绝恢复对应考试数据，避免断开的题目引用。
+- v3–v6 恢复会覆盖备份内图片的标签；恢复旧版 v1 / v2 备份时保留当前系统中已有图片的标签。
+- v4–v6 恢复会覆盖备份内图片的文字标注；恢复旧版 v1–v3 备份时保留当前系统中已有图片的文字标注。
 - v5 导航恢复在事务内按规范化名称合并分类和选项，并以备份内容覆盖备份内节点的关联；备份外数据不删除。恢复 v1–v4 时保留目标系统现有导航数据。
+- v6 按索引路径重新绑定字幕；无法映射的文档标记为 `ORPHANED`。恢复版本、原字幕与向量 BLOB 后重建 FTS5，不恢复导入/维护任务记录，也不删除目标实例额外知识数据。
 
 考试 API：
 

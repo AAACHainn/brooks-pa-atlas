@@ -82,6 +82,7 @@ export async function loadReadingImageContext(imageId: string) {
 
   return {
     id: image.id,
+    indexNodeId: image.indexNodeId,
     libraryPath: image.libraryPath,
     snapshot,
     snapshotJson: JSON.stringify(snapshot),

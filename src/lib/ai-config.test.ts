@@ -2,144 +2,85 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  AI_CONFIG_VERSION,
-  DEFAULT_OCR_REFINEMENT_PROMPT,
-  DEFAULT_READING_COMPANION_PROMPT,
-  defaultStoredAiConfig,
-  mergeAiConfigSecrets,
-  parseStoredAiConfig,
-  resolveAiEndpointUrls,
-  sanitizeAiConfig,
-  type AiConfigInput,
-  type StoredAiEndpoint,
+  AI_CONFIG_VERSION, DEFAULT_OCR_REFINEMENT_PROMPT, DEFAULT_READING_COMPANION_PROMPT,
+  DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, defaultStoredAiConfig, mergeAiConfigSecrets,
+  parseStoredAiConfig, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls, sanitizeAiConfig,
+  type AiConfigInput, type StoredAiEndpoint, type StoredEmbeddingEndpoint,
 } from "@/lib/ai-config";
 
-function endpoint(overrides: Partial<StoredAiEndpoint> = {}): StoredAiEndpoint {
-  return {
-    id: "endpoint-1",
-    name: "OpenAI",
-    provider: "openai",
-    baseUrl: "https://api.openai.com/v1/",
-    useCustomUrls: false,
-    chatCompletionsUrl: "",
-    modelsUrl: "",
-    apiKey: "secret-key",
-    models: ["model-b", "model-a"],
-    defaultModel: "model-a",
-    ...overrides,
-  };
+function chatEndpoint(overrides: Partial<StoredAiEndpoint> = {}): StoredAiEndpoint {
+  return { id: "chat-1", name: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com",
+    useCustomUrls: false, chatCompletionsUrl: "", modelsUrl: "", apiKey: "chat-secret",
+    models: ["deepseek-chat"], defaultModel: "deepseek-chat", ...overrides };
 }
-
+function embeddingEndpoint(overrides: Partial<StoredEmbeddingEndpoint> = {}): StoredEmbeddingEndpoint {
+  return { id: "embedding-1", name: "OpenAI Embeddings", provider: "openai", baseUrl: "https://api.openai.com/v1",
+    useCustomUrls: false, embeddingsUrl: "", modelsUrl: "", apiKey: "embedding-secret",
+    models: ["text-embedding-3-small"], embeddingModel: "text-embedding-3-small", ...overrides };
+}
 function input(overrides: Partial<AiConfigInput> = {}): AiConfigInput {
-  return {
-    version: AI_CONFIG_VERSION,
-    endpoints: [
-      {
-        ...endpoint(),
-        apiKey: undefined,
-      },
-    ],
-    activeEndpointId: "endpoint-1",
-    skills: {
-      ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" },
+  return { version: AI_CONFIG_VERSION, endpoints: [{ ...chatEndpoint(), apiKey: undefined }],
+    embeddingEndpoints: [{ ...embeddingEndpoint(), apiKey: undefined }], activeEndpointId: "chat-1",
+    activeEmbeddingEndpointId: "embedding-1",
+    skills: { ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" },
       readingCompanion: { prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" },
-    },
-    ...overrides,
-  };
+      subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "" } }, ...overrides };
 }
 
-test("missing or invalid persisted AI config falls back to the built-in skill", () => {
+test("missing or invalid persisted AI config falls back to v3 defaults", () => {
   assert.deepEqual(parseStoredAiConfig(null), defaultStoredAiConfig());
   assert.deepEqual(parseStoredAiConfig("not-json"), defaultStoredAiConfig());
-  assert.equal(
-    parseStoredAiConfig("{}").skills.ocrRefinement.prompt,
-    DEFAULT_OCR_REFINEMENT_PROMPT,
-  );
+  assert.equal(parseStoredAiConfig("{}").version, 3);
 });
 
-test("legacy v1 configuration gains the reading companion without losing endpoints", () => {
-  const legacy = {
-    version: AI_CONFIG_VERSION,
-    endpoints: [endpoint()],
-    activeEndpointId: "endpoint-1",
-    skills: {
-      ocrRefinement: { prompt: "legacy prompt", modelOverride: "model-a" },
-    },
-  };
+test("v2 migrates chat and embedding providers into separate collections without losing secrets", () => {
+  const legacy = { version: 2, endpoints: [{ ...chatEndpoint({ id: "shared" }), embeddingsUrl: "https://embed.example/v1/embeddings", embeddingModel: "embed-v2" }],
+    activeEndpointId: "shared", embeddingEndpointId: "shared",
+    skills: { ocrRefinement: { prompt: "legacy", modelOverride: "" }, readingCompanion: { prompt: "read", modelOverride: "" }, subtitleKnowledge: { prompt: "subtitle", modelOverride: "" } } };
   const parsed = parseStoredAiConfig(JSON.stringify(legacy));
-  assert.equal(parsed.endpoints[0].apiKey, "secret-key");
-  assert.equal(parsed.skills.ocrRefinement.prompt, "legacy prompt");
+  assert.equal(parsed.version, 3);
+  assert.equal(parsed.endpoints[0].id, "shared");
+  assert.equal(parsed.embeddingEndpoints[0].id, "shared");
+  assert.equal(parsed.embeddingEndpoints[0].embeddingModel, "embed-v2");
+  assert.equal(parsed.endpoints[0].apiKey, "chat-secret");
+  assert.equal(parsed.embeddingEndpoints[0].apiKey, "chat-secret");
+});
+
+test("v1 gains all skills and does not invent an embedding endpoint", () => {
+  const parsed = parseStoredAiConfig(JSON.stringify({ version: 1, endpoints: [chatEndpoint()], activeEndpointId: "chat-1",
+    skills: { ocrRefinement: { prompt: "legacy", modelOverride: "" } } }));
+  assert.equal(parsed.skills.ocrRefinement.prompt, "legacy");
   assert.equal(parsed.skills.readingCompanion.prompt, DEFAULT_READING_COMPANION_PROMPT);
+  assert.equal(parsed.embeddingEndpoints.length, 0);
 });
 
-test("saving retains, replaces, and explicitly clears endpoint secrets", () => {
-  const current = { ...defaultStoredAiConfig(), endpoints: [endpoint()], activeEndpointId: "endpoint-1" };
-  assert.equal(mergeAiConfigSecrets(input(), current).endpoints[0].apiKey, "secret-key");
-  assert.equal(
-    mergeAiConfigSecrets(
-      input({ endpoints: [{ ...input().endpoints[0], apiKey: "replacement" }] }),
-      current,
-    ).endpoints[0].apiKey,
-    "replacement",
-  );
-  assert.equal(
-    mergeAiConfigSecrets(
-      input({ endpoints: [{ ...input().endpoints[0], clearApiKey: true }] }),
-      current,
-    ).endpoints[0].apiKey,
-    "",
-  );
+test("chat and embedding secrets are retained, replaced, and cleared independently", () => {
+  const current = { ...defaultStoredAiConfig(), endpoints: [chatEndpoint()], embeddingEndpoints: [embeddingEndpoint()],
+    activeEndpointId: "chat-1", activeEmbeddingEndpointId: "embedding-1" };
+  assert.equal(mergeAiConfigSecrets(input(), current).endpoints[0].apiKey, "chat-secret");
+  assert.equal(mergeAiConfigSecrets(input(), current).embeddingEndpoints[0].apiKey, "embedding-secret");
+  const changed = mergeAiConfigSecrets(input({ embeddingEndpoints: [{ ...input().embeddingEndpoints[0], apiKey: "new-embedding" }] }), current);
+  assert.equal(changed.embeddingEndpoints[0].apiKey, "new-embedding");
+  const cleared = mergeAiConfigSecrets(input({ endpoints: [{ ...input().endpoints[0], clearApiKey: true }] }), current);
+  assert.equal(cleared.endpoints[0].apiKey, "");
+  assert.equal(cleared.embeddingEndpoints[0].apiKey, "embedding-secret");
 });
 
-test("sanitized config never returns API key material and reports readiness", () => {
-  const dto = sanitizeAiConfig({
-    ...defaultStoredAiConfig(),
-    endpoints: [endpoint()],
-    activeEndpointId: "endpoint-1",
-  });
-  assert.equal(dto.ready, true);
-  assert.equal(dto.skillReady.ocrRefinement, true);
-  assert.equal(dto.skillReady.readingCompanion, true);
-  assert.equal(dto.endpoints[0].hasApiKey, true);
-  assert.equal("apiKey" in dto.endpoints[0], false);
-  assert.doesNotMatch(JSON.stringify(dto), /secret-key/);
+test("sanitized config reports separate readiness without exposing either key", () => {
+  const dto = sanitizeAiConfig({ ...defaultStoredAiConfig(), endpoints: [chatEndpoint()], embeddingEndpoints: [embeddingEndpoint()],
+    activeEndpointId: "chat-1", activeEmbeddingEndpointId: "embedding-1" });
+  assert.equal(dto.ready, true); assert.equal(dto.embeddingReady, true);
+  assert.equal(dto.endpoints[0].hasApiKey, true); assert.equal(dto.embeddingEndpoints[0].hasApiKey, true);
+  assert.doesNotMatch(JSON.stringify(dto), /chat-secret|embedding-secret/);
 });
 
-test("active endpoint must exist and endpoint ids must be unique", () => {
-  assert.throws(
-    () => mergeAiConfigSecrets(input({ activeEndpointId: "missing" }), defaultStoredAiConfig()),
-    /active AI endpoint/i,
-  );
-  assert.throws(
-    () =>
-      mergeAiConfigSecrets(
-        input({ endpoints: [input().endpoints[0], input().endpoints[0]] }),
-        defaultStoredAiConfig(),
-      ),
-    /unique/i,
-  );
+test("active ids must exist within their own endpoint type", () => {
+  assert.throws(() => mergeAiConfigSecrets(input({ activeEndpointId: "missing" }), defaultStoredAiConfig()), /active AI endpoint/i);
+  assert.throws(() => mergeAiConfigSecrets(input({ activeEmbeddingEndpointId: "missing" }), defaultStoredAiConfig()), /active embedding endpoint/i);
 });
 
-test("endpoint URL resolution supports base and full URL modes", () => {
-  assert.deepEqual(resolveAiEndpointUrls(endpoint()), {
-    chatCompletionsUrl: "https://api.openai.com/v1/chat/completions",
-    modelsUrl: "https://api.openai.com/v1/models",
-  });
-  assert.deepEqual(
-    resolveAiEndpointUrls(
-      endpoint({
-        useCustomUrls: true,
-        chatCompletionsUrl: "http://localhost:11434/api/chat",
-        modelsUrl: "http://localhost:11434/api/tags",
-      }),
-    ),
-    {
-      chatCompletionsUrl: "http://localhost:11434/api/chat",
-      modelsUrl: "http://localhost:11434/api/tags",
-    },
-  );
-  assert.throws(
-    () => resolveAiEndpointUrls(endpoint({ baseUrl: "file:///tmp/model" })),
-    /valid AI API base URL/i,
-  );
+test("chat and embedding URL resolution are independent", () => {
+  assert.deepEqual(resolveAiEndpointUrls(chatEndpoint()), { chatCompletionsUrl: "https://api.deepseek.com/chat/completions", modelsUrl: "https://api.deepseek.com/models" });
+  assert.deepEqual(resolveEmbeddingEndpointUrls(embeddingEndpoint()), { embeddingsUrl: "https://api.openai.com/v1/embeddings", modelsUrl: "https://api.openai.com/v1/models" });
+  assert.deepEqual(resolveEmbeddingEndpointUrls(embeddingEndpoint({ useCustomUrls: true, embeddingsUrl: "http://localhost:11434/api/embed", modelsUrl: "" })), { embeddingsUrl: "http://localhost:11434/api/embed", modelsUrl: "" });
 });

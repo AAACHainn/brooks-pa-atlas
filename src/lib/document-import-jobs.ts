@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { acquireHeavyTaskOrThrow, releaseHeavyTask } from "@/lib/background-task-coordinator";
 import type { DocumentImporter, DocumentImportResult } from "@/lib/document-importers";
 
 type JobStatus = "running" | "completed" | "failed";
@@ -89,6 +90,7 @@ export function startDocumentImportJob({
 }) {
   cleanupJobs();
   const id = randomUUID();
+  acquireHeavyTaskOrThrow("document-import", id);
   const job: DocumentImportJob = {
     id,
     kind: importer.kind,
@@ -144,6 +146,8 @@ export function startDocumentImportJob({
       job.phase = "failed";
       job.error = errorMessage(error);
       touch(job);
+    } finally {
+      releaseHeavyTask("document-import", id);
     }
   })();
 

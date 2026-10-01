@@ -11,6 +11,8 @@ COPY . .
 RUN npm run prisma:generate
 RUN npm run test:navigator
 RUN npm run test:thumbnails
+RUN npm run test:ai
+RUN npm run test:knowledge
 RUN npm run lint
 RUN npm run build
 
@@ -26,6 +28,7 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     PORT=3000 \
     DATABASE_URL=file:/app/data/dev.db \
+    BROOKS_KNOWLEDGE_DATABASE_URL=file:/app/data/knowledge.db \
     BROOKS_LIBRARY_ROOT=/app/data/library/images \
     BROOKS_THUMBNAIL_ROOT=/app/data/library/thumbnails \
     BROOKS_OCR_COMMAND=tesseract \
@@ -42,13 +45,14 @@ RUN apt-get update \
 
 RUN groupadd --system --gid 1001 nodejs \
     && useradd --system --uid 1001 --gid nodejs nextjs \
-    && mkdir -p /app/data/library/images \
+    && mkdir -p /app/data/library/images /app/data/library/knowledge/sources \
     && chown -R nextjs:nodejs /app/data
 
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
+COPY --from=builder --chown=nextjs:nodejs /app/knowledge ./knowledge
 COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./docker-entrypoint.sh
 

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type {
   OcrBatchJob,
   OcrBatchJobItemStatus,
@@ -5,6 +7,7 @@ import type {
 } from "@/generated/prisma/client";
 
 import { prisma } from "@/lib/db";
+import { acquireHeavyTaskOrThrow, releaseHeavyTask } from "@/lib/background-task-coordinator";
 import {
   hasExistingOcrText,
   ocrBatchConfirmationPhrase,
@@ -173,7 +176,18 @@ async function incrementJobCounters(
 }
 
 export async function startIndexOcrBatchJob(indexNodeId: string, confirmation?: string) {
-  return prisma.$transaction(async (tx) => {
+  const existingJob = await prisma.ocrBatchJob.findUnique({ where: { activeKey: activeJobKey } });
+  if (existingJob) {
+    throw new OcrBatchJobRequestError(
+      "Another batch OCR task is already running.",
+      409,
+      "ACTIVE_JOB_EXISTS",
+    );
+  }
+  const jobId = randomUUID();
+  acquireHeavyTaskOrThrow("ocr-batch", jobId);
+  try {
+    return await prisma.$transaction(async (tx) => {
     const activeJob = await tx.ocrBatchJob.findUnique({ where: { activeKey: activeJobKey } });
     if (activeJob) {
       throw new OcrBatchJobRequestError(
@@ -203,6 +217,7 @@ export async function startIndexOcrBatchJob(indexNodeId: string, confirmation?: 
 
     const job = await tx.ocrBatchJob.create({
       data: {
+        id: jobId,
         activeKey: activeJobKey,
         indexNodeId: node.id,
         indexPath: node.path,
@@ -231,8 +246,12 @@ export async function startIndexOcrBatchJob(indexNodeId: string, confirmation?: 
       });
     }
 
-    return job;
-  }, { maxWait: 5_000, timeout: 60_000 });
+      return job;
+    }, { maxWait: 5_000, timeout: 60_000 });
+  } catch (error) {
+    releaseHeavyTask("ocr-batch", jobId);
+    throw error;
+  }
 }
 
 export async function markOcrBatchItemRunning(imageId: string) {
@@ -256,7 +275,7 @@ export async function settleOcrBatchItem(
   status: Extract<OcrBatchJobItemStatus, "COMPLETED" | "FAILED">,
   error: string | null = null,
 ) {
-  return prisma.$transaction(async (tx) => {
+  const job = await prisma.$transaction(async (tx) => {
     const item = await tx.ocrBatchJobItem.findFirst({
       where: {
         sourceImageId: imageId,
@@ -273,6 +292,8 @@ export async function settleOcrBatchItem(
     });
     return incrementJobCounters(tx, item.jobId, status);
   });
+  if (job && job.status !== "RUNNING") releaseHeavyTask("ocr-batch", job.id);
+  return job;
 }
 
 async function reconcileMissingItems(jobId: string) {
@@ -301,43 +322,54 @@ export async function getOcrBatchJob(jobId: string) {
   const job = await prisma.ocrBatchJob.findUnique({ where: { id: jobId } });
   if (!job) return null;
   if (job.status !== "RUNNING") return job;
-  return (await reconcileMissingItems(job.id)) ??
-    prisma.ocrBatchJob.findUnique({ where: { id: job.id } });
+  const refreshed = (await reconcileMissingItems(job.id)) ??
+    await prisma.ocrBatchJob.findUnique({ where: { id: job.id } });
+  if (refreshed && refreshed.status !== "RUNNING") releaseHeavyTask("ocr-batch", refreshed.id);
+  return refreshed;
 }
 
 export async function getActiveOcrBatchJob() {
   const job = await prisma.ocrBatchJob.findUnique({ where: { activeKey: activeJobKey } });
   if (!job) return null;
-  return (await reconcileMissingItems(job.id)) ??
-    prisma.ocrBatchJob.findUnique({ where: { id: job.id } });
+  const refreshed = (await reconcileMissingItems(job.id)) ??
+    await prisma.ocrBatchJob.findUnique({ where: { id: job.id } });
+  if (refreshed && refreshed.status !== "RUNNING") releaseHeavyTask("ocr-batch", refreshed.id);
+  return refreshed;
 }
 
 export async function recoverActiveOcrBatchJob() {
   const job = await prisma.ocrBatchJob.findUnique({ where: { activeKey: activeJobKey } });
   if (!job) return null;
+  acquireHeavyTaskOrThrow("ocr-batch", job.id);
+  try {
+    const pendingItems = await prisma.ocrBatchJobItem.findMany({
+      where: {
+        jobId: job.id,
+        status: { in: ["PENDING", "RUNNING"] },
+        chartImageId: { not: null },
+      },
+      select: { id: true, chartImageId: true },
+    });
 
-  const pendingItems = await prisma.ocrBatchJobItem.findMany({
-    where: {
-      jobId: job.id,
-      status: { in: ["PENDING", "RUNNING"] },
-      chartImageId: { not: null },
-    },
-    select: { id: true, chartImageId: true },
-  });
+    await prisma.$transaction(async (tx) => {
+      for (const itemChunk of chunkArray(pendingItems)) {
+        await tx.ocrBatchJobItem.updateMany({
+          where: { id: { in: itemChunk.map((item) => item.id) } },
+          data: { status: "PENDING", error: null },
+        });
+        await tx.chartImage.updateMany({
+          where: { id: { in: itemChunk.flatMap((item) => item.chartImageId ?? []) } },
+          data: { ocrStatus: "PENDING", ocrError: null, ocrUpdatedAt: new Date() },
+        });
+      }
+    }, { maxWait: 5_000, timeout: 60_000 });
 
-  await prisma.$transaction(async (tx) => {
-    for (const itemChunk of chunkArray(pendingItems)) {
-      await tx.ocrBatchJobItem.updateMany({
-        where: { id: { in: itemChunk.map((item) => item.id) } },
-        data: { status: "PENDING", error: null },
-      });
-      await tx.chartImage.updateMany({
-        where: { id: { in: itemChunk.flatMap((item) => item.chartImageId ?? []) } },
-        data: { ocrStatus: "PENDING", ocrError: null, ocrUpdatedAt: new Date() },
-      });
-    }
-  }, { maxWait: 5_000, timeout: 60_000 });
-
-  await reconcileMissingItems(job.id);
-  return prisma.ocrBatchJob.findUnique({ where: { id: job.id } });
+    const reconciled = await reconcileMissingItems(job.id);
+    const refreshed = reconciled ?? await prisma.ocrBatchJob.findUnique({ where: { id: job.id } });
+    if (refreshed && refreshed.status !== "RUNNING") releaseHeavyTask("ocr-batch", job.id);
+    return refreshed;
+  } catch (error) {
+    releaseHeavyTask("ocr-batch", job.id);
+    throw error;
+  }
 }

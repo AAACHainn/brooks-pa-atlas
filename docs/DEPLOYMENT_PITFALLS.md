@@ -2,6 +2,26 @@
 
 本文记录本项目在本地部署、升级和启动时实际遇到的问题。新增部署问题时，请补充现象、原因和处理方式。
 
+## 字幕知识库部署说明（2026-09-30）
+
+字幕知识库使用独立 `knowledge.db`，Docker 内路径为 `/app/data/knowledge.db`，原字幕位于 `/app/data/library/knowledge/sources/`。`compose.yaml` 已把它们放入与 `dev.db`、图库相同的 `brooks-pa-atlas-data` 命名卷。升级时必须执行 `npm run db:migrate`，该命令会先迁移 `dev.db`，再独立迁移 `knowledge.db`；两个数据库分别提交，不使用 `ATTACH` 跨库事务。
+
+2 核 2GB 生产机必须继续只运行一个 Next.js 进程。Embedding 使用远程 OpenAI-compatible `/embeddings` 接口，不要在该主机上加载本地向量模型。知识导入全局单任务、批内逐文件、Embedding 每批最多 32 个片段；应用会用进程级租约阻止批量 OCR、PDF、缩略图补齐、知识导入和向量重建同时运行。SQLite 文件与字幕目录必须位于本地 SSD/Docker volume，禁止使用 NFS、SMB 或对象存储挂载。
+
+固定升级与验收命令：
+
+```bash
+npm ci
+npm run db:migrate
+npm run prisma:generate
+npm run test:ai
+npm run test:knowledge
+npm run lint
+npm run build
+```
+
+迁移日志应包含 `knowledge migration` 或 `Knowledge database is up to date`。Docker 构建会把 `sqlite-vec` 原生模块纳入 standalone tracing；容器启动后可打开管理模式“字幕知识库”，用“检索测试”验证 FTS、短关键词和向量结果。更换 Embedding 模型后必须点击“重建全部向量”；构建完成前旧 profile 仍提供检索，失败不会切换。完整备份格式为 v6，逻辑导出字幕记录、原文件与向量 BLOB，不直接复制运行中的 `knowledge.db`。
+
 ## 导航筛选性能优化部署说明（2026-08-05）
 
 这一节是部署 AI 在升级现有实例时的必读内容。目标环境为 `2 核 CPU / 2GB 内存`，导航器加载完成后要求分类置灰即时完成、图片筛选结果在 `2 秒` 内返回。

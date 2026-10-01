@@ -4,12 +4,13 @@ import test from "node:test";
 import {
   AiServiceError,
   createAiChatCompletion,
+  createAiEmbeddings,
   fetchAiModels,
   streamAiChatCompletion,
   streamAiChatCompletionEvents,
 } from "@/lib/ai-client";
 import { buildOcrRefinementMessages } from "@/lib/ai-ocr-refinement";
-import type { StoredAiEndpoint } from "@/lib/ai-config";
+import type { StoredAiEndpoint, StoredEmbeddingEndpoint } from "@/lib/ai-config";
 
 function endpoint(apiKey = "secret"): StoredAiEndpoint {
   return {
@@ -23,6 +24,14 @@ function endpoint(apiKey = "secret"): StoredAiEndpoint {
     apiKey,
     models: ["vision-model"],
     defaultModel: "vision-model",
+  };
+}
+
+function embeddingEndpoint(apiKey = "secret"): StoredEmbeddingEndpoint {
+  return {
+    id: "embedding-1", name: "Embedding", provider: "custom", baseUrl: "https://example.test/v1",
+    useCustomUrls: false, embeddingsUrl: "", modelsUrl: "", apiKey,
+    models: ["embedding-model"], embeddingModel: "embedding-model",
   };
 }
 
@@ -45,6 +54,21 @@ test("model discovery sends optional bearer auth and parses unique model ids", a
     },
   });
   assert.equal(anonymousHeaders!.has("Authorization"), false);
+});
+
+test("embedding requests use float encoding and preserve response index order", async () => {
+  let encodingFormat = "";
+  const vectors = await createAiEmbeddings(embeddingEndpoint(), "embedding-model", ["a", "b"], {
+    fetchImpl: async (_input, init) => {
+      encodingFormat = String((JSON.parse(String(init?.body)) as Record<string, unknown>).encoding_format);
+      return Response.json({ data: [
+        { index: 1, embedding: [3, 4] },
+        { index: 0, embedding: [1, 2] },
+      ] });
+    },
+  });
+  assert.deepEqual(vectors, [[1, 2], [3, 4]]);
+  assert.equal(encodingFormat, "float");
 });
 
 test("chat completion sends multimodal messages and extracts fenced text", async () => {

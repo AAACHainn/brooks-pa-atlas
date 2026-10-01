@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { ChatMessage } from "@/lib/ai-client";
+import type { KnowledgeContextSnapshot } from "@/lib/knowledge-types";
 
 export const readingMessageLimit = 40;
 export const readingTextBudget = 60_000;
@@ -73,10 +74,19 @@ export function serializeReadingMessage(message: {
   reasoningContent: string | null;
   reasoningDurationMs: number | null;
   imageContextJson: string | null;
+  knowledgeContextJson?: string | null;
   createdAt: Date | string;
   chartImage: { id: string; title: string | null; originalName: string } | null;
 }) {
   const snapshot = parseReadingImageSnapshot(message.imageContextJson);
+  let knowledge: KnowledgeContextSnapshot | null = null;
+  try {
+    knowledge = message.knowledgeContextJson
+      ? JSON.parse(message.knowledgeContextJson) as KnowledgeContextSnapshot
+      : null;
+  } catch {
+    knowledge = null;
+  }
   return {
     id: message.id,
     role: message.role,
@@ -94,6 +104,7 @@ export function serializeReadingMessage(message: {
           available: Boolean(message.chartImage),
         }
       : null,
+    knowledge,
   };
 }
 
@@ -142,7 +153,7 @@ export function selectRecentReadingImageIds(messages: ReadingHistoryMessage[]) {
   return new Set(ids);
 }
 
-function referenceText(message: ReadingHistoryMessage) {
+function referenceText(message: ReadingHistoryMessage, knowledgeContextText = "") {
   const snapshot = parseReadingImageSnapshot(message.imageContextJson);
   if (!snapshot) return message.content;
   return [
@@ -150,6 +161,7 @@ function referenceText(message: ReadingHistoryMessage) {
     "<reference-data>",
     JSON.stringify(snapshot, null, 2),
     "</reference-data>",
+    knowledgeContextText,
     "用户问题：",
     message.content,
   ].join("\n");
@@ -159,6 +171,7 @@ export function buildReadingCompanionMessages(options: {
   prompt: string;
   history: ReadingHistoryMessage[];
   imageDataUrls: Map<string, string>;
+  knowledgeContextText?: string;
 }): ChatMessage[] {
   const messages: ChatMessage[] = [
     {
@@ -179,7 +192,10 @@ export function buildReadingCompanionMessages(options: {
       messages.push({ role: "assistant", content: message.content });
       continue;
     }
-    const text = referenceText(message);
+    const text = referenceText(
+      message,
+      index === options.history.length - 1 ? options.knowledgeContextText : "",
+    );
     const imageDataUrl = message.chartImageId
       && lastImageOccurrence.get(message.chartImageId) === index
       ? options.imageDataUrls.get(message.chartImageId)

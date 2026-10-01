@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { HeavyTaskBusyError } from "@/lib/background-task-coordinator";
 import {
   getLatestThumbnailJob,
   serializeThumbnailJob,
@@ -23,6 +24,6 @@ export async function POST() {
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to start thumbnail job.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: error instanceof HeavyTaskBusyError ? 409 : 500 });
   }
 }

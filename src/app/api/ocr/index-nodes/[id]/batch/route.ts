@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { HeavyTaskBusyError } from "@/lib/background-task-coordinator";
 import {
   getActiveOcrBatchJob,
   getIndexOcrBatchSummary,
@@ -22,6 +23,9 @@ function isUniqueConstraintError(error: unknown) {
 }
 
 function errorResponse(error: unknown) {
+  if (error instanceof HeavyTaskBusyError) {
+    return NextResponse.json({ error: error.message, code: "HEAVY_TASK_BUSY" }, { status: 409 });
+  }
   if (error instanceof OcrBatchJobRequestError) {
     return NextResponse.json(
       { error: error.message, code: error.code },

@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/db";
 import {
   AI_CONFIG_SETTING_KEY,
+  LEGACY_AI_CONFIG_SETTING_KEY,
+  LEGACY_AI_CONFIG_V2_SETTING_KEY,
   type AiConfigInput,
   mergeAiConfigSecrets,
   parseStoredAiConfig,
@@ -8,11 +10,14 @@ import {
 } from "@/lib/ai-config";
 
 export async function readStoredAiConfig() {
-  const setting = await prisma.appSetting.findUnique({
-    where: { key: AI_CONFIG_SETTING_KEY },
-    select: { value: true },
+  const settings = await prisma.appSetting.findMany({
+    where: { key: { in: [AI_CONFIG_SETTING_KEY, LEGACY_AI_CONFIG_V2_SETTING_KEY, LEGACY_AI_CONFIG_SETTING_KEY] } },
+    select: { key: true, value: true },
   });
-  return parseStoredAiConfig(setting?.value);
+  const current = settings.find((setting) => setting.key === AI_CONFIG_SETTING_KEY);
+  const legacyV2 = settings.find((setting) => setting.key === LEGACY_AI_CONFIG_V2_SETTING_KEY);
+  const legacy = settings.find((setting) => setting.key === LEGACY_AI_CONFIG_SETTING_KEY);
+  return parseStoredAiConfig(current?.value ?? legacyV2?.value ?? legacy?.value);
 }
 
 export async function readAiConfigDto() {
@@ -34,7 +39,7 @@ export function resolveEndpointApiKey(
   endpointId: string,
   incomingApiKey: string | undefined,
   clearApiKey: boolean | undefined,
-  storedEndpoints: Awaited<ReturnType<typeof readStoredAiConfig>>["endpoints"],
+  storedEndpoints: Array<{ id: string; apiKey: string }>,
 ) {
   if (clearApiKey) return "";
   if (incomingApiKey?.trim()) return incomingApiKey.trim();

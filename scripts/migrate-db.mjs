@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 import Database from "better-sqlite3";
+import { migrateKnowledgeDatabase } from "./knowledge-migrations.mjs";
 
 const dbUrl = process.env.DATABASE_URL ?? "file:./dev.db";
 const dbPath = dbUrl.replace(/^file:/, "");
@@ -75,3 +76,4 @@ if (appliedCount === 0) {
 }
 
 db.close();
+migrateKnowledgeDatabase();

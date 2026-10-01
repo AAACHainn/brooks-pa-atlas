@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { prisma } from "@/lib/db";
+import { acquireHeavyTaskOrThrow, releaseHeavyTask } from "@/lib/background-task-coordinator";
 import {
   ensureStoredImageThumbnail,
   thumbnailExists,
@@ -261,6 +262,7 @@ async function runThumbnailJob(job: ThumbnailJob) {
     console.error(`[thumbnail-backfill:${job.id}] job failed`, error);
   } finally {
     if (store.activeJobId === job.id) store.activeJobId = null;
+    releaseHeavyTask("thumbnails", job.id);
   }
 }
 
@@ -272,8 +274,10 @@ async function startThumbnailJobLocked() {
   if (latest?.status === "running") return { job: latest, reused: true };
 
   const timestamp = nowIso();
+  const id = randomUUID();
+  acquireHeavyTaskOrThrow("thumbnails", id);
   const job: ThumbnailJob = {
-    id: randomUUID(),
+    id,
     kind: "thumbnail-backfill",
     status: "running",
     phase: "queued",
@@ -291,7 +295,14 @@ async function startThumbnailJobLocked() {
   };
   store.jobs.set(job.id, job);
   store.activeJobId = job.id;
-  await persistJob(job);
+  try {
+    await persistJob(job);
+  } catch (error) {
+    store.jobs.delete(job.id);
+    store.activeJobId = null;
+    releaseHeavyTask("thumbnails", job.id);
+    throw error;
+  }
   void runThumbnailJob(job);
   return { job, reused: false };
 }

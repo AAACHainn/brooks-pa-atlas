@@ -1,6 +1,8 @@
 import {
+  type StoredEmbeddingEndpoint,
   type StoredAiEndpoint,
   resolveAiEndpointUrls,
+  resolveEmbeddingEndpointUrls,
 } from "@/lib/ai-config";
 
 export type AiFetch = typeof fetch;
@@ -122,10 +124,12 @@ async function isUnsupportedImageResponse(response: Response) {
 }
 
 export async function fetchAiModels(
-  endpoint: StoredAiEndpoint,
+  endpoint: StoredAiEndpoint | StoredEmbeddingEndpoint,
   options: { fetchImpl?: AiFetch; timeoutMs?: number } = {},
 ) {
-  const { modelsUrl } = resolveAiEndpointUrls(endpoint);
+  const { modelsUrl } = "chatCompletionsUrl" in endpoint
+    ? resolveAiEndpointUrls(endpoint)
+    : resolveEmbeddingEndpointUrls(endpoint);
   if (!modelsUrl) {
     throw new AiServiceError(
       "configuration",
@@ -155,6 +159,69 @@ export async function fetchAiModels(
         .filter(Boolean),
     ),
   ].sort((left, right) => left.localeCompare(right));
+}
+
+export async function createAiEmbeddings(
+  endpoint: StoredEmbeddingEndpoint,
+  model: string,
+  input: string[],
+  options: { fetchImpl?: AiFetch; timeoutMs?: number } = {},
+) {
+  if (!model.trim()) {
+    throw new AiServiceError("configuration", "An embedding model is required.");
+  }
+  if (input.length === 0) return [];
+  const { embeddingsUrl } = resolveEmbeddingEndpointUrls(endpoint);
+  if (!embeddingsUrl) {
+    throw new AiServiceError("configuration", "An Embeddings URL is required.");
+  }
+  const payload = await fetchJson(
+    embeddingsUrl,
+    {
+      method: "POST",
+      headers: requestHeaders(endpoint.apiKey),
+      body: JSON.stringify({ model: model.trim(), input, encoding_format: "float" }),
+    },
+    options,
+  );
+  const data =
+    typeof payload === "object" && payload !== null && "data" in payload
+      ? (payload as { data?: unknown }).data
+      : null;
+  if (!Array.isArray(data)) {
+    throw new AiServiceError("invalid-response", "AI service returned invalid embeddings.");
+  }
+  const vectors = data
+    .map((item, fallbackIndex) => {
+      if (typeof item !== "object" || item === null) return null;
+      const record = item as Record<string, unknown>;
+      if (!Array.isArray(record.embedding)) return null;
+      const embedding = record.embedding.map(Number);
+      if (embedding.length === 0 || embedding.some((value) => !Number.isFinite(value))) return null;
+      return {
+        index: Number.isInteger(record.index) ? Number(record.index) : fallbackIndex,
+        embedding,
+      };
+    })
+    .filter((item): item is { index: number; embedding: number[] } => item !== null)
+    .sort((left, right) => left.index - right.index);
+  if (vectors.length !== input.length) {
+    throw new AiServiceError("invalid-response", "AI service returned the wrong number of embeddings.");
+  }
+  const dimension = vectors[0]?.embedding.length ?? 0;
+  if (!dimension || vectors.some((item) => item.embedding.length !== dimension)) {
+    throw new AiServiceError("invalid-response", "AI service returned inconsistent embedding dimensions.");
+  }
+  return vectors.map((item) => item.embedding);
+}
+
+export async function testAiEmbeddingConnection(
+  endpoint: StoredEmbeddingEndpoint,
+  model: string,
+  options: { fetchImpl?: AiFetch; timeoutMs?: number } = {},
+) {
+  const [embedding] = await createAiEmbeddings(endpoint, model, ["embedding connection test"], options);
+  return { dimension: embedding.length };
 }
 
 function firstChoiceContainer(payload: unknown, field: "message" | "delta") {

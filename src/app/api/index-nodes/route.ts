@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { createIndexNode, getIndexTree } from "@/lib/index-tree";
 import { prisma } from "@/lib/db";
+import { orphanKnowledgeDocuments, updateKnowledgeIndexSnapshots } from "@/lib/knowledge-documents";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -120,6 +121,14 @@ export async function PATCH(request: Request) {
     });
   }
 
+  updateKnowledgeIndexSnapshots([
+    { id: node.id, path: node.path },
+    ...descendants.map((descendant) => ({
+      id: descendant.id,
+      path: descendant.path.replace(current.path, path),
+    })),
+  ]);
+
   return NextResponse.json({ node });
 }
 
@@ -164,6 +173,7 @@ export async function DELETE(request: Request) {
     await prisma.indexNode.delete({ where: { id: descendant.id } });
   }
   await prisma.indexNode.delete({ where: { id: node.id } });
+  orphanKnowledgeDocuments(nodeIds);
 
   return NextResponse.json({ ok: true, removedCount: nodeIds.length });
 }

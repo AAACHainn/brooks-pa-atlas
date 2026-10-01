@@ -5,6 +5,8 @@ node_modules.broken-*
 .env*
 dev.db
 dev.db-*
+knowledge.db
+knowledge.db-*
 data/library
 data/tessdata
 coverage

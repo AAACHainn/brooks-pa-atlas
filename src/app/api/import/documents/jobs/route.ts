@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { HeavyTaskBusyError } from "@/lib/background-task-coordinator";
 import { pdfImporter } from "@/lib/pdf-importer";
 import { fileToBuffer } from "@/lib/storage";
 import {
@@ -37,25 +38,30 @@ function parseBooleanField(value: FormDataEntryValue | null) {
 }
 
 export async function POST(request: Request) {
-  const formData = await request.formData();
-  const file = formData.get("file");
+  try {
+    const formData = await request.formData();
+    const file = formData.get("file");
 
-  if (!(file instanceof File)) {
-    return NextResponse.json({ error: "Document file is required." }, { status: 400 });
+    if (!(file instanceof File)) {
+      return NextResponse.json({ error: "Document file is required." }, { status: 400 });
+    }
+
+    const importer = documentImporters.find((candidate) => candidate.supports(file));
+    if (!importer) {
+      return NextResponse.json({ error: "Unsupported document type." }, { status: 400 });
+    }
+
+    const job = startDocumentImportJob({
+      importer,
+      file,
+      buffer: await fileToBuffer(file),
+      baseIndexPath: parseIndexPath(formData.get("baseIndexPath")),
+      ocrEnabled: parseBooleanField(formData.get("ocrEnabled")),
+    });
+
+    return NextResponse.json({ job: serializeDocumentImportJob(job) });
+  } catch (error) {
+    const status = error instanceof HeavyTaskBusyError ? 409 : 500;
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to start document import." }, { status });
   }
-
-  const importer = documentImporters.find((candidate) => candidate.supports(file));
-  if (!importer) {
-    return NextResponse.json({ error: "Unsupported document type." }, { status: 400 });
-  }
-
-  const job = startDocumentImportJob({
-    importer,
-    file,
-    buffer: await fileToBuffer(file),
-    baseIndexPath: parseIndexPath(formData.get("baseIndexPath")),
-    ocrEnabled: parseBooleanField(formData.get("ocrEnabled")),
-  });
-
-  return NextResponse.json({ job: serializeDocumentImportJob(job) });
 }

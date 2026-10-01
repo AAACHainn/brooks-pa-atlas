@@ -19,14 +19,25 @@ import {
 } from "@/lib/exam";
 import { imageAnnotationPayloadSchema } from "@/lib/image-annotations";
 import { normalizeNavigatorName } from "@/lib/index-navigator";
+import {
+  addKnowledgeToZip,
+  backupKnowledgeSchema,
+  collectKnowledgeBackup,
+  finalizeKnowledgeRestore,
+  knowledgeZipPaths,
+  prepareKnowledgeRestore,
+  restoreKnowledgeEntry,
+} from "@/lib/knowledge-backup";
 import { absoluteImagePath, getLibraryRoot, sanitizeFileName } from "@/lib/storage";
 import { cleanupUnusedTags, replaceImageTags } from "@/lib/tags";
 
 const backupFormat = "brooks-pa-atlas.backup";
-const backupVersion = 5;
+const backupVersion = 6;
 const imageZipPrefix = "images/";
 const backupQueryPageSize = 400;
-const maxManifestBytes = 64 * 1024 * 1024;
+// Subtitle text is stored logically in the manifest so a 50k-chunk library can
+// exceed the older image-only ceiling without being mistaken for a zip bomb.
+const maxManifestBytes = 256 * 1024 * 1024;
 
 async function collectQueryPages<T>(
   loadPage: (pagination: { skip: number; take: number }) => Promise<T[]>,
@@ -158,13 +169,14 @@ const backupNavigatorSchema = z.object({
 
 const backupManifestSchema = z.object({
   format: z.literal(backupFormat),
-  version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(backupVersion)]),
+  version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(backupVersion)]),
   exportedAt: z.string(),
   indexes: z.array(backupIndexSchema),
   images: z.array(backupImageSchema),
   exams: z.array(backupExamPaperSchema).optional().default([]),
   examAttempts: z.array(backupExamAttemptSchema).optional().default([]),
   navigator: backupNavigatorSchema.optional().default({ categories: [], assignments: [] }),
+  knowledge: backupKnowledgeSchema.optional().default({ profiles: [], documents: [] }),
 });
 
 type BackupManifest = z.infer<typeof backupManifestSchema>;
@@ -187,6 +199,7 @@ type RestoreStats = {
   navigatorCategoriesRestored: number;
   navigatorOptionsRestored: number;
   navigatorAssignmentsRestored: number;
+  knowledgeDocumentsRestored: number;
 };
 
 type RestoreLogMetadata = Record<string, boolean | number | string | null | undefined>;
@@ -425,6 +438,7 @@ async function readManifestAndEntryNames(source: ZipSource) {
 
   const manifest = backupManifestSchema.parse(JSON.parse(manifestState.buffer.toString("utf8")));
   const expectedImagePaths = new Set<string>();
+  const expectedKnowledgePaths = knowledgeZipPaths(manifest.knowledge);
 
   for (const image of manifest.images) {
     assertManifestImagePath(image.imagePath, image.hash);
@@ -440,7 +454,7 @@ async function readManifestAndEntryNames(source: ZipSource) {
       continue;
     }
 
-    if (!expectedImagePaths.has(entryName)) {
+    if (!expectedImagePaths.has(entryName) && !expectedKnowledgePaths.has(entryName)) {
       throw new Error(`Unexpected zip entry: ${entryName}`);
     }
   }
@@ -448,6 +462,13 @@ async function readManifestAndEntryNames(source: ZipSource) {
   for (const expectedImagePath of expectedImagePaths) {
     if (!entryNames.has(expectedImagePath)) {
       throw new Error(`Backup zip is missing image entry: ${expectedImagePath}`);
+    }
+  }
+
+  for (const expectedKnowledgePath of expectedKnowledgePaths) {
+    assertSafeZipEntryName(expectedKnowledgePath);
+    if (!entryNames.has(expectedKnowledgePath)) {
+      throw new Error(`Backup zip is missing knowledge entry: ${expectedKnowledgePath}`);
     }
   }
 
@@ -684,6 +705,10 @@ export async function createBackupZip(options: BackupOptions = {}) {
       rootIndex ? rebaseSubtreePath(index.path, rootIndex.path) : index.path,
     ]),
   );
+  const knowledgeBackup = await collectKnowledgeBackup({
+    allowedOriginalPaths: rootIndex ? new Set(indexes.map((index) => index.path)) : null,
+    exportPathByOriginalPath,
+  });
   const preparedImages: PreparedImage[] = [];
   let processedImages = 0;
 
@@ -827,6 +852,7 @@ export async function createBackupZip(options: BackupOptions = {}) {
         optionId: assignment.optionId,
       })),
     },
+    knowledge: knowledgeBackup.knowledge,
   };
 
   // yazl 3.3 exposes this API at runtime, but its bundled legacy declaration omits it.
@@ -866,6 +892,8 @@ export async function createBackupZip(options: BackupOptions = {}) {
     });
   }
 
+  addKnowledgeToZip(zipFile, knowledgeBackup);
+
   zipFile.end();
 
   return {
@@ -902,6 +930,7 @@ async function restoreBackupSource(
     navigatorCategoriesRestored: 0,
     navigatorOptionsRestored: 0,
     navigatorAssignmentsRestored: 0,
+    knowledgeDocumentsRestored: 0,
   };
   const indexIdByPath = new Map<string, string>();
   const sortedIndexes = [...manifest.indexes].sort((left, right) => {
@@ -959,11 +988,23 @@ async function restoreBackupSource(
     indexesUpdated: stats.indexesUpdated,
   });
 
+  const knowledgeRestore = await prepareKnowledgeRestore(manifest.knowledge, indexIdByPath);
+  const expectedKnowledgePaths = knowledgeZipPaths(manifest.knowledge);
+  stats.knowledgeDocumentsRestored = knowledgeRestore.restoredDocuments;
+
   const imagesByPath = new Map(manifest.images.map((image) => [image.imagePath, image]));
   let processedImages = 0;
 
   log("image restore started", { images: manifest.images.length });
   await readZipEntries(source, async (zipFile, entry) => {
+    if (expectedKnowledgePaths.has(entry.fileName)) {
+      await restoreKnowledgeEntry(
+        knowledgeRestore,
+        entry.fileName,
+        await readStreamToBuffer(await openReadStream(zipFile, entry), 16 * 1024 * 1024),
+      );
+      return;
+    }
     const image = imagesByPath.get(entry.fileName);
     if (!image) {
       return;
@@ -1090,6 +1131,8 @@ async function restoreBackupSource(
     imagesUpdated: stats.imagesUpdated,
     filesRestored: stats.filesRestored,
   });
+
+  finalizeKnowledgeRestore(knowledgeRestore);
 
   if (manifest.version >= 5) {
     log("navigator restore started", {

@@ -19,6 +19,8 @@ import {
 } from "@/lib/ai-config";
 import { readStoredAiConfig } from "@/lib/ai-settings";
 import { prisma } from "@/lib/db";
+import { retrieveKnowledgeContext, serializeKnowledgeForPrompt } from "@/lib/knowledge-search";
+import type { KnowledgeContextSnapshot } from "@/lib/knowledge-types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -116,6 +118,29 @@ export async function POST(
     })
   ).reverse();
   const history = selectRecentReadingMessages(historyRows);
+  let knowledgeContext: KnowledgeContextSnapshot = {
+    sources: [],
+    semanticSearchUsed: false,
+    hasCurrentBinding: false,
+    warning: null,
+  };
+  try {
+    const snapshot = imageContext.snapshot;
+    knowledgeContext = await retrieveKnowledgeContext({
+      query: parsed.data.content,
+      indexNodeId: imageContext.indexNodeId,
+      contextText: [
+        snapshot.index?.path ?? "",
+        snapshot.title ?? "",
+        snapshot.tags.join(" "),
+        snapshot.ocr.text?.slice(0, 4_000) ?? "",
+        snapshot.notes?.slice(0, 2_000) ?? "",
+        snapshot.index?.navigatorAttributes.map((item) => `${item.category}:${item.values.join(",")}`).join(" ") ?? "",
+      ].filter(Boolean).join("\n"),
+    });
+  } catch {
+    // Knowledge retrieval is optional; image reading must continue when the separate store is unavailable.
+  }
   let imageDataUrls: Map<string, string>;
   try {
     imageDataUrls = await prepareReadingImageDataUrls(
@@ -132,6 +157,7 @@ export async function POST(
     prompt: skill.prompt,
     history,
     imageDataUrls,
+    knowledgeContextText: serializeKnowledgeForPrompt(knowledgeContext),
   });
 
   const body = new ReadableStream<Uint8Array>({
@@ -144,6 +170,9 @@ export async function POST(
             id,
             title: conversation.title ?? readingConversationTitle(parsed.data.content),
           },
+          knowledgeSources: knowledgeContext.sources,
+          knowledgeWarning: knowledgeContext.warning,
+          semanticSearchUsed: knowledgeContext.semanticSearchUsed,
         }),
       );
       let assistantText = "";
@@ -186,6 +215,7 @@ export async function POST(
               content: assistantText,
               reasoningContent: reasoningContent.trim() ? reasoningContent : null,
               reasoningDurationMs,
+              knowledgeContextJson: JSON.stringify(knowledgeContext),
             },
             include: {
               chartImage: { select: { id: true, title: true, originalName: true } },

@@ -29,7 +29,11 @@ import type {
 } from "@/lib/knowledge-types";
 import { parseSubtitle } from "@/lib/subtitle-parser";
 
-const runningJobs = new Map<string, Promise<void>>();
+const globalForKnowledgeImportJobs = globalThis as typeof globalThis & {
+  brooksKnowledgeImportJobs?: Map<string, Promise<void>>;
+};
+const runningJobs = globalForKnowledgeImportJobs.brooksKnowledgeImportJobs ?? new Map<string, Promise<void>>();
+globalForKnowledgeImportJobs.brooksKnowledgeImportJobs = runningJobs;
 const supportedExtensions = new Set([".srt", ".vtt", ".ass", ".txt"]);
 
 type ImportSource = {
@@ -444,8 +448,12 @@ async function processItem(
 ) {
   const db = knowledgeDb();
   let item = db.prepare("SELECT * FROM KnowledgeImportItem WHERE id = ?").get(itemId) as ItemRow;
-  db.prepare("UPDATE KnowledgeImportItem SET status = 'RUNNING', error = NULL, updatedAt = ? WHERE id = ?")
+  db.prepare("UPDATE KnowledgeImportItem SET status = 'RUNNING', error = NULL, errorPhase = NULL, updatedAt = ? WHERE id = ?")
     .run(nowSql(), itemId);
+  if (item.versionId) {
+    db.prepare("UPDATE KnowledgeDocumentVersion SET status = 'PROCESSING', error = NULL, updatedAt = ? WHERE id = ?")
+      .run(nowSql(), item.versionId);
+  }
   setItemStage(itemId, "READING_SOURCE", 0, 1, "steps");
   const buffer = await readFile(resolveSourcePath(item.sourcePath));
   const rawText = buffer.toString("utf8").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
@@ -478,14 +486,16 @@ async function processItem(
     setItemStage(item.id, "AWAITING_REVIEW", 1, 1, "steps");
     db.prepare("UPDATE KnowledgeDocumentVersion SET status = 'AWAITING_REVIEW', updatedAt = ? WHERE id = ?")
       .run(nowSql(), item.versionId);
-    db.prepare("UPDATE KnowledgeImportItem SET status = 'AWAITING_REVIEW', phase = 'AWAITING_REVIEW', updatedAt = ? WHERE id = ?")
+    db.prepare(`UPDATE KnowledgeImportItem SET status = 'AWAITING_REVIEW', phase = 'AWAITING_REVIEW',
+      error = NULL, errorPhase = NULL, updatedAt = ? WHERE id = ?`)
       .run(nowSql(), item.id);
   } else {
     setItemStage(item.id, "ACTIVATING", 0, 1, "steps");
     activateVersion(item.versionId!);
     const completedAt = nowSql();
     db.prepare(`UPDATE KnowledgeImportItem SET status = 'COMPLETED', phase = 'COMPLETED',
-      progressCompleted = 1, progressTotal = 1, progressUnit = 'steps', lastProgressAt = ?, updatedAt = ? WHERE id = ?`)
+      error = NULL, errorPhase = NULL, progressCompleted = 1, progressTotal = 1,
+      progressUnit = 'steps', lastProgressAt = ?, updatedAt = ? WHERE id = ?`)
       .run(completedAt, completedAt, item.id);
   }
 }
@@ -624,7 +634,8 @@ export function decideKnowledgeImportItem(itemId: string, decision: "approve" | 
     activateVersion(item.versionId);
     const completedAt = nowSql();
     db.prepare(`UPDATE KnowledgeImportItem SET status = 'COMPLETED', phase = 'COMPLETED',
-      progressCompleted = 1, progressTotal = 1, progressUnit = 'steps', lastProgressAt = ?, updatedAt = ? WHERE id = ?`)
+      error = NULL, errorPhase = NULL, progressCompleted = 1, progressTotal = 1,
+      progressUnit = 'steps', lastProgressAt = ?, updatedAt = ? WHERE id = ?`)
       .run(completedAt, completedAt, item.id);
   } else if (decision === "reject") {
     if (item.status !== "AWAITING_REVIEW" || !item.versionId) throw new Error("This item is not awaiting review.");

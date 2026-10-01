@@ -45,7 +45,8 @@ const labels = {
     subtitlePrivacy: "只有选择“AI 深度整理”时才调用大模型；快速导入只调用 Embedding。PPT 图片不会发送给 Embedding 服务。",
     prompt: "提示词", modelOverride: "模型覆盖", inheritModel: "继承启用的大模型端点",
     retryModel: "失败重试模型（可选）", retryModelHint: "建议选择更便宜的非推理模型；留空则继续使用首次模型。",
-    disableReasoning: "关闭 thinking / reasoning", maxOutputTokens: "单窗口最大输出 Token",
+    disableReasoning: "字幕导入固定关闭 thinking / reasoning", maxOutputTokens: "单窗口输出 Token 配置上限",
+    maxOutputTokensHint: "实际请求还会取“输入 Token × 2”和 3000 的更小值；触顶或超限会直接失败。",
     privacy: "精校时会把当前图片和 OCR 文本发送到启用的大模型端点。",
     readingPrivacy: "伴读时会把近期会话、参考图片及其学习资料发送到启用的大模型端点。",
     cancel: "取消", save: "保存设置", saving: "保存中", loadFailed: "无法加载 AI 设置。", saveFailed: "无法保存 AI 设置。",
@@ -75,7 +76,8 @@ const labels = {
     subtitlePrivacy: "The language model is called only in AI deep mode. Quick import calls only the Embedding endpoint.",
     prompt: "Prompt", modelOverride: "Model override", inheritModel: "Inherit active language-model endpoint",
     retryModel: "Retry model (optional)", retryModelHint: "Prefer a cheaper non-reasoning model. Empty uses the primary model again.",
-    disableReasoning: "Disable thinking / reasoning", maxOutputTokens: "Maximum output tokens per window",
+    disableReasoning: "Thinking / reasoning is always disabled for subtitle imports", maxOutputTokens: "Configured output-token limit per window",
+    maxOutputTokensHint: "The request also uses the lower of input tokens × 2 and 3000. Truncation or overrun fails immediately.",
     privacy: "Refinement sends the image and OCR text to the active language-model endpoint.",
     readingPrivacy: "Reading companion sends recent conversation, reference images, and study context to the active language-model endpoint.",
     cancel: "Cancel", save: "Save settings", saving: "Saving", loadFailed: "Could not load AI settings.",
@@ -174,7 +176,7 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
       const result = await response.json().catch(() => null) as { config?: AiConfigDto; error?: string } | null;
       if (!response.ok || !result?.config) throw new Error(result?.error ?? t.loadFailed); setConfig(toDraft(result.config));
     }).catch((error) => { setConfig(toDraft({ version: AI_CONFIG_VERSION, endpoints: [], embeddingEndpoints: [], activeEndpointId: null, activeEmbeddingEndpointId: null,
-      skills: { ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" }, readingCompanion: { prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" }, subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "", retryModelOverride: "", disableReasoning: true, maxOutputTokens: 4096 } },
+      skills: { ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" }, readingCompanion: { prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" }, subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "", retryModelOverride: "", disableReasoning: true, maxOutputTokens: 3000 } },
       skillReady: { ocrRefinement: false, readingCompanion: false, subtitleKnowledge: false }, embeddingReady: false, ready: false }));
       void showAlert({ title: t.operationFailed, message: error instanceof Error ? error.message : t.loadFailed, tone: "danger" });
     }).finally(() => setLoading(false)); return () => window.clearTimeout(timer);
@@ -214,8 +216,8 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
         <label className="mt-5 block text-xs font-medium text-zinc-600">{t.modelOverride}<select value={skill.modelOverride} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, [definition.key]: { ...skill, modelOverride: e.target.value } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"><option value="">{t.inheritModel}</option>{skill.modelOverride && !modelOptions.includes(skill.modelOverride) ? <option>{skill.modelOverride}</option> : null}{modelOptions.map((model) => <option key={model}>{model}</option>)}</select></label>
         {subtitleSkill ? <div className="mt-4 grid gap-4 rounded-lg border border-violet-200 bg-violet-50/40 p-4 sm:grid-cols-2">
           <label className="text-xs font-medium text-zinc-600">{t.retryModel}<select value={subtitleSkill.retryModelOverride} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, retryModelOverride: e.target.value } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"><option value="">{t.inheritModel}</option>{subtitleSkill.retryModelOverride && !modelOptions.includes(subtitleSkill.retryModelOverride) ? <option>{subtitleSkill.retryModelOverride}</option> : null}{modelOptions.map((model) => <option key={model}>{model}</option>)}</select><span className="mt-1 block text-[11px] font-normal text-zinc-500">{t.retryModelHint}</span></label>
-          <label className="text-xs font-medium text-zinc-600">{t.maxOutputTokens}<input type="number" min={512} max={8192} step={256} value={subtitleSkill.maxOutputTokens} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, maxOutputTokens: Number(e.target.value) } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /></label>
-          <label className="flex items-center gap-2 text-xs font-medium text-zinc-700 sm:col-span-2"><input type="checkbox" checked={subtitleSkill.disableReasoning} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, disableReasoning: e.target.checked } } } : current)} className="h-4 w-4" />{t.disableReasoning}</label>
+          <label className="text-xs font-medium text-zinc-600">{t.maxOutputTokens}<input type="number" min={512} max={3000} step={128} value={subtitleSkill.maxOutputTokens} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, maxOutputTokens: Number(e.target.value) } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /><span className="mt-1 block text-[11px] font-normal leading-4 text-zinc-500">{t.maxOutputTokensHint}</span></label>
+          <p className="flex items-center gap-2 text-xs font-medium text-emerald-800 sm:col-span-2"><Check className="h-4 w-4" />{t.disableReasoning}</p>
         </div> : null}
         <label className="mt-4 block text-xs font-medium text-zinc-600">{t.prompt}<textarea value={skill.prompt} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, [definition.key]: { ...skill, prompt: e.target.value } } } : current)} className="mt-1 min-h-52 w-full resize-y rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm leading-6 outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /></label>
         <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{definition.privacy}</p>

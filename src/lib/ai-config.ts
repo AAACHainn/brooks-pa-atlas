@@ -57,7 +57,7 @@ export type AiSkillConfig = z.infer<typeof aiSkillSchema>;
 export const subtitleKnowledgeSkillSchema = aiSkillSchema.extend({
   retryModelOverride: z.string().trim().max(200).default(""),
   disableReasoning: z.boolean().default(true),
-  maxOutputTokens: z.number().int().min(512).max(8_192).default(4_096),
+  maxOutputTokens: z.number().int().min(512).max(8_192).default(3_000),
 });
 export type SubtitleKnowledgeSkillConfig = z.infer<typeof subtitleKnowledgeSkillSchema>;
 const defaultOcrSkill = () => ({ prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" });
@@ -67,7 +67,7 @@ const defaultSubtitleSkill = (): SubtitleKnowledgeSkillConfig => ({
   modelOverride: "",
   retryModelOverride: "",
   disableReasoning: true,
-  maxOutputTokens: 4_096,
+  maxOutputTokens: 3_000,
 });
 const aiSkillsSchema = z.object({
   [OCR_REFINEMENT_SKILL_KEY]: aiSkillSchema.default(defaultOcrSkill),
@@ -159,9 +159,14 @@ export function normalizeStoredAiConfig(value: unknown): StoredAiConfig {
   if (!parsed.success) return defaultStoredAiConfig();
   const endpoints = uniqueById(parsed.data.endpoints).map((endpoint) => ({ ...endpoint, models: normalizeModelList(endpoint.models, endpoint.defaultModel) }));
   const embeddingEndpoints = uniqueById(parsed.data.embeddingEndpoints).map((endpoint) => ({ ...endpoint, models: normalizeModelList(endpoint.models, endpoint.embeddingModel) }));
-  const subtitleKnowledge = parsed.data.skills.subtitleKnowledge.prompt === LEGACY_DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT
-    ? { ...parsed.data.skills.subtitleKnowledge, prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT }
-    : parsed.data.skills.subtitleKnowledge;
+  const normalizedSubtitleKnowledge = {
+    ...parsed.data.skills.subtitleKnowledge,
+    disableReasoning: true,
+    maxOutputTokens: Math.min(parsed.data.skills.subtitleKnowledge.maxOutputTokens, 3_000),
+  };
+  const subtitleKnowledge = normalizedSubtitleKnowledge.prompt === LEGACY_DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT
+    ? { ...normalizedSubtitleKnowledge, prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT }
+    : normalizedSubtitleKnowledge;
   return { ...parsed.data, endpoints, embeddingEndpoints, skills: { ...parsed.data.skills, subtitleKnowledge },
     activeEndpointId: endpoints.some((endpoint) => endpoint.id === parsed.data.activeEndpointId) ? parsed.data.activeEndpointId : null,
     activeEmbeddingEndpointId: embeddingEndpoints.some((endpoint) => endpoint.id === parsed.data.activeEmbeddingEndpointId) ? parsed.data.activeEmbeddingEndpointId : null };
@@ -184,7 +189,19 @@ export function mergeAiConfigSecrets(input: AiConfigInput, current: StoredAiConf
   const embeddingEndpoints = mergeEndpointSecrets(input.embeddingEndpoints, current.embeddingEndpoints, (endpoint) => storedEmbeddingEndpointSchema.parse({ ...endpoint, models: normalizeModelList(endpoint.models, endpoint.embeddingModel) }));
   if (input.activeEndpointId && !endpoints.some((endpoint) => endpoint.id === input.activeEndpointId)) throw new Error("The active AI endpoint does not exist.");
   if (input.activeEmbeddingEndpointId && !embeddingEndpoints.some((endpoint) => endpoint.id === input.activeEmbeddingEndpointId)) throw new Error("The active embedding endpoint does not exist.");
-  return storedAiConfigSchema.parse({ ...input, endpoints, embeddingEndpoints });
+  return storedAiConfigSchema.parse({
+    ...input,
+    endpoints,
+    embeddingEndpoints,
+    skills: {
+      ...input.skills,
+      subtitleKnowledge: {
+        ...input.skills.subtitleKnowledge,
+        disableReasoning: true,
+        maxOutputTokens: Math.min(input.skills.subtitleKnowledge.maxOutputTokens, 3_000),
+      },
+    },
+  });
 }
 export function sanitizeAiConfig(config: StoredAiConfig): AiConfigDto {
   const endpoints = config.endpoints.map(({ apiKey, ...endpoint }) => ({ ...endpoint, hasApiKey: Boolean(apiKey) }));

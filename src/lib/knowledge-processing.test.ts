@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  calculateSubtitleOutputTokenBudget,
   collapseRollingSubtitleCues,
   createDeterministicSegments,
   createSubtitleWindows,
   materializeChunk,
   mergeShortCueInputs,
+  processSubtitleWindow,
   validateProcessedSegments,
 } from "@/lib/knowledge-processing";
+import { defaultStoredAiConfig } from "@/lib/ai-config";
 import { EMBEDDING_BATCH_SIZE, splitEmbeddingBatches } from "@/lib/knowledge-embeddings";
 import { parseSubtitle } from "@/lib/subtitle-parser";
 
@@ -78,4 +81,41 @@ test("embedding inputs stay within the provider-safe batch limit", () => {
   const batches = splitEmbeddingBatches(Array.from({ length: 45 }, (_, index) => `chunk-${index}`));
   assert.equal(EMBEDDING_BATCH_SIZE, 20);
   assert.deepEqual(batches.map((batch) => batch.length), [20, 20, 5]);
+});
+
+test("AI subtitle output budget is bounded by ratio, configured limit, and hard limit", () => {
+  assert.equal(calculateSubtitleOutputTokenBudget(1_000, 3_000), 2_000);
+  assert.equal(calculateSubtitleOutputTokenBudget(2_000, 2_500), 2_500);
+  assert.equal(calculateSubtitleOutputTokenBudget(2_000, 8_192), 3_000);
+});
+
+test("a provider length limit fails the AI window without retrying or falling back", async () => {
+  const config = defaultStoredAiConfig();
+  config.endpoints = [{
+    id: "deepseek", name: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com",
+    useCustomUrls: false, chatCompletionsUrl: "", modelsUrl: "", apiKey: "test",
+    models: ["deepseek-chat"], defaultModel: "deepseek-chat",
+  }];
+  config.activeEndpointId = "deepseek";
+  let requests = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    requests += 1;
+    return Response.json({
+      choices: [{
+        message: { content: '{"segments":[{"cueStart":1,"cueEnd":1,"topic":"test","keywords":[]}]}' },
+        finish_reason: "length",
+      }],
+      usage: { prompt_tokens: 100, completion_tokens: 200 },
+    });
+  };
+  try {
+    await assert.rejects(
+      processSubtitleWindow(config, [{ id: 1, startMs: 0, endMs: 1_000, text: "test" }]),
+      /request limit|truncated/i,
+    );
+    assert.equal(requests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

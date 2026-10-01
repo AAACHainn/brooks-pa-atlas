@@ -24,7 +24,7 @@ function input(overrides: Partial<AiConfigInput> = {}): AiConfigInput {
     activeEmbeddingEndpointId: "embedding-1",
     skills: { ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" },
       readingCompanion: { prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" },
-      subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "", retryModelOverride: "", disableReasoning: true, maxOutputTokens: 4096 } }, ...overrides };
+      subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "", retryModelOverride: "", disableReasoning: true, maxOutputTokens: 3000 } }, ...overrides };
 }
 
 test("missing or invalid persisted AI config falls back to v4 defaults", () => {
@@ -45,7 +45,7 @@ test("v3 gains bounded metadata-only subtitle processing options", () => {
   assert.equal(parsed.version, 4);
   assert.equal(parsed.skills.subtitleKnowledge.modelOverride, "cheap-chat");
   assert.equal(parsed.skills.subtitleKnowledge.disableReasoning, true);
-  assert.equal(parsed.skills.subtitleKnowledge.maxOutputTokens, 4096);
+  assert.equal(parsed.skills.subtitleKnowledge.maxOutputTokens, 3000);
 });
 
 test("v2 migrates chat and embedding providers into separate collections without losing secrets", () => {
@@ -79,6 +79,24 @@ test("chat and embedding secrets are retained, replaced, and cleared independent
   const cleared = mergeAiConfigSecrets(input({ endpoints: [{ ...input().endpoints[0], clearApiKey: true }] }), current);
   assert.equal(cleared.endpoints[0].apiKey, "");
   assert.equal(cleared.embeddingEndpoints[0].apiKey, "embedding-secret");
+});
+
+test("subtitle imports cannot re-enable reasoning or raise the hard output limit", () => {
+  const current = { ...defaultStoredAiConfig(), endpoints: [chatEndpoint()], embeddingEndpoints: [embeddingEndpoint()],
+    activeEndpointId: "chat-1", activeEmbeddingEndpointId: "embedding-1" };
+  const unsafe = input({
+    skills: {
+      ...input().skills,
+      subtitleKnowledge: {
+        ...input().skills.subtitleKnowledge,
+        disableReasoning: false,
+        maxOutputTokens: 8_192,
+      },
+    },
+  });
+  const merged = mergeAiConfigSecrets(unsafe, current);
+  assert.equal(merged.skills.subtitleKnowledge.disableReasoning, true);
+  assert.equal(merged.skills.subtitleKnowledge.maxOutputTokens, 3_000);
 });
 
 test("sanitized config reports separate readiness without exposing either key", () => {

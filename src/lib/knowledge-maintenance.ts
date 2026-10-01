@@ -6,7 +6,11 @@ import { acquireHeavyTaskOrThrow, releaseHeavyTask } from "@/lib/background-task
 import { knowledgeDb, vectorBuffer } from "@/lib/knowledge-db";
 import { rebuildKnowledgeFts } from "@/lib/knowledge-documents";
 
-const running = new Map<string, Promise<void>>();
+const globalForKnowledgeMaintenance = globalThis as typeof globalThis & {
+  brooksKnowledgeMaintenanceJobs?: Map<string, Promise<void>>;
+};
+const running = globalForKnowledgeMaintenance.brooksKnowledgeMaintenanceJobs ?? new Map<string, Promise<void>>();
+globalForKnowledgeMaintenance.brooksKnowledgeMaintenanceJobs = running;
 
 type JobRow = {
   id: string; kind: string; status: string; endpointId: string | null; model: string | null;

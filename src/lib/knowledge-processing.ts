@@ -9,8 +9,10 @@ import {
 import { createAiChatCompletion, type AiChatUsage } from "@/lib/ai-client";
 import type { KnowledgeProcessedSegment, SubtitleCue } from "@/lib/knowledge-types";
 
-export const KNOWLEDGE_PROCESSING_RULE_VERSION = "subtitle-v2-metadata-only";
+export const KNOWLEDGE_PROCESSING_RULE_VERSION = "subtitle-v3-bounded-metadata-only";
 export const SUBTITLE_WINDOW_MAX_CHARACTERS = 6_000;
+export const SUBTITLE_OUTPUT_TOKEN_RATIO = 2;
+export const SUBTITLE_OUTPUT_TOKEN_HARD_LIMIT = 3_000;
 
 const metadataSegmentSchema = z.object({
   cueStart: z.number().int().positive(),
@@ -257,13 +259,23 @@ export function subtitlePromptHash(
     rule: KNOWLEDGE_PROCESSING_RULE_VERSION,
     prompt,
     retryModelOverride: options.retryModelOverride ?? "",
-    disableReasoning: options.disableReasoning ?? true,
-    maxOutputTokens: options.maxOutputTokens ?? 4_096,
+    disableReasoning: true,
+    maxOutputTokens: Math.min(options.maxOutputTokens ?? 3_000, SUBTITLE_OUTPUT_TOKEN_HARD_LIMIT),
   })).digest("hex");
 }
 
 function estimateTokens(value: string) {
   return Math.max(1, Math.ceil(value.length / 3));
+}
+
+export function calculateSubtitleOutputTokenBudget(inputTokens: number, configuredLimit: number) {
+  const normalizedInput = Math.max(1, Math.floor(inputTokens));
+  const normalizedConfiguredLimit = Math.max(1, Math.floor(configuredLimit));
+  return Math.max(1, Math.min(
+    normalizedConfiguredLimit,
+    SUBTITLE_OUTPUT_TOKEN_HARD_LIMIT,
+    Math.floor(normalizedInput * SUBTITLE_OUTPUT_TOKEN_RATIO),
+  ));
 }
 
 export async function processSubtitleWindow(
@@ -287,10 +299,14 @@ export async function processSubtitleWindow(
   });
   const contract = "硬性输出约束：只返回 segments；每项仅允许 cueStart、cueEnd、topic、keywords。禁止输出 cleanedText、字幕正文、解释、Markdown 或思考过程。";
   const systemPrompt = `${skill.prompt}\n\n${contract}`;
+  const estimatedInputTokens = estimateTokens(`${systemPrompt}\n${input}`);
+  const maxOutputTokens = calculateSubtitleOutputTokenBudget(estimatedInputTokens, skill.maxOutputTokens);
   let lastError: unknown;
   const maxAttempts = 2;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const model = attempt === 1 && skill.retryModelOverride ? skill.retryModelOverride : primaryModel;
+    let finishReason: string | null = null;
+    let reasoningDetected = false;
     try {
       await options.onAttempt?.(attempt + 1, maxAttempts);
       let usage: AiChatUsage = { inputTokens: null, outputTokens: null, reasoningTokens: null };
@@ -299,15 +315,27 @@ export async function processSubtitleWindow(
         { role: "user", content: input },
       ], {
         temperature: 0,
-        maxOutputTokens: skill.maxOutputTokens,
+        maxOutputTokens,
         jsonMode: true,
-        disableReasoning: skill.disableReasoning,
+        disableReasoning: true,
         onUsage: (next) => { usage = next; },
+        onFinishReason: (next) => { finishReason = next; },
+        onReasoningDetected: (detected) => { reasoningDetected = detected; },
       });
-      const inputTokens = usage.inputTokens ?? estimateTokens(`${systemPrompt}\n${input}`);
+      const inputTokens = usage.inputTokens ?? estimatedInputTokens;
       const outputTokens = usage.outputTokens ?? estimateTokens(raw);
       await options.onResponse?.({ raw, inputTokens, outputTokens });
-      if (outputTokens > inputTokens * 2) {
+      if (reasoningDetected || (usage.reasoningTokens ?? 0) > 0) {
+        throw new AiSubtitleOutputFuseError(
+          "AI provider returned reasoning content or reasoning tokens even though subtitle reasoning was disabled.",
+        );
+      }
+      if (finishReason === "length") {
+        throw new AiSubtitleOutputFuseError(
+          `AI output reached the ${maxOutputTokens}-token request limit and was truncated.`,
+        );
+      }
+      if (outputTokens > inputTokens * SUBTITLE_OUTPUT_TOKEN_RATIO) {
         throw new AiSubtitleOutputFuseError(`AI output token count ${outputTokens} exceeded the safety ratio for ${inputTokens} input tokens.`);
       }
       return {
@@ -322,6 +350,16 @@ export async function processSubtitleWindow(
       };
     } catch (error) {
       lastError = error;
+      if (reasoningDetected) {
+        throw new AiSubtitleOutputFuseError(
+          "AI provider returned reasoning content even though subtitle reasoning was disabled.",
+        );
+      }
+      if (finishReason === "length") {
+        throw new AiSubtitleOutputFuseError(
+          `AI output reached the ${maxOutputTokens}-token request limit and was truncated.`,
+        );
+      }
       if (error instanceof AiSubtitleOutputFuseError) throw error;
     }
   }

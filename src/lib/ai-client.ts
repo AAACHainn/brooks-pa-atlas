@@ -315,10 +315,6 @@ function reasoningText(container: Record<string, unknown> | null) {
   return arrayContentText(container.content, true);
 }
 
-function extractTextContent(payload: unknown) {
-  return answerText(firstChoiceContainer(payload, "message"));
-}
-
 function extractResponseParts(payload: unknown, field: "message" | "delta") {
   const container = firstChoiceContainer(payload, field);
   return { content: answerText(container), reasoning: reasoningText(container) };
@@ -344,6 +340,8 @@ type AiChatCompletionOptions = {
   jsonMode?: boolean;
   disableReasoning?: boolean;
   onUsage?: (usage: AiChatUsage) => void | Promise<void>;
+  onFinishReason?: (reason: string | null) => void | Promise<void>;
+  onReasoningDetected?: (detected: boolean) => void | Promise<void>;
 };
 
 function chatUsage(payload: unknown): AiChatUsage {
@@ -367,11 +365,29 @@ function reasoningControl(endpoint: StoredAiEndpoint, model: string, disabled: b
   if (!disabled) return {};
   const identity = `${endpoint.baseUrl} ${endpoint.chatCompletionsUrl} ${model}`.toLowerCase();
   if (/qwen|dashscope|aliyun|alibabacloud/.test(identity)) return { enable_thinking: false };
+  if (endpoint.provider === "deepseek" || /deepseek/.test(identity)) {
+    return { thinking: { type: "disabled" } };
+  }
   if (endpoint.provider === "openai") return { reasoning_effort: "none" };
   if (/reasoner|reasoning|\br1\b/.test(model.toLowerCase())) {
     throw new AiServiceError("configuration", "字幕整理请选择非推理模型；当前端点无法可靠关闭该模型的推理输出。");
   }
   return {};
+}
+
+function chatFinishReason(payload: unknown) {
+  if (typeof payload !== "object" || payload === null || !("choices" in payload)) return null;
+  const choices = (payload as { choices?: unknown }).choices;
+  if (!Array.isArray(choices) || typeof choices[0] !== "object" || choices[0] === null) return null;
+  const reason = (choices[0] as { finish_reason?: unknown }).finish_reason;
+  return typeof reason === "string" && reason.trim() ? reason : null;
+}
+
+function outputTokenControl(endpoint: StoredAiEndpoint, maxOutputTokens: number | undefined) {
+  if (!maxOutputTokens) return {};
+  return endpoint.provider === "openai"
+    ? { max_completion_tokens: maxOutputTokens }
+    : { max_tokens: maxOutputTokens };
 }
 
 export async function createAiChatCompletion(
@@ -388,7 +404,7 @@ export async function createAiChatCompletion(
     model: model.trim(),
     messages,
     stream: false,
-    ...(options.maxOutputTokens ? { max_tokens: options.maxOutputTokens } : {}),
+    ...outputTokenControl(endpoint, options.maxOutputTokens),
     ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
     ...(options.jsonMode ? { response_format: { type: "json_object" } } : {}),
     ...reasoningControl(endpoint, model, options.disableReasoning),
@@ -410,7 +426,10 @@ export async function createAiChatCompletion(
     },
   );
   await options.onUsage?.(chatUsage(payload));
-  const text = normalizeAiText(extractTextContent(payload));
+  await options.onFinishReason?.(chatFinishReason(payload));
+  const parts = extractResponseParts(payload, "message");
+  await options.onReasoningDetected?.(Boolean(parts.reasoning));
+  const text = normalizeAiText(parts.content);
   if (!text) {
     throw new AiServiceError("invalid-response", "AI service returned an empty response.");
   }

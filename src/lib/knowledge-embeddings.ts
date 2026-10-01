@@ -63,10 +63,21 @@ export function storeChunkEmbeddings(
   entries: Array<{ chunkId: string; vector: number[] }>,
   profileId: string,
 ) {
-  const insert = knowledgeDb().prepare(
-    "INSERT OR REPLACE INTO KnowledgeChunkEmbedding (chunkId, profileId, embedding) VALUES (?, ?, ?)",
-  );
-  knowledgeDb().transaction(() => {
-    for (const entry of entries) insert.run(entry.chunkId, profileId, vectorBuffer(entry.vector));
+  const db = knowledgeDb();
+  const profileExists = db.prepare("SELECT 1 AS found FROM KnowledgeEmbeddingProfile WHERE id = ?");
+  const chunkExists = db.prepare("SELECT 1 AS found FROM KnowledgeChunk WHERE id = ?");
+  const insert = db.prepare(`INSERT INTO KnowledgeChunkEmbedding (chunkId, profileId, embedding)
+    VALUES (?, ?, ?)
+    ON CONFLICT(chunkId, profileId) DO UPDATE SET embedding = excluded.embedding`);
+  db.transaction(() => {
+    if (!profileExists.get(profileId)) {
+      throw new Error("Embedding profile disappeared before vectors were stored. Retry the import after checking the active Embedding configuration.");
+    }
+    for (const entry of entries) {
+      if (!chunkExists.get(entry.chunkId)) {
+        throw new Error("Knowledge chunks changed while Embeddings were being generated. Retry the import; the completed AI windows will be reused.");
+      }
+      insert.run(entry.chunkId, profileId, vectorBuffer(entry.vector));
+    }
   })();
 }

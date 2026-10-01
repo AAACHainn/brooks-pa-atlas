@@ -23,6 +23,7 @@ async function initializeKnowledgeDatabase(databasePath: string) {
     "20261001000000_import_progress",
     "20261001010000_import_processing_modes",
     "20261001020000_import_diagnostics",
+    "20261001030000_clear_completed_import_errors",
   ]) {
     db.exec(await readFile(path.join(process.cwd(), "knowledge", "migrations", migration, "migration.sql"), "utf8"));
   }

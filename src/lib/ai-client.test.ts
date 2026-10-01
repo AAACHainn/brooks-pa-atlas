@@ -93,15 +93,17 @@ test("chat completion sends multimodal messages and extracts fenced text", async
 test("structured chat applies output limits, JSON mode, and reports usage", async () => {
   let requestBody: Record<string, unknown> = {};
   let usage: { inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null } | null = null;
+  let finishReason: string | null = null;
   const text = await createAiChatCompletion(endpoint(), "plain-chat", [{ role: "user", content: "segment" }], {
     maxOutputTokens: 4096,
     temperature: 0,
     jsonMode: true,
     disableReasoning: true,
     onUsage: (value) => { usage = value; },
+    onFinishReason: (value) => { finishReason = value; },
     fetchImpl: async (_input, init) => {
       requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      return Response.json({ choices: [{ message: { content: "{\"segments\":[]}" } }], usage: { prompt_tokens: 10, completion_tokens: 4 } });
+      return Response.json({ choices: [{ message: { content: "{\"segments\":[]}" }, finish_reason: "length" }], usage: { prompt_tokens: 10, completion_tokens: 4 } });
     },
   });
   assert.equal(text, '{"segments":[]}');
@@ -109,6 +111,36 @@ test("structured chat applies output limits, JSON mode, and reports usage", asyn
   assert.equal(requestBody.temperature, 0);
   assert.deepEqual(requestBody.response_format, { type: "json_object" });
   assert.deepEqual(usage, { inputTokens: 10, outputTokens: 4, reasoningTokens: null });
+  assert.equal(finishReason, "length");
+});
+
+test("DeepSeek subtitle requests explicitly disable thinking", async () => {
+  let requestBody: Record<string, unknown> = {};
+  let reasoningDetected = false;
+  await createAiChatCompletion({ ...endpoint(), provider: "deepseek", baseUrl: "https://api.deepseek.com" }, "deepseek-chat", [{ role: "user", content: "segment" }], {
+    disableReasoning: true,
+    onReasoningDetected: (detected) => { reasoningDetected = detected; },
+    fetchImpl: async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({ choices: [{ message: { content: "{}", reasoning_content: "unexpected" }, finish_reason: "stop" }] });
+    },
+  });
+  assert.deepEqual(requestBody.thinking, { type: "disabled" });
+  assert.equal(reasoningDetected, true);
+});
+
+test("OpenAI output limits use max_completion_tokens", async () => {
+  let requestBody: Record<string, unknown> = {};
+  await createAiChatCompletion({ ...endpoint(), provider: "openai" }, "gpt-5.1", [{ role: "user", content: "segment" }], {
+    maxOutputTokens: 2_000,
+    disableReasoning: true,
+    fetchImpl: async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }] });
+    },
+  });
+  assert.equal(requestBody.max_completion_tokens, 2_000);
+  assert.equal("max_tokens" in requestBody, false);
 });
 
 test("chat completion accepts array content and rejects empty responses", async () => {

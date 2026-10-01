@@ -134,6 +134,7 @@ docker compose down
 - `src/app/ai-reading-companion.tsx`：浏览模式 AI 阅读伴侣悬浮窗，负责全局多会话、流式消息、拖动和收起交互。
 - `src/app/knowledge-manager-dialog.tsx`：字幕知识库导入、节点映射、人工审核、版本管理、维护和检索测试弹窗。
 - `src/app/index-tree-selector.tsx`：工作台详情与字幕知识库共用的树形索引选择器，支持层级展开、路径搜索和键盘选择；不要再用平铺的原生下拉框复制索引选择逻辑。
+- `src/app/knowledge-import-progress.tsx`：字幕导入的文件级、AI 窗口级和 Embedding 批次级进度展示，包含耗时、预计剩余时间、慢响应和疑似停滞提示。
 - `src/app/exam-mode.tsx`：考试模式客户端组件，包含试卷管理、制题、遮罩、考试和结果复盘。
 - `src/app/api/atlas/route.ts`：工作台聚合查询接口。
 - `src/app/api/exam/**/route.ts`：考试模式 API，负责试卷、题目、发布、考试记录和提交评分。
@@ -277,6 +278,18 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - 考试模式：创建试卷、从图库选图制题、多矩形遮罩、发布考试、随机顺序作答和结果复盘。
 
 需要提示、确认或单行文本输入时统一使用 `src/app/app-dialog.tsx`，不要调用浏览器原生 `alert`、`confirm` 或 `prompt`。统一弹窗支持中英文按钮、`Esc` 取消、`Enter` 提交输入和 `Tab` 焦点循环。
+
+### UI 风格基线
+
+新增或修改工作台弹窗、表单和卡片时，以 `src/app/app-settings-dialog.tsx` 的视觉语言为基线，并遵守以下规则：
+
+- 弹窗遮罩统一使用 `bg-zinc-950/50`；主面板使用白底、`rounded-lg`、`border border-zinc-200` 和 `shadow-2xl`，页头、页脚及内容分隔线使用 `border-zinc-200`。
+- 一级页签使用青色下划线选中态：选中为 `border-cyan-700 text-cyan-800`，未选中为透明下划线和 `text-zinc-500`；不要使用整块黑底表示普通页签选中。
+- 内容卡片使用 `rounded-lg border border-zinc-200 bg-white shadow-sm`；嵌套行优先使用 `border-zinc-100 bg-zinc-50`，避免粗重深色描边。
+- Tailwind 的 `border`、`border-t`、`border-b`、`border-l`、`border-r` 必须同时指定明确的边框颜色或状态色，例如 `border-zinc-200`、`border-cyan-200`、`border-rose-200`；禁止依赖默认 `currentColor`，以免出现黑边。
+- 表单控件默认使用 `border-zinc-200`，焦点态使用 `focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100`，禁用态使用浅灰底并降低不透明度。
+- 主操作按钮使用青色实底；次要操作使用白底、浅灰边框；危险操作使用浅玫红底和玫红边框。按钮、图标按钮均应提供一致的 hover、disabled 和 focus 状态。
+- 优先复用现有弹窗、树选择器、提示框和按钮模式，不为同类交互重复开发一套视觉组件。
 
 主要布局：
 
@@ -496,6 +509,8 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 字幕导入支持 `.srt/.vtt/.ass/.txt`，单文件 10MiB、单批 200 个文件和 100MiB 总量。节点映射始终在导入前确认；人工预览每次默认关闭且不记忆。
 - AI 输出必须通过 cue 恰好覆盖一次、顺序不变、无未知 cue/空片段、清洗长度为规范化原文 60%–140% 的硬校验；失败只自动重试一次。时间范围只能由源 cue 计算。
 - 同一节点只关联一个逻辑字幕文档；重新导入创建版本，片段、关键词、FTS 与向量全部完成后才在单个知识库事务中替换启用版本。人工模式只允许整份批准或拒绝。
+- 字幕 AI 整理按持久化窗口逐个处理，进度必须记录完成窗口数、当前窗口/尝试次数和最后更新时间；Embedding 按最多 20 条一批调用并记录批次进度，避免超过 OpenAI-compatible 供应商的批量限制。
+- 上游 AI 的结构化错误只保留经过截断和密钥脱敏的错误码/消息；不要把任意 HTML 或纯文本响应原样展示给客户端。
 - 混合检索并行使用当前课程/全库的 FTS5、短关键词和向量结果，以 RRF 合并，最多 8 个片段；当前课程结果充足时至少 4 个。Embedding 失败必须降级而不能中断原图片伴读。
 - 阅读伴侣的助手消息把字幕引用写入 `knowledgeContextJson`，历史显示不得重新查询当前版本替换旧引用。
 - 删除字幕文档或源文件时只能逐个明确路径删除；不得删除知识目录、使用通配符或递归删除。

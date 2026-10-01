@@ -5,7 +5,12 @@ import path from "node:path";
 import { readStoredAiConfig } from "@/lib/ai-settings";
 import { acquireHeavyTaskOrThrow, releaseHeavyTask } from "@/lib/background-task-coordinator";
 import { knowledgeDb, getKnowledgeSourceRoot } from "@/lib/knowledge-db";
-import { embedTexts, ensureEmbeddingProfile, storeChunkEmbeddings } from "@/lib/knowledge-embeddings";
+import {
+  EMBEDDING_BATCH_SIZE,
+  embedTexts,
+  ensureEmbeddingProfile,
+  storeChunkEmbeddings,
+} from "@/lib/knowledge-embeddings";
 import { expandKnowledgeKeywords, normalizeKnowledgeKeyword } from "@/lib/knowledge-keywords";
 import {
   createSubtitleWindows,
@@ -42,10 +47,41 @@ type ItemRow = {
   phase: string;
   retryCount: number;
   error: string | null;
+  errorPhase: string | null;
+  progressCompleted: number;
+  progressTotal: number;
+  progressUnit: string | null;
+  stageStartedAt: string | null;
+  lastProgressAt: string | null;
 };
 
 function nowSql() {
   return new Date().toISOString();
+}
+
+function setItemStage(
+  itemId: string,
+  phase: string,
+  progressCompleted: number,
+  progressTotal: number,
+  progressUnit: string | null,
+) {
+  const db = knowledgeDb();
+  const now = nowSql();
+  db.transaction(() => {
+    db.prepare(`UPDATE KnowledgeImportItem SET phase = ?, progressCompleted = ?, progressTotal = ?,
+      progressUnit = ?, stageStartedAt = ?, lastProgressAt = ?, updatedAt = ? WHERE id = ?`)
+      .run(phase, progressCompleted, progressTotal, progressUnit, now, now, now, itemId);
+    db.prepare(`UPDATE KnowledgeImportJob SET phase = ?, updatedAt = ?
+      WHERE id = (SELECT jobId FROM KnowledgeImportItem WHERE id = ?)`)
+      .run(phase, now, itemId);
+  })();
+}
+
+function updateItemProgress(itemId: string, completed: number, total: number) {
+  const now = nowSql();
+  knowledgeDb().prepare(`UPDATE KnowledgeImportItem SET progressCompleted = ?, progressTotal = ?,
+    lastProgressAt = ?, updatedAt = ? WHERE id = ?`).run(completed, total, now, now, itemId);
 }
 
 function lessonCodeFromFile(fileName: string) {
@@ -175,18 +211,41 @@ async function processWindows(item: ItemRow, windows: ReturnType<typeof createSu
       .get(item.id, ordinal) as { status: string };
     if (stored.status === "COMPLETED") continue;
     try {
-      const result = await processSubtitleWindow(config, windows[ordinal]);
+      const startedAt = nowSql();
+      db.prepare(`UPDATE KnowledgeProcessingWindow SET status = 'RUNNING', error = NULL,
+        startedAt = ?, finishedAt = NULL, updatedAt = ? WHERE itemId = ? AND ordinal = ?`)
+        .run(startedAt, startedAt, item.id, ordinal);
+      const result = await processSubtitleWindow(config, windows[ordinal], {
+        onAttempt: (attempt) => {
+          const now = nowSql();
+          db.transaction(() => {
+            db.prepare(`UPDATE KnowledgeProcessingWindow SET status = 'RUNNING', retryCount = ?,
+              startedAt = ?, updatedAt = ? WHERE itemId = ? AND ordinal = ?`)
+              .run(attempt - 1, now, now, item.id, ordinal);
+            db.prepare(`UPDATE KnowledgeImportItem SET lastProgressAt = ?, updatedAt = ? WHERE id = ?`)
+              .run(now, now, item.id);
+          })();
+        },
+      });
+      const finishedAt = nowSql();
       db.prepare(`UPDATE KnowledgeProcessingWindow
-        SET outputJson = ?, status = 'COMPLETED', retryCount = ?, error = NULL, updatedAt = ?
+        SET outputJson = ?, status = 'COMPLETED', retryCount = ?, error = NULL, finishedAt = ?, updatedAt = ?
         WHERE itemId = ? AND ordinal = ?`)
-        .run(JSON.stringify(result.segments), result.attempts - 1, nowSql(), item.id, ordinal);
+        .run(JSON.stringify(result.segments), result.attempts - 1, finishedAt, finishedAt, item.id, ordinal);
       db.prepare(`UPDATE KnowledgeDocumentVersion SET processorEndpointId = ?, processorModel = ?,
         processorPromptHash = ?, updatedAt = ? WHERE id = ?`)
-        .run(result.endpointId, result.model, result.promptHash, nowSql(), item.versionId);
+        .run(result.endpointId, result.model, result.promptHash, finishedAt, item.versionId);
+      const completed = db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeProcessingWindow
+        WHERE itemId = ? AND status = 'COMPLETED'`).get(item.id) as { count: number };
+      updateItemProgress(item.id, completed.count, windows.length);
     } catch (error) {
-      db.prepare(`UPDATE KnowledgeProcessingWindow SET status = 'FAILED', retryCount = 1, error = ?, updatedAt = ?
+      const failedAt = nowSql();
+      db.prepare(`UPDATE KnowledgeProcessingWindow SET status = 'FAILED', retryCount = 1, error = ?,
+        finishedAt = ?, updatedAt = ?
         WHERE itemId = ? AND ordinal = ?`)
-        .run(error instanceof Error ? error.message : String(error), nowSql(), item.id, ordinal);
+        .run(error instanceof Error ? error.message : String(error), failedAt, failedAt, item.id, ordinal);
+      db.prepare("UPDATE KnowledgeImportItem SET lastProgressAt = ?, updatedAt = ? WHERE id = ?")
+        .run(failedAt, failedAt, item.id);
       throw error;
     }
   }
@@ -226,7 +285,11 @@ async function createVectorsAndIndex(item: ItemRow) {
   const db = knowledgeDb();
   const chunks = db.prepare(`SELECT id, cleanedText FROM KnowledgeChunk WHERE versionId = ? ORDER BY ordinal`)
     .all(item.versionId) as Array<{ id: string; cleanedText: string }>;
-  const embedded = await embedTexts(chunks.map((chunk) => chunk.cleanedText));
+  const totalBatches = Math.ceil(chunks.length / EMBEDDING_BATCH_SIZE);
+  setItemStage(item.id, "EMBEDDING", 0, totalBatches, "batches");
+  const embedded = await embedTexts(chunks.map((chunk) => chunk.cleanedText), {
+    onBatchCompleted: (completed, total) => updateItemProgress(item.id, completed, total),
+  });
   const profile = ensureEmbeddingProfile(embedded.endpointId, embedded.model, embedded.vectors[0]?.length ?? 0);
   storeChunkEmbeddings(chunks.map((chunk, index) => ({ chunkId: chunk.id, vector: embedded.vectors[index] })), profile.id);
   const version = db.prepare(`SELECT v.documentId, d.title, d.lessonCode FROM KnowledgeDocumentVersion v
@@ -235,6 +298,7 @@ async function createVectorsAndIndex(item: ItemRow) {
     };
   const rows = db.prepare(`SELECT id, topic, keywordsJson, cleanedText FROM KnowledgeChunk
     WHERE versionId = ? ORDER BY ordinal`).all(item.versionId) as Array<Record<string, string>>;
+  setItemStage(item.id, "FTS_INDEXING", 0, 1, "steps");
   db.transaction(() => {
     db.prepare("DELETE FROM KnowledgeChunkFts WHERE versionId = ?").run(item.versionId);
     const insert = db.prepare(`INSERT INTO KnowledgeChunkFts
@@ -243,6 +307,7 @@ async function createVectorsAndIndex(item: ItemRow) {
     for (const row of rows) insert.run(row.id, version.documentId, item.versionId, version.title,
       version.lessonCode ?? "", row.topic, (JSON.parse(row.keywordsJson) as string[]).join(" "), row.cleanedText);
   })();
+  updateItemProgress(item.id, 1, 1);
 }
 
 function activateVersion(versionId: string) {
@@ -260,29 +325,38 @@ function activateVersion(versionId: string) {
 async function processItem(itemId: string, manualReview: boolean) {
   const db = knowledgeDb();
   let item = db.prepare("SELECT * FROM KnowledgeImportItem WHERE id = ?").get(itemId) as ItemRow;
-  db.prepare("UPDATE KnowledgeImportItem SET status = 'RUNNING', phase = 'READING_SOURCE', error = NULL, updatedAt = ? WHERE id = ?")
+  db.prepare("UPDATE KnowledgeImportItem SET status = 'RUNNING', error = NULL, updatedAt = ? WHERE id = ?")
     .run(nowSql(), itemId);
+  setItemStage(itemId, "READING_SOURCE", 0, 1, "steps");
   const buffer = await readFile(resolveSourcePath(item.sourcePath));
   const rawText = buffer.toString("utf8").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const cues = parseSubtitle(buffer, item.sourceFileName);
+  updateItemProgress(itemId, 1, 1);
   if (!item.versionId) prepareDocumentAndVersion(item, rawText, manualReview);
   item = db.prepare("SELECT * FROM KnowledgeImportItem WHERE id = ?").get(itemId) as ItemRow;
   const windows = createSubtitleWindows(cues);
   persistWindows(item.id, windows);
-  db.prepare("UPDATE KnowledgeImportItem SET phase = 'AI_PROCESSING', updatedAt = ? WHERE id = ?").run(nowSql(), item.id);
+  const completedWindows = db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeProcessingWindow
+    WHERE itemId = ? AND status = 'COMPLETED'`).get(item.id) as { count: number };
+  setItemStage(item.id, "AI_PROCESSING", completedWindows.count, windows.length, "windows");
   await processWindows(item, windows);
-  db.prepare("UPDATE KnowledgeImportItem SET phase = 'INDEXING', updatedAt = ? WHERE id = ?").run(nowSql(), item.id);
+  setItemStage(item.id, "CHUNKING", 0, 1, "steps");
   insertChunks(item, cues);
+  updateItemProgress(item.id, 1, 1);
   await createVectorsAndIndex(item);
   if (manualReview) {
+    setItemStage(item.id, "AWAITING_REVIEW", 1, 1, "steps");
     db.prepare("UPDATE KnowledgeDocumentVersion SET status = 'AWAITING_REVIEW', updatedAt = ? WHERE id = ?")
       .run(nowSql(), item.versionId);
     db.prepare("UPDATE KnowledgeImportItem SET status = 'AWAITING_REVIEW', phase = 'AWAITING_REVIEW', updatedAt = ? WHERE id = ?")
       .run(nowSql(), item.id);
   } else {
+    setItemStage(item.id, "ACTIVATING", 0, 1, "steps");
     activateVersion(item.versionId!);
-    db.prepare("UPDATE KnowledgeImportItem SET status = 'COMPLETED', phase = 'COMPLETED', updatedAt = ? WHERE id = ?")
-      .run(nowSql(), item.id);
+    const completedAt = nowSql();
+    db.prepare(`UPDATE KnowledgeImportItem SET status = 'COMPLETED', phase = 'COMPLETED',
+      progressCompleted = 1, progressTotal = 1, progressUnit = 'steps', lastProgressAt = ?, updatedAt = ? WHERE id = ?`)
+      .run(completedAt, completedAt, item.id);
   }
 }
 
@@ -297,10 +371,10 @@ async function runKnowledgeImportJob(jobId: string) {
       await processItem(id, Boolean(job.manualReview));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const item = db.prepare("SELECT versionId FROM KnowledgeImportItem WHERE id = ?").get(id) as { versionId: string | null };
+      const item = db.prepare("SELECT versionId, phase FROM KnowledgeImportItem WHERE id = ?").get(id) as { versionId: string | null; phase: string };
       db.transaction(() => {
-        db.prepare("UPDATE KnowledgeImportItem SET status = 'FAILED', phase = 'FAILED', error = ?, updatedAt = ? WHERE id = ?")
-          .run(message, nowSql(), id);
+        db.prepare("UPDATE KnowledgeImportItem SET status = 'FAILED', phase = 'FAILED', error = ?, errorPhase = ?, updatedAt = ? WHERE id = ?")
+          .run(message, item.phase, nowSql(), id);
         if (item.versionId) db.prepare("UPDATE KnowledgeDocumentVersion SET status = 'FAILED', error = ?, updatedAt = ? WHERE id = ?")
           .run(message, nowSql(), item.versionId);
       })();
@@ -346,19 +420,50 @@ export function knowledgeImportJobSnapshot(jobId: string): KnowledgeImportJobSna
   const db = knowledgeDb();
   const job = db.prepare("SELECT * FROM KnowledgeImportJob WHERE id = ?").get(jobId) as Record<string, unknown> | undefined;
   if (!job) return null;
-  const items = db.prepare("SELECT * FROM KnowledgeImportItem WHERE jobId = ? ORDER BY createdAt")
+  const items = db.prepare("SELECT * FROM KnowledgeImportItem WHERE jobId = ? ORDER BY sourceFileName, id")
     .all(jobId) as ItemRow[];
+  const windows = db.prepare(`SELECT w.itemId, w.ordinal, w.status, w.retryCount, w.startedAt, w.finishedAt, w.updatedAt
+    FROM KnowledgeProcessingWindow w JOIN KnowledgeImportItem i ON i.id = w.itemId
+    WHERE i.jobId = ? ORDER BY w.itemId, w.ordinal`).all(jobId) as Array<{
+      itemId: string;
+      ordinal: number;
+      status: string;
+      retryCount: number;
+      startedAt: string | null;
+      finishedAt: string | null;
+      updatedAt: string;
+    }>;
+  const windowsByItem = new Map<string, typeof windows>();
+  for (const window of windows) {
+    const list = windowsByItem.get(window.itemId) ?? [];
+    list.push(window);
+    windowsByItem.set(window.itemId, list);
+  }
   return {
     id: String(job.id), status: String(job.status), phase: String(job.phase),
     manualReview: Boolean(job.manualReview), totalItems: Number(job.totalItems),
     processedItems: Number(job.processedItems), completedItems: Number(job.completedItems),
     failedItems: Number(job.failedItems), error: job.error ? String(job.error) : null,
-    items: items.map((item) => ({
-      id: item.id, sourceFileName: item.sourceFileName,
-      targetIndexNodeId: item.targetIndexNodeId, targetIndexPath: item.targetIndexPath,
-      documentId: item.documentId, versionId: item.versionId, status: item.status,
-      phase: item.phase, retryCount: item.retryCount, error: item.error,
-    })),
+    items: items.map((item) => {
+      const itemWindows = windowsByItem.get(item.id) ?? [];
+      const currentWindow = itemWindows.find((window) => window.status === "RUNNING")
+        ?? (item.phase === "AI_PROCESSING"
+          ? itemWindows.find((window) => window.status !== "COMPLETED")
+          : undefined);
+      return {
+        id: item.id, sourceFileName: item.sourceFileName,
+        targetIndexNodeId: item.targetIndexNodeId, targetIndexPath: item.targetIndexPath,
+        documentId: item.documentId, versionId: item.versionId, status: item.status,
+        phase: item.phase, retryCount: item.retryCount, error: item.error,
+        errorPhase: item.errorPhase,
+        progressCompleted: item.progressCompleted, progressTotal: item.progressTotal,
+        progressUnit: item.progressUnit, stageStartedAt: item.stageStartedAt,
+        lastProgressAt: item.lastProgressAt,
+        currentWindow: currentWindow ? currentWindow.ordinal + 1 : null,
+        currentAttempt: currentWindow ? currentWindow.retryCount + 1 : null,
+        maxAttempts: currentWindow ? 2 : null,
+      };
+    }),
   };
 }
 
@@ -369,8 +474,10 @@ export function decideKnowledgeImportItem(itemId: string, decision: "approve" | 
   if (decision === "approve") {
     if (item.status !== "AWAITING_REVIEW" || !item.versionId) throw new Error("This item is not awaiting review.");
     activateVersion(item.versionId);
-    db.prepare("UPDATE KnowledgeImportItem SET status = 'COMPLETED', phase = 'COMPLETED', updatedAt = ? WHERE id = ?")
-      .run(nowSql(), item.id);
+    const completedAt = nowSql();
+    db.prepare(`UPDATE KnowledgeImportItem SET status = 'COMPLETED', phase = 'COMPLETED',
+      progressCompleted = 1, progressTotal = 1, progressUnit = 'steps', lastProgressAt = ?, updatedAt = ? WHERE id = ?`)
+      .run(completedAt, completedAt, item.id);
   } else if (decision === "reject") {
     if (item.status !== "AWAITING_REVIEW" || !item.versionId) throw new Error("This item is not awaiting review.");
     db.transaction(() => {
@@ -383,7 +490,8 @@ export function decideKnowledgeImportItem(itemId: string, decision: "approve" | 
     acquireHeavyTaskOrThrow("knowledge-import", item.jobId);
     try {
       db.prepare(`UPDATE KnowledgeImportItem SET status = 'PENDING', phase = 'QUEUED', retryCount = retryCount + 1,
-        error = NULL, updatedAt = ? WHERE id = ?`).run(nowSql(), item.id);
+        error = NULL, errorPhase = NULL, progressCompleted = 0, progressTotal = 0, progressUnit = NULL,
+        stageStartedAt = NULL, lastProgressAt = ?, updatedAt = ? WHERE id = ?`).run(nowSql(), nowSql(), item.id);
       db.prepare("UPDATE KnowledgeImportJob SET activeKey = 'GLOBAL', status = 'RUNNING', phase = 'QUEUED', finishedAt = NULL, updatedAt = ? WHERE id = ?")
         .run(nowSql(), item.jobId);
       startKnowledgeImportJob(item.jobId);

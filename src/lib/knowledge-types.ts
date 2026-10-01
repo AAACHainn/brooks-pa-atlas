@@ -58,5 +58,14 @@ export type KnowledgeImportJobSnapshot = {
     phase: string;
     retryCount: number;
     error: string | null;
+    errorPhase: string | null;
+    progressCompleted: number;
+    progressTotal: number;
+    progressUnit: string | null;
+    stageStartedAt: string | null;
+    lastProgressAt: string | null;
+    currentWindow: number | null;
+    currentAttempt: number | null;
+    maxAttempts: number | null;
   }>;
 };

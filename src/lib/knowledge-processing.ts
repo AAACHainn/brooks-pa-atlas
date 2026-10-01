@@ -94,6 +94,7 @@ export function subtitlePromptHash(prompt: string) {
 export async function processSubtitleWindow(
   config: StoredAiConfig,
   cues: SubtitleCue[],
+  options: { onAttempt?: (attempt: number, maxAttempts: number) => void | Promise<void> } = {},
 ) {
   const endpoint = config.endpoints.find((item) => item.id === config.activeEndpointId);
   const skill = config.skills[SUBTITLE_KNOWLEDGE_SKILL_KEY];
@@ -103,8 +104,10 @@ export async function processSubtitleWindow(
     cues: mergeShortCueInputs(cues),
   });
   let lastError: unknown;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const maxAttempts = 2;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
+      await options.onAttempt?.(attempt + 1, maxAttempts);
       const raw = await createAiChatCompletion(endpoint, model, [
         { role: "system", content: skill.prompt },
         { role: "user", content: input },

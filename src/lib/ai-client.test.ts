@@ -125,6 +125,26 @@ test("upstream errors do not expose response bodies or API keys", async () => {
   );
 });
 
+test("structured upstream errors retain a safe diagnostic summary", async () => {
+  await assert.rejects(
+    createAiEmbeddings(embeddingEndpoint("top-secret"), "embedding-model", ["a"], {
+      fetchImpl: async () => Response.json({
+        error: {
+          code: "invalid_parameter",
+          message: "input must contain at most 20 items; credential sk-private-token-123456",
+        },
+      }, { status: 400, statusText: "Bad Request" }),
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AiServiceError);
+      assert.match(error.message, /invalid_parameter/);
+      assert.match(error.message, /at most 20 items/);
+      assert.doesNotMatch(error.message, /sk-private|top-secret/);
+      return true;
+    },
+  );
+});
+
 test("multimodal requests report unsupported image input without exposing the provider body", async () => {
   const providerBody = JSON.stringify({
     error: { message: "This text-only model does not support image_url. trace=private-detail" },

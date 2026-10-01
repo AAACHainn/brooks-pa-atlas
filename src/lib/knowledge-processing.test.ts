@@ -7,6 +7,7 @@ import {
   mergeShortCueInputs,
   validateProcessedSegments,
 } from "@/lib/knowledge-processing";
+import { EMBEDDING_BATCH_SIZE, splitEmbeddingBatches } from "@/lib/knowledge-embeddings";
 import { parseSubtitle } from "@/lib/subtitle-parser";
 
 test("SRT and VTT retain program-owned time ranges and remove exact consecutive duplicates", () => {
@@ -49,4 +50,10 @@ test("subtitle windows respect the character budget and chunk times come only fr
     { id: 1, startMs: 0, endMs: 500, text: "short" },
     { id: 2, startMs: 600, endMs: 900, text: "sentence" },
   ]), [{ cueIds: [1, 2], text: "short sentence" }]);
+});
+
+test("embedding inputs stay within the provider-safe batch limit", () => {
+  const batches = splitEmbeddingBatches(Array.from({ length: 45 }, (_, index) => `chunk-${index}`));
+  assert.equal(EMBEDDING_BATCH_SIZE, 20);
+  assert.deepEqual(batches.map((batch) => batch.length), [20, 20, 5]);
 });

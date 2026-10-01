@@ -6,15 +6,31 @@ import { knowledgeDb, vectorBuffer } from "@/lib/knowledge-db";
 
 type ProfileRow = { id: string; endpointId: string; model: string; dimensions: number; status: string };
 
-export async function embedTexts(texts: string[]) {
+export const EMBEDDING_BATCH_SIZE = 20;
+
+export function splitEmbeddingBatches(texts: string[], batchSize = EMBEDDING_BATCH_SIZE) {
+  if (!Number.isInteger(batchSize) || batchSize < 1) throw new Error("Embedding batch size must be positive.");
+  const batches: string[][] = [];
+  for (let offset = 0; offset < texts.length; offset += batchSize) {
+    batches.push(texts.slice(offset, offset + batchSize));
+  }
+  return batches;
+}
+
+export async function embedTexts(
+  texts: string[],
+  options: { onBatchCompleted?: (completed: number, total: number) => void | Promise<void> } = {},
+) {
   const config = await readStoredAiConfig();
   const endpoint = config.embeddingEndpoints.find((item) => item.id === config.activeEmbeddingEndpointId);
   if (!endpoint?.embeddingModel) throw new Error("尚未配置 Embedding 端点和模型。");
   const vectors: number[][] = [];
-  for (let offset = 0; offset < texts.length; offset += 32) {
-    vectors.push(...await createAiEmbeddings(endpoint, endpoint.embeddingModel, texts.slice(offset, offset + 32)));
+  const batches = splitEmbeddingBatches(texts);
+  for (let index = 0; index < batches.length; index += 1) {
+    vectors.push(...await createAiEmbeddings(endpoint, endpoint.embeddingModel, batches[index]));
+    await options.onBatchCompleted?.(index + 1, batches.length);
   }
-  return { vectors, endpointId: endpoint.id, model: endpoint.embeddingModel };
+  return { vectors, endpointId: endpoint.id, model: endpoint.embeddingModel, totalBatches: batches.length };
 }
 
 export function activeEmbeddingProfile() {

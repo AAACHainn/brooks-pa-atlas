@@ -71,16 +71,17 @@ async function fetchJson(
       signal: controller.signal,
     });
     if (!response.ok) {
-      if (options.visionRequest && (await isUnsupportedImageResponse(response))) {
+      if (options.visionRequest && (await isUnsupportedImageResponse(response.clone()))) {
         throw new AiServiceError(
           "unsupported-image",
           "The selected AI model does not support image input. Choose a vision-capable model.",
           { upstreamStatus: response.status },
         );
       }
+      const detail = await readUpstreamErrorDetail(response);
       throw new AiServiceError(
         "upstream",
-        `AI service returned ${response.status}${response.statusText ? ` ${response.statusText}` : ""}.`,
+        `AI service returned ${response.status}${response.statusText ? ` ${response.statusText}` : ""}${detail ? `: ${detail}` : ""}.`,
         { upstreamStatus: response.status },
       );
     }
@@ -102,6 +103,31 @@ async function fetchJson(
     throw new AiServiceError("upstream", "Could not reach the AI service.", { cause: error });
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function readUpstreamErrorDetail(response: Response) {
+  try {
+    const raw = (await response.text()).slice(0, 16_384);
+    let detail = "";
+    try {
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+      const error = typeof payload.error === "object" && payload.error !== null
+        ? payload.error as Record<string, unknown>
+        : null;
+      const message = error?.message ?? payload.message;
+      const code = error?.code ?? payload.code;
+      detail = [code, message].filter((value) => typeof value === "string" && value.trim()).join(" · ");
+    } catch {
+      return "";
+    }
+    return detail
+      .replace(/\b(?:sk|ak)-[A-Za-z0-9_-]{8,}\b/gi, "[redacted]")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 500);
+  } catch {
+    return "";
   }
 }
 

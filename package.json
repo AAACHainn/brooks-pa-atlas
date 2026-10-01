@@ -15,7 +15,7 @@
     "test:thumbnails": "tsx --test src/lib/thumbnail-suite.test.ts",
     "test:ocr": "tsx --test src/lib/ocr-batch-job-state.test.ts src/lib/ocr-batch-jobs.test.ts",
     "test:ai": "tsx --test src/lib/ai-config.test.ts src/lib/ai-client.test.ts src/lib/ai-reading-companion.test.ts src/lib/browser-id.test.ts",
-    "test:knowledge": "tsx --test src/lib/background-task-coordinator.test.ts src/lib/knowledge-backup.test.ts src/lib/knowledge-embeddings.test.ts src/lib/knowledge-processing.test.ts src/lib/knowledge-retrieval.test.ts",
+    "test:knowledge": "tsx --test src/lib/background-task-coordinator.test.ts src/lib/knowledge-backup.test.ts src/lib/knowledge-embeddings.test.ts src/lib/knowledge-import-mapping.test.ts src/lib/knowledge-processing.test.ts src/lib/knowledge-retrieval.test.ts",
     "prisma:generate": "prisma generate",
     "db:migrate": "node scripts/migrate-db.mjs",
     "db:init": "node scripts/init-db.mjs"

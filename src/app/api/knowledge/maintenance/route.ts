@@ -2,12 +2,23 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { HeavyTaskBusyError } from "@/lib/background-task-coordinator";
-import { createEmbeddingRebuildJob, rebuildFtsNow } from "@/lib/knowledge-maintenance";
+import { createEmbeddingRebuildJob, knowledgeMaintenanceSummary, rebuildFtsNow } from "@/lib/knowledge-maintenance";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const schema = z.object({ kind: z.enum(["fts", "embeddings"]) });
+
+export async function GET() {
+  try {
+    return NextResponse.json({ summary: await knowledgeMaintenanceSummary() });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Could not load maintenance summary." },
+      { status: 400 },
+    );
+  }
+}
 
 export async function POST(request: Request) {
   const parsed = schema.safeParse(await request.json().catch(() => null));

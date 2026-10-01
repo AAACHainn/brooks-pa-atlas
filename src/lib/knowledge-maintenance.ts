@@ -19,6 +19,43 @@ export function maintenanceSnapshot(id: string) {
     FROM KnowledgeMaintenanceJob WHERE id = ?`).get(id) as JobRow | undefined;
 }
 
+export async function knowledgeMaintenanceSummary() {
+  const db = knowledgeDb();
+  const config = await readStoredAiConfig();
+  const endpoint = config.embeddingEndpoints.find((item) => item.id === config.activeEmbeddingEndpointId) ?? null;
+  const profile = db.prepare(`SELECT id, endpointId, model, dimensions, updatedAt
+    FROM KnowledgeEmbeddingProfile WHERE status = 'ACTIVE' LIMIT 1`).get() as {
+      id: string; endpointId: string; model: string; dimensions: number; updatedAt: string;
+    } | undefined;
+  const activeChunks = db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeChunk c
+    JOIN KnowledgeDocumentVersion v ON v.id = c.versionId AND v.status = 'ACTIVE'
+    JOIN KnowledgeDocument d ON d.id = v.documentId AND d.bindingStatus = 'ACTIVE'`).get() as { count: number };
+  const activeVectors = profile
+    ? db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeChunkEmbedding e
+        JOIN KnowledgeChunk c ON c.id = e.chunkId
+        JOIN KnowledgeDocumentVersion v ON v.id = c.versionId AND v.status = 'ACTIVE'
+        JOIN KnowledgeDocument d ON d.id = v.documentId AND d.bindingStatus = 'ACTIVE'
+        WHERE e.profileId = ?`).get(profile.id) as { count: number }
+    : { count: 0 };
+  return {
+    endpointName: endpoint?.name ?? null,
+    provider: endpoint?.provider ?? null,
+    configuredModel: endpoint?.embeddingModel ?? null,
+    activeChunkCount: activeChunks.count,
+    activeVectorCount: activeVectors.count,
+    missingVectorCount: Math.max(0, activeChunks.count - activeVectors.count),
+    activeProfile: profile ? {
+      endpointId: profile.endpointId,
+      model: profile.model,
+      dimensions: profile.dimensions,
+      updatedAt: profile.updatedAt,
+    } : null,
+    profileMatchesConfiguration: Boolean(
+      profile && endpoint && profile.endpointId === endpoint.id && profile.model === endpoint.embeddingModel,
+    ),
+  };
+}
+
 async function runEmbeddingRebuild(id: string) {
   const db = knowledgeDb();
   const job = maintenanceSnapshot(id);

@@ -243,6 +243,12 @@ type DocumentImportJobSnapshot = {
   error: string | null;
 };
 
+type PendingDocumentImport = {
+  file: File;
+  baseIndexPath: string;
+  ocrEnabled: boolean;
+};
+
 type OcrBatchSummary = {
   indexNodeId: string;
   indexPath: string;
@@ -396,7 +402,7 @@ const copy = {
     chooseImages: "选择图片",
     chooseFolder: "选择文件夹",
     importLibrary: "导入图库",
-    importLibraryTip: "选择图片、图片文件夹，或将 PDF 按页转换为图片；三种方式都会导入当前图库，右侧“导入后 OCR”对三种方式都有效。",
+    importLibraryTip: "选择图片、图片文件夹，或将 PDF 按页转换为图片；三种方式都会导入当前图库。选择文件后，可在待导入区域设置是否在导入后 OCR。",
     chooseImagesHint: "选择一张或多张图片",
     chooseFolderHint: "导入文件夹中的全部图片",
     importPdf: "导入 PDF",
@@ -404,6 +410,7 @@ const copy = {
     knowledgeLibrary: "资料知识库",
     importSubtitleKnowledge: "导入/关联资料",
     importingDocuments: "PDF 导入中",
+    selectedDocument: "待导入 PDF",
     runImportOcr: "导入后 OCR",
     backupData: "备份管理",
     backingUp: "备份中",
@@ -640,7 +647,7 @@ const copy = {
     chooseImages: "Choose images",
     chooseFolder: "Choose folder",
     importLibrary: "Import to library",
-    importLibraryTip: "Choose images, an image folder, or convert a PDF into page images. All three options import into the current library, and Run OCR after import applies to each one.",
+    importLibraryTip: "Choose images, an image folder, or convert a PDF into page images. All three options import into the current library. After selecting files, choose whether to run OCR in the import area.",
     chooseImagesHint: "Choose one or more image files",
     chooseFolderHint: "Import every image in a folder",
     importPdf: "Import PDF",
@@ -648,6 +655,7 @@ const copy = {
     knowledgeLibrary: "Material knowledge",
     importSubtitleKnowledge: "Import/link materials",
     importingDocuments: "Importing materials",
+    selectedDocument: "PDF to import",
     runImportOcr: "Run OCR after import",
     backupData: "Backups",
     backingUp: "Backing up",
@@ -1980,21 +1988,18 @@ function LibraryImportMenu({
       label: labels.chooseImages,
       hint: labels.chooseImagesHint,
       icon: <ImageIcon className="h-4 w-4" />,
-      choose: () => imageInputRef.current?.click(),
     },
     {
       id: "folder",
       label: labels.chooseFolder,
       hint: labels.chooseFolderHint,
       icon: <FolderPlus className="h-4 w-4" />,
-      choose: () => folderInputRef.current?.click(),
     },
     {
       id: "pdf",
       label: labels.importPdf,
       hint: labels.importPdfHint,
       icon: <FileText className="h-4 w-4" />,
-      choose: () => pdfInputRef.current?.click(),
     },
   ];
 
@@ -2018,6 +2023,13 @@ function LibraryImportMenu({
     if (disabled) return;
     setIsOpen(true);
     focusItem(0);
+  }
+
+  function handleChooseFile(kind: string) {
+    closeMenu();
+    if (kind === "images") imageInputRef.current?.click();
+    else if (kind === "folder") folderInputRef.current?.click();
+    else if (kind === "pdf") pdfInputRef.current?.click();
   }
 
   useEffect(() => {
@@ -2096,10 +2108,7 @@ function LibraryImportMenu({
                 role="menuitem"
                 onFocus={() => setActiveIndex(index)}
                 onMouseEnter={() => setActiveIndex(index)}
-                onClick={() => {
-                  closeMenu();
-                  item.choose();
-                }}
+                onClick={() => handleChooseFile(item.id)}
                 className={`flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left transition-colors ${activeIndex === index ? "bg-cyan-50 text-cyan-950" : "text-zinc-700 hover:bg-zinc-50"}`}
               >
                 <span className={`mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md ${activeIndex === index ? "bg-cyan-100 text-cyan-800" : "bg-zinc-100 text-zinc-500"}`}>
@@ -2161,6 +2170,35 @@ function LibraryImportMenu({
   );
 }
 
+function ImportOcrOption({
+  checked,
+  disabled,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label
+      className={`inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 px-3 text-sm font-medium text-zinc-700 ${
+        disabled ? "cursor-not-allowed bg-zinc-50 opacity-60" : "cursor-pointer bg-white hover:bg-zinc-50"
+      }`}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        disabled={disabled}
+        className="h-4 w-4 rounded border-zinc-200 accent-cyan-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100"
+      />
+      <span>{label}</span>
+    </label>
+  );
+}
+
 export default function AtlasWorkbench() {
   const [locale, setLocale] = useState<Locale>("zh");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -2185,6 +2223,7 @@ export default function AtlasWorkbench() {
   const [uploading, setUploading] = useState(false);
   const [documentImporting, setDocumentImporting] = useState(false);
   const [documentImportJob, setDocumentImportJob] = useState<DocumentImportJobSnapshot | null>(null);
+  const [pendingDocumentImport, setPendingDocumentImport] = useState<PendingDocumentImport | null>(null);
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [backupTask, setBackupTask] = useState<BackupJobSnapshot | null>(null);
@@ -3157,6 +3196,10 @@ export default function AtlasWorkbench() {
   }, [annotationsSaving, data?.images, isLargeViewerActive, selectedImageIndex]);
 
   function handleFiles(fileList: FileList | null) {
+    if (!fileList?.length) {
+      return;
+    }
+
     files.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     setImportPreviewFile(null);
     const nextFiles = Array.from(fileList ?? [])
@@ -3178,6 +3221,7 @@ export default function AtlasWorkbench() {
     }
 
     setFiles(nextFiles);
+    setImportOcrEnabled(false);
     setAssignments(
       Object.fromEntries(
         nextFiles.map((item) => [
@@ -3272,13 +3316,21 @@ export default function AtlasWorkbench() {
     }
   }
 
-  async function uploadDocument(file: File | null) {
+  function handleDocument(file: File | null) {
     if (!file) {
       return;
     }
 
     if (!isSupportedDocumentFile(file)) {
-      await appDialog.showAlert({ title: t.noticeTitle, message: t.noSupportedDocuments, tone: "warning" });
+      void appDialog.showAlert({ title: t.noticeTitle, message: t.noSupportedDocuments, tone: "warning" });
+      return;
+    }
+
+    setPendingDocumentImport({ file, baseIndexPath: selectedIndexPath, ocrEnabled: false });
+  }
+
+  async function uploadDocument() {
+    if (!pendingDocumentImport || uploading || documentImporting) {
       return;
     }
 
@@ -3287,9 +3339,9 @@ export default function AtlasWorkbench() {
 
     try {
       const formData = new FormData();
-      formData.set("file", file);
-      formData.set("baseIndexPath", JSON.stringify(indexPathParts(selectedIndexPath)));
-      formData.set("ocrEnabled", importOcrEnabled ? "true" : "false");
+      formData.set("file", pendingDocumentImport.file);
+      formData.set("baseIndexPath", JSON.stringify(indexPathParts(pendingDocumentImport.baseIndexPath)));
+      formData.set("ocrEnabled", pendingDocumentImport.ocrEnabled ? "true" : "false");
 
       const started = await readDocumentImportJobResponse(await fetch("/api/import/documents/jobs", {
         method: "POST",
@@ -3297,6 +3349,7 @@ export default function AtlasWorkbench() {
         cache: "no-store",
       }));
       setDocumentImportJob(started);
+      setPendingDocumentImport(null);
 
       const result = await pollDocumentImportJob(started.id);
       if (result.status !== "completed") {
@@ -5069,7 +5122,7 @@ export default function AtlasWorkbench() {
                     }}
                     onChooseFolder={handleFiles}
                     onChooseImages={handleFiles}
-                    onChoosePdf={(file) => void uploadDocument(file)}
+                    onChoosePdf={handleDocument}
                   />
                   <button
                     type="button"
@@ -5082,16 +5135,6 @@ export default function AtlasWorkbench() {
                     <BookOpen className="h-4 w-4" />
                     <span>{t.knowledgeLibrary}</span>
                   </button>
-                  <label className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700">
-                    <input
-                      type="checkbox"
-                      checked={importOcrEnabled}
-                      onChange={(event) => setImportOcrEnabled(event.target.checked)}
-                      disabled={uploading || documentImporting}
-                      className="h-4 w-4 rounded border-zinc-300 text-cyan-700 focus:ring-cyan-700"
-                    />
-                    <span>{t.runImportOcr}</span>
-                  </label>
                   <button
                     type="button"
                     onClick={openBackupManager}
@@ -5151,9 +5194,54 @@ export default function AtlasWorkbench() {
             />
           ) : null}
 
+          {isManageMode && pendingDocumentImport ? (
+            <div className="border-b border-zinc-200 bg-white px-5 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <FileText className="h-5 w-5 shrink-0 text-cyan-700" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">{t.selectedDocument}</p>
+                    <p className="break-all text-sm text-zinc-700">{pendingDocumentImport.file.name}</p>
+                    <p className="mt-1 break-all text-xs text-zinc-500">
+                      {t.assignedIndex}: {[pendingDocumentImport.baseIndexPath, pendingDocumentImport.file.name.replace(/\.pdf$/i, "")].filter(Boolean).join(" / ")}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <ImportOcrOption
+                    checked={pendingDocumentImport.ocrEnabled}
+                    disabled={uploading || documentImporting}
+                    label={t.runImportOcr}
+                    onChange={(ocrEnabled) =>
+                      setPendingDocumentImport((current) => current ? { ...current, ocrEnabled } : null)
+                    }
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setPendingDocumentImport(null)}
+                    disabled={uploading || documentImporting}
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <X className="h-4 w-4" />
+                    <span>{t.clearSelection}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void uploadDocument()}
+                    disabled={uploading || documentImporting}
+                    className="inline-flex h-9 items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {documentImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                    <span>{documentImporting ? t.importingDocuments : t.startImport}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {isManageMode && files.length > 0 ? (
             <div className="border-b border-zinc-200 bg-white px-5 py-4">
-              <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold">
                     {files.length} {t.selected}
@@ -5162,11 +5250,17 @@ export default function AtlasWorkbench() {
                     {t.selectedFiles} / {groups.length} {t.groups}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <ImportOcrOption
+                    checked={importOcrEnabled}
+                    disabled={uploading || documentImporting}
+                    label={t.runImportOcr}
+                    onChange={setImportOcrEnabled}
+                  />
                   <button
                     type="button"
                     onClick={clearSelectedFiles}
-                    disabled={uploading}
+                    disabled={uploading || documentImporting}
                     className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-60"
                   >
                     <X className="h-4 w-4" />
@@ -5175,8 +5269,8 @@ export default function AtlasWorkbench() {
                   <button
                     type="button"
                     onClick={() => void uploadFiles()}
-                    disabled={uploading}
-                    className="inline-flex h-9 items-center gap-2 rounded-md bg-zinc-950 px-4 text-sm font-medium text-white disabled:opacity-60"
+                    disabled={uploading || documentImporting}
+                    className="inline-flex h-9 items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
                     <span>

@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 export type KnowledgeImportJobItemView = {
   id: string;
   sourceFileName: string;
+  sourceType: string;
   targetIndexPath: string;
   versionId: string | null;
   status: string;
@@ -61,8 +62,8 @@ const phaseLabels = {
     RUNNING: "导入中",
     PENDING: "等待处理",
     QUEUED: "等待处理",
-    READING_SOURCE: "读取并解析字幕",
-    PARSED: "字幕解析完成",
+    READING_SOURCE: "读取并解析源文件",
+    PARSED: "源文件解析完成",
     AI_PROCESSING: "AI 字幕整理",
     DETERMINISTIC_CHUNKING: "程序清洗与确定性分段",
     CACHE_REUSE: "复用已有处理结果",
@@ -80,7 +81,7 @@ const phaseLabels = {
     RUNNING: "Running",
     PENDING: "Queued",
     QUEUED: "Queued",
-    READING_SOURCE: "Reading and parsing subtitles",
+    READING_SOURCE: "Reading and parsing source",
     PARSED: "Parsed",
     AI_PROCESSING: "AI subtitle cleanup",
     DETERMINISTIC_CHUNKING: "Program cleanup and deterministic chunking",
@@ -219,7 +220,7 @@ export default function KnowledgeImportProgress({
                   <div className="flex flex-wrap items-start gap-2">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium text-zinc-900" title={item.sourceFileName}>{item.sourceFileName}</p>
-                      <p className="mt-0.5 truncate text-xs text-zinc-500" title={item.targetIndexPath}>{item.targetIndexPath}</p>
+                      <p className="mt-0.5 truncate text-xs text-zinc-500" title={item.targetIndexPath}>{item.sourceType} · {item.targetIndexPath}</p>
                     </div>
                     <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusTone(item.status)}`}>
                       {item.status === "RUNNING"
@@ -286,7 +287,7 @@ export default function KnowledgeImportProgress({
                   ) : null}
 
                   {item.cacheHit ? <p className="mt-2 text-xs font-medium text-emerald-700">
-                    {locale === "zh" ? "已复用相同字幕的片段与可用向量，没有重复调用整理模型。" : "Reused chunks and available vectors from the same subtitle."}
+                    {locale === "zh" ? "已复用相同源文件的片段与可用向量，没有重复处理。" : "Reused chunks and available vectors from the same source file."}
                   </p> : null}
 
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -310,7 +311,7 @@ export default function KnowledgeImportProgress({
 
       {counts.awaiting > 1 ? (
         <div className="flex items-center justify-between gap-3 border-t border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-          <span>{locale === "zh" ? `有 ${counts.awaiting} 份字幕等待审核。` : `${counts.awaiting} subtitles are awaiting review.`}</span>
+          <span>{locale === "zh" ? `有 ${counts.awaiting} 份资料等待审核。` : `${counts.awaiting} materials are awaiting review.`}</span>
           <button className="rounded bg-emerald-700 px-3 py-1.5 text-white" onClick={() => onApproveAll(job.items.filter((item) => item.status === "AWAITING_REVIEW"))}>{copy.approveAll}</button>
         </div>
       ) : null}

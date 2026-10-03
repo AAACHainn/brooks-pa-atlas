@@ -19,15 +19,22 @@ export type KnowledgeVersionRow = {
   chunkCount: number;
   vectorCount: number;
   error: string | null;
+  sourceFormat: string;
 };
 
 export type KnowledgeDocumentRow = {
   id: string;
   title: string;
   lessonCode: string | null;
-  indexNodeId: string | null;
-  indexPathSnapshot: string;
-  bindingStatus: string;
+  sourceType: string;
+  enabled: boolean;
+  binding: {
+    id: string;
+    indexNodeId: string | null;
+    indexPathSnapshot: string;
+    appliesToDescendants: boolean;
+    status: "ACTIVE" | "ORPHANED";
+  } | null;
   chunkCount: number;
   activeVersionId: string | null;
   versions: KnowledgeVersionRow[];
@@ -64,7 +71,10 @@ type Props = {
   onActivate: (document: KnowledgeDocumentRow, version: KnowledgeVersionRow) => void;
   onDeleteDocument: (document: KnowledgeDocumentRow) => void;
   onDeleteVersion: (document: KnowledgeDocumentRow, version: KnowledgeVersionRow) => void;
-  onPatchDocument: (document: KnowledgeDocumentRow, patch: { indexNodeId?: string; enabled?: boolean }) => void;
+  onPatchDocument: (document: KnowledgeDocumentRow, patch: { enabled: boolean }) => void;
+  onPutBinding: (document: KnowledgeDocumentRow, indexNodeId: string) => void;
+  onPatchBinding: (document: KnowledgeDocumentRow, appliesToDescendants: boolean) => void;
+  onDeleteBinding: (document: KnowledgeDocumentRow) => void;
   onRunMaintenance: (kind: "fts" | "embeddings") => void;
   onViewChunks: (version: KnowledgeVersionRow) => void;
 };
@@ -83,9 +93,11 @@ const copy = {
     empty: "当前父节点下没有知识文档。",
     enable: "启用",
     mapping: "关联索引",
+    appliesToDescendants: "应用到后代索引",
+    unlink: "解除关联",
     maintenance: "高级维护工具",
     maintenanceHint: "正常导入和检索不需要手动执行。仅在索引异常、向量缺失或更换 Embedding 模型后使用。",
-    ftsDescription: "从现有知识片段重新生成关键词全文索引，不调用 AI，不修改字幕、片段或向量。",
+    ftsDescription: "从现有知识片段重新生成关键词全文索引，不调用 AI，不修改资料、片段或向量。",
     ftsTooltip: "用于修复关键词检索缺失或 FTS 索引异常。执行时会短暂占用 SQLite，但不会产生 API 费用。",
     vectorDescription: "用当前启用的 Embedding 端点重新生成所有启用文档当前版本的向量，会调用外部服务并可能产生费用。",
     vectorTooltip: "用于更换 Embedding 模型、向量缺失或向量损坏后的全量重建。新向量全部完成后才切换，失败时继续使用旧向量。",
@@ -118,9 +130,11 @@ const copy = {
     empty: "No knowledge documents under this parent node.",
     enable: "Enable",
     mapping: "Linked index",
+    appliesToDescendants: "Apply to descendants",
+    unlink: "Unlink",
     maintenance: "Advanced maintenance",
     maintenanceHint: "Normal imports and searches do not require these actions. Use only for index problems, missing vectors, or an Embedding model change.",
-    ftsDescription: "Rebuild the keyword full-text index from existing chunks. This does not call AI or change subtitles, chunks, or vectors.",
+    ftsDescription: "Rebuild the keyword full-text index from existing chunks. This does not call AI or change materials, chunks, or vectors.",
     ftsTooltip: "Use this to repair missing keyword results or an inconsistent FTS index. It briefly uses SQLite but has no API cost.",
     vectorDescription: "Regenerate vectors for active document versions with the configured Embedding endpoint. This calls an external service and may incur charges.",
     vectorTooltip: "Use after changing the Embedding model or when vectors are missing or damaged. The new profile is activated only after completion; failures keep the old profile active.",
@@ -165,6 +179,9 @@ export default function KnowledgeLibraryPanel({
   onDeleteDocument,
   onDeleteVersion,
   onPatchDocument,
+  onPutBinding,
+  onPatchBinding,
+  onDeleteBinding,
   onRunMaintenance,
   onViewChunks,
 }: Props) {
@@ -178,7 +195,7 @@ export default function KnowledgeLibraryPanel({
   const groupIdForDocument = useMemo(() => {
     const result = new Map<string, string>();
     for (const document of documents) {
-      const node = document.indexNodeId ? indexById.get(document.indexNodeId) : null;
+      const node = document.binding?.indexNodeId ? indexById.get(document.binding.indexNodeId) : null;
       const parent = node?.parentId ? indexById.get(node.parentId) : node;
       result.set(document.id, parent?.id ?? UNBOUND_GROUP);
     }
@@ -212,7 +229,7 @@ export default function KnowledgeLibraryPanel({
     if (effectiveParentId !== ALL_GROUP && groupIdForDocument.get(document.id) !== effectiveParentId) return false;
     if (!normalizedQuery) return true;
     const versionNames = document.versions.map((version) => version.sourceFileName).join("\n");
-    return `${document.title}\n${document.lessonCode ?? ""}\n${document.indexPathSnapshot}\n${versionNames}`
+    return `${document.title}\n${document.lessonCode ?? ""}\n${document.sourceType}\n${document.binding?.indexPathSnapshot ?? ""}\n${versionNames}`
       .toLocaleLowerCase().includes(normalizedQuery);
   }), [documents, effectiveParentId, groupIdForDocument, normalizedQuery]);
 
@@ -247,8 +264,8 @@ export default function KnowledgeLibraryPanel({
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-zinc-50/40 p-4">
           {visibleDocuments.length ? visibleDocuments.map((document) => <article key={document.id} className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
             <div className="flex flex-wrap items-start gap-3">
-              <div className="min-w-0 flex-1"><h4 className="truncate font-semibold text-zinc-900">{document.lessonCode ? `${document.lessonCode} · ` : ""}{document.title}</h4><p className="mt-1 truncate text-xs text-zinc-500">{document.indexPathSnapshot} · {document.bindingStatus} · {document.chunkCount} {t.chunks}</p><IndexTreeSelector className="mt-3 max-w-xl" value={document.indexNodeId ?? ""} onChange={(indexNodeId) => indexNodeId && onPatchDocument(document, { indexNodeId })} nodes={indexTree} invalid={!document.indexNodeId} labels={{ choose: t.mapping, collapse: t.collapseIndex, expand: t.expandIndex, noResults: t.noMatchingIndex, searchPlaceholder: t.searchIndex, unclassified: t.noParent }} /></div>
-              <button type="button" onClick={() => onPatchDocument(document, { enabled: document.bindingStatus === "DISABLED" })} className="rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700 transition-colors hover:border-zinc-300 hover:bg-zinc-50">{document.bindingStatus === "DISABLED" ? t.enable : t.disable}</button>
+              <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h4 className="truncate font-semibold text-zinc-900">{document.lessonCode ? `${document.lessonCode} · ` : ""}{document.title}</h4><span className="rounded-full bg-cyan-50 px-2 py-0.5 text-[11px] font-medium text-cyan-800">{document.sourceType}</span></div><p className="mt-1 truncate text-xs text-zinc-500">{document.binding?.indexPathSnapshot ?? t.noParent} · {document.binding?.status ?? "UNBOUND"} · {document.chunkCount} {t.chunks}</p><IndexTreeSelector className="mt-3 max-w-xl" value={document.binding?.indexNodeId ?? ""} onChange={(indexNodeId) => indexNodeId && onPutBinding(document, indexNodeId)} nodes={indexTree} invalid={!document.binding?.indexNodeId} labels={{ choose: t.mapping, collapse: t.collapseIndex, expand: t.expandIndex, noResults: t.noMatchingIndex, searchPlaceholder: t.searchIndex, unclassified: t.noParent }} />{document.binding ? <div className="mt-2 flex flex-wrap items-center gap-3"><label className="inline-flex items-center gap-2 text-xs text-zinc-700"><input type="checkbox" checked={document.binding.appliesToDescendants} onChange={(event) => onPatchBinding(document, event.target.checked)} className="h-4 w-4 rounded border-zinc-300 text-cyan-700" />{t.appliesToDescendants}</label><button type="button" onClick={() => onDeleteBinding(document)} className="text-xs font-medium text-amber-700 hover:text-amber-900">{t.unlink}</button></div> : null}</div>
+              <button type="button" onClick={() => onPatchDocument(document, { enabled: !document.enabled })} className="rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700 transition-colors hover:border-zinc-300 hover:bg-zinc-50">{document.enabled ? t.disable : t.enable}</button>
               <button type="button" onClick={() => onDeleteDocument(document)} className="rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs text-rose-700 transition-colors hover:bg-rose-100"><Trash2 className="mr-1 inline h-3 w-3" />{t.delete}</button>
             </div>
             <div className="mt-3 space-y-2">{document.versions.map((version) => <div key={version.id} className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-100 bg-zinc-50 px-3 py-2 text-xs text-zinc-700"><span className="min-w-0 flex-1 truncate">v{version.versionNumber} · {version.sourceFileName} · {version.status}</span>{version.processingMode === "AI" || version.processorModel ? <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 font-medium text-violet-800"><Sparkles className="h-3 w-3" />{t.aiSegmented}</span> : <span className="rounded-full bg-cyan-100 px-2 py-0.5 font-medium text-cyan-800">{t.programSegmented}</span>}<button type="button" disabled={version.chunkCount === 0} title={t.viewChunks} onClick={() => onViewChunks(version)} className="rounded-full bg-white px-2 py-0.5 text-cyan-700 ring-1 ring-zinc-200 transition-colors hover:bg-cyan-50 hover:ring-cyan-200 disabled:cursor-default disabled:text-zinc-400 disabled:hover:bg-white disabled:hover:ring-zinc-200">{version.chunkCount} {t.chunks}</button><span className="rounded-full bg-white px-2 py-0.5 text-zinc-500 ring-1 ring-zinc-200">{version.vectorCount} {t.vectors}</span>{document.activeVersionId === version.id ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800">{t.active}</span> : <>{version.status === "INACTIVE" && version.chunkCount > 0 ? <button type="button" className="font-medium text-cyan-700 hover:text-cyan-900" onClick={() => onActivate(document, version)}>{t.activate}</button> : null}{["INACTIVE", "FAILED", "REJECTED"].includes(version.status) ? <button type="button" disabled={deletingVersionId === version.id} className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2 py-1 text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-50" onClick={() => onDeleteVersion(document, version)}>{deletingVersionId === version.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}{t.deleteVersion}</button> : null}</>}</div>)}</div>

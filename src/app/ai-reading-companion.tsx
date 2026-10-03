@@ -50,6 +50,9 @@ type Message = {
       citation: string;
       title: string;
       lessonCode: string | null;
+      sourceType?: string;
+      sourceFormat?: string;
+      locator?: { kind: "subtitle"; startMs: number | null; endMs: number | null } | { kind: "text"; lineStart: number; lineEnd: number; headingPath: string[] };
       startMs: number | null;
       endMs: number | null;
       scope: "current" | "related";
@@ -101,9 +104,9 @@ const labels = {
     configure: "配置阅读伴侣",
     configureHint: "请先选择可用的 AI 端点和视觉模型。",
     recentContext: "模型接收近期会话和最多 4 张参考图；全部历史仍保存在本地。",
-    knowledgeSources: "字幕来源",
+    knowledgeSources: "资料来源",
     semanticUnavailable: "本次未使用语义检索。",
-    noCurrentBinding: "当前图片没有课程字幕关联，已使用全库检索。",
+    noCurrentBinding: "当前图片没有关联资料，已使用全库检索。",
   },
   en: {
     title: "AI reading companion",
@@ -142,9 +145,9 @@ const labels = {
     configure: "Configure reading companion",
     configureHint: "Select an available AI endpoint and vision-capable model first.",
     recentContext: "The model receives recent chat and up to 4 reference images; all history stays saved locally.",
-    knowledgeSources: "Subtitle sources",
+    knowledgeSources: "Material sources",
     semanticUnavailable: "Semantic retrieval was unavailable for this answer.",
-    noCurrentBinding: "The current image has no linked course subtitle; the full library was searched.",
+    noCurrentBinding: "The current image has no linked material; the full library was searched.",
   },
 } as const;
 
@@ -162,6 +165,14 @@ function knowledgeTime(value: number | null) {
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
     : `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function knowledgeLocation(source: Message["knowledge"] extends { sources: Array<infer T> } | null ? T : never) {
+  if (source.locator?.kind === "text") {
+    const heading = source.locator.headingPath.join(" / ");
+    return `${heading ? `${heading} · ` : ""}L${source.locator.lineStart}–L${source.locator.lineEnd}`;
+  }
+  return `${knowledgeTime(source.startMs)}–${knowledgeTime(source.endMs)}`;
 }
 
 function clampedSize(size: { width: number; height: number }) {
@@ -909,7 +920,7 @@ export default function AiReadingCompanion({
                                 <p key={`${message.id}-${source.citation}`}>
                                   <span className="font-semibold">[{source.citation}]</span>{" "}
                                   {source.lessonCode ? `${source.lessonCode} · ` : ""}{source.title}{" · "}
-                                  {knowledgeTime(source.startMs)}–{knowledgeTime(source.endMs)}
+                                  {knowledgeLocation(source)}
                                 </p>
                               ))}
                             </div>

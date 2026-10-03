@@ -8,6 +8,7 @@ import test from "node:test";
 import Database from "better-sqlite3";
 
 import {
+  backupKnowledgeSchema,
   collectKnowledgeBackup,
   finalizeKnowledgeRestore,
   prepareKnowledgeRestore,
@@ -24,11 +25,30 @@ async function initializeKnowledgeDatabase(databasePath: string) {
     "20261001010000_import_processing_modes",
     "20261001020000_import_diagnostics",
     "20261001030000_clear_completed_import_errors",
+    "20261002000000_generalize_knowledge_sources",
   ]) {
     db.exec(await readFile(path.join(process.cwd(), "knowledge", "migrations", migration, "migration.sql"), "utf8"));
   }
   db.close();
 }
+
+test("v6 knowledge manifests remain accepted and receive subtitle defaults during restore", () => {
+  const parsed = backupKnowledgeSchema.parse({
+    profiles: [],
+    documents: [{
+      id: "legacy", title: "Legacy", lessonCode: "19A", indexPath: "Course / 19A",
+      appliesToDescendants: true, bindingStatus: "ACTIVE", versions: [{
+        id: "legacy-v1", versionNumber: 1, sourceFileName: "19A.srt", sourceMimeType: "text/plain",
+        sourceSizeBytes: 1, sourceHash: "a".repeat(64), sourcePath: "knowledge/sources/a.srt", rawText: "x",
+        status: "ACTIVE", approvalMode: "AUTO", processorEndpointId: null, processorModel: null,
+        processorPromptHash: null, error: null, activatedAt: null, chunks: [],
+      }],
+    }],
+  });
+  assert.equal(parsed.documents[0].sourceType, undefined);
+  assert.equal(parsed.documents[0].versions[0].sourceFormat, undefined);
+  assert.equal(parsed.documents[0].indexPath, "Course / 19A");
+});
 
 test("knowledge backup restores source, chunks, keywords, vectors, active profile, and FTS", async () => {
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "brooks-knowledge-backup-"));
@@ -46,10 +66,11 @@ test("knowledge backup restores source, chunks, keywords, vectors, active profil
   await writeFile(sourcePath, sourceBuffer);
   const db = knowledgeDb();
   db.prepare("INSERT INTO KnowledgeEmbeddingProfile (id, endpointId, model, dimensions, status) VALUES ('p1','e1','embed',3,'ACTIVE')").run();
-  db.prepare("INSERT INTO KnowledgeDocument (id, title, lessonCode, normalizedLessonCode, indexNodeId, indexPathSnapshot) VALUES ('d1','40A','40A','40a','old-node','课程 / 40A')").run();
+  db.prepare("INSERT INTO KnowledgeDocument (id, title, lessonCode, normalizedLessonCode, sourceType) VALUES ('d1','40A','40A','40a','SUBTITLE')").run();
+  db.prepare("INSERT INTO KnowledgeDocumentBinding (id, documentId, indexNodeId, indexPathSnapshot) VALUES ('b1','d1','old-node','课程 / 40A')").run();
   db.prepare(`INSERT INTO KnowledgeDocumentVersion
-    (id, documentId, versionNumber, sourceFileName, sourceMimeType, sourceSizeBytes, sourceHash, sourcePath, rawText, status)
-    VALUES ('v1','d1',1,'40A.srt','application/x-subrip',?,?,?,'强势突破 H1','ACTIVE')`)
+    (id, documentId, versionNumber, sourceFileName, sourceMimeType, sourceSizeBytes, sourceHash, sourcePath, rawText, status, sourceFormat)
+    VALUES ('v1','d1',1,'40A.srt','application/x-subrip',?,?,?,'强势突破 H1','ACTIVE','SRT')`)
     .run(sourceBuffer.length, sourceHash, sourcePath);
   db.prepare(`INSERT INTO KnowledgeChunk
     (id, versionId, ordinal, sourceCueStart, sourceCueEnd, startMs, endMs, originalText, cleanedText, topic, keywordsJson)
@@ -77,7 +98,10 @@ test("knowledge backup restores source, chunks, keywords, vectors, active profil
   finalizeKnowledgeRestore(state);
 
   const restored = knowledgeDb();
-  assert.equal((restored.prepare("SELECT indexNodeId FROM KnowledgeDocument").get() as { indexNodeId: string }).indexNodeId, "new-node");
+  assert.equal((restored.prepare("SELECT indexNodeId FROM KnowledgeDocumentBinding").get() as { indexNodeId: string }).indexNodeId, "new-node");
+  assert.equal((restored.prepare("SELECT sourceType FROM KnowledgeDocument").get() as { sourceType: string }).sourceType, "SUBTITLE");
+  assert.equal((restored.prepare("SELECT sourceFormat FROM KnowledgeDocumentVersion").get() as { sourceFormat: string }).sourceFormat, "SRT");
+  assert.equal((restored.prepare("SELECT json_extract(locatorJson, '$.kind') AS kind FROM KnowledgeChunk").get() as { kind: string }).kind, "subtitle");
   assert.equal((restored.prepare("SELECT COUNT(*) AS count FROM KnowledgeChunk").get() as { count: number }).count, 1);
   assert.equal((restored.prepare("SELECT status FROM KnowledgeEmbeddingProfile").get() as { status: string }).status, "ACTIVE");
   assert.deepEqual((restored.prepare("SELECT embedding FROM KnowledgeChunkEmbedding").get() as { embedding: Buffer }).embedding, embeddingBuffer);

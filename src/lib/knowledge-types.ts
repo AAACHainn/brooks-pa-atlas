@@ -14,12 +14,42 @@ export type KnowledgeProcessedSegment = {
 
 export type KnowledgeImportProcessingMode = "QUICK" | "AI";
 
+export const knowledgeSourceTypes = ["SUBTITLE", "BOOK", "ARTICLE", "NOTE", "OTHER"] as const;
+export type KnowledgeSourceType = (typeof knowledgeSourceTypes)[number];
+
+export const knowledgeSourceFormats = [
+  "SRT", "VTT", "ASS", "TXT", "MARKDOWN", "PDF", "EPUB", "DOCX", "HTML", "OTHER",
+] as const;
+export type KnowledgeSourceFormat = (typeof knowledgeSourceFormats)[number];
+
+export type SubtitleKnowledgeLocator = {
+  v: 1;
+  kind: "subtitle";
+  cueStart: number;
+  cueEnd: number;
+  startMs: number | null;
+  endMs: number | null;
+};
+
+export type TextKnowledgeLocator = {
+  v: 1;
+  kind: "text";
+  lineStart: number;
+  lineEnd: number;
+  headingPath: string[];
+};
+
+export type KnowledgeLocator = SubtitleKnowledgeLocator | TextKnowledgeLocator;
+
 export type KnowledgeSource = {
   id: string;
   documentId: string;
   versionId: string;
   title: string;
   lessonCode: string | null;
+  sourceType: KnowledgeSourceType;
+  sourceFormat: KnowledgeSourceFormat;
+  locator: KnowledgeLocator;
   indexNodeId: string | null;
   indexPath: string;
   startMs: number | null;
@@ -53,6 +83,7 @@ export type KnowledgeImportJobSnapshot = {
   items: Array<{
     id: string;
     sourceFileName: string;
+    sourceType: KnowledgeSourceType;
     targetIndexNodeId: string;
     targetIndexPath: string;
     documentId: string | null;

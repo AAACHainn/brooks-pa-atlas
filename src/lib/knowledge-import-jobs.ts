@@ -14,6 +14,18 @@ import {
 } from "@/lib/knowledge-embeddings";
 import { expandKnowledgeKeywords, normalizeKnowledgeKeyword } from "@/lib/knowledge-keywords";
 import {
+  knowledgeTextForIndex,
+  parseKnowledgeLocator,
+  serializeKnowledgeLocator,
+  sourceFormatForFileName,
+} from "@/lib/knowledge-source";
+import {
+  createKnowledgeTextChunks,
+  decodeKnowledgeText,
+  KNOWLEDGE_TEXT_RULE_VERSION,
+  parseKnowledgeText,
+} from "@/lib/knowledge-text";
+import {
   KNOWLEDGE_PROCESSING_RULE_VERSION,
   collapseRollingSubtitleCues,
   createDeterministicSegments,
@@ -26,6 +38,7 @@ import type {
   KnowledgeImportJobSnapshot,
   KnowledgeImportProcessingMode,
   KnowledgeProcessedSegment,
+  KnowledgeSourceType,
 } from "@/lib/knowledge-types";
 import { parseSubtitle } from "@/lib/subtitle-parser";
 
@@ -34,12 +47,14 @@ const globalForKnowledgeImportJobs = globalThis as typeof globalThis & {
 };
 const runningJobs = globalForKnowledgeImportJobs.brooksKnowledgeImportJobs ?? new Map<string, Promise<void>>();
 globalForKnowledgeImportJobs.brooksKnowledgeImportJobs = runningJobs;
-const supportedExtensions = new Set([".srt", ".vtt", ".ass", ".txt"]);
+const supportedExtensions = new Set([".srt", ".vtt", ".ass", ".txt", ".md", ".markdown"]);
+const subtitleExtensions = new Set([".srt", ".vtt", ".ass"]);
 
 type ImportSource = {
   fileName: string;
   mimeType: string;
   buffer: Buffer;
+  sourceType: KnowledgeSourceType;
   targetIndexNodeId: string;
   targetIndexPath: string;
 };
@@ -52,6 +67,7 @@ type ItemRow = {
   sourceSizeBytes: number;
   sourceHash: string;
   sourcePath: string;
+  sourceType: KnowledgeSourceType;
   targetIndexNodeId: string;
   targetIndexPath: string;
   documentId: string | null;
@@ -71,10 +87,13 @@ type ItemRow = {
 
 type ProcessingIdentity = {
   mode: KnowledgeImportProcessingMode;
+  ruleVersion: string;
   endpointId: string | null;
   model: string | null;
   promptHash: string | null;
 };
+
+export class KnowledgeSourceTypeConflictError extends Error {}
 
 function nowSql() {
   return new Date().toISOString();
@@ -111,35 +130,52 @@ function lessonCodeFromFile(fileName: string) {
 }
 
 async function processingIdentity(mode: KnowledgeImportProcessingMode): Promise<ProcessingIdentity> {
-  if (mode === "QUICK") return { mode, endpointId: null, model: null, promptHash: null };
+  if (mode === "QUICK") return { mode, ruleVersion: KNOWLEDGE_PROCESSING_RULE_VERSION, endpointId: null, model: null, promptHash: null };
   const config = await readStoredAiConfig();
   const endpoint = config.endpoints.find((item) => item.id === config.activeEndpointId);
   const skill = config.skills.subtitleKnowledge;
   const model = skill.modelOverride || endpoint?.defaultModel || "";
   if (!endpoint || !model) throw new Error("AI 深度整理尚未配置可用的聊天模型，请改用快速导入或先完成大模型配置。");
-  return { mode, endpointId: endpoint.id, model, promptHash: subtitlePromptHash(skill.prompt, skill) };
+  return { mode, ruleVersion: KNOWLEDGE_PROCESSING_RULE_VERSION, endpointId: endpoint.id, model, promptHash: subtitlePromptHash(skill.prompt, skill) };
 }
 
 export function assertKnowledgeImportLimits(sources: ImportSource[]) {
-  if (sources.length < 1 || sources.length > 200) throw new Error("每批必须包含 1–200 个字幕文件。");
+  if (sources.length < 1 || sources.length > 200) throw new Error("每批必须包含 1–200 个资料文件。");
   let total = 0;
   for (const source of sources) {
     if (!supportedExtensions.has(path.extname(source.fileName).toLowerCase())) {
-      throw new Error(`不支持的字幕格式：${source.fileName}`);
+      throw new Error(`不支持的资料格式：${source.fileName}`);
+    }
+    const extension = path.extname(source.fileName).toLowerCase();
+    if (subtitleExtensions.has(extension) && source.sourceType !== "SUBTITLE") {
+      throw new Error(`${source.fileName} 必须作为字幕资料导入。`);
+    }
+    if ([".md", ".markdown"].includes(extension) && source.sourceType === "SUBTITLE") {
+      throw new Error(`${source.fileName} 不能作为字幕资料导入。`);
     }
     if (source.buffer.length > 10 * 1024 * 1024) throw new Error(`${source.fileName} 超过 10 MiB。`);
     total += source.buffer.length;
   }
-  if (total > 100 * 1024 * 1024) throw new Error("本批字幕总大小超过 100 MiB。");
+  if (total > 100 * 1024 * 1024) throw new Error("本批资料总大小超过 100 MiB。");
+}
+
+export function assertKnowledgeImportMode(
+  sources: Array<{ sourceType: KnowledgeSourceType }>,
+  processingMode: KnowledgeImportProcessingMode,
+) {
+  if (processingMode !== "QUICK" && processingMode !== "AI") throw new Error("无效的字幕处理模式。");
+  if (processingMode === "AI" && sources.some((source) => source.sourceType !== "SUBTITLE")) {
+    throw new Error("AI 深度整理只适用于全部由字幕组成的导入批次。");
+  }
 }
 
 async function saveSource(source: ImportSource) {
   const hash = createHash("sha256").update(source.buffer).digest("hex");
   const extension = path.extname(source.fileName).toLowerCase() || ".txt";
-  await mkdir(getKnowledgeSourceRoot(), { recursive: true });
+  await mkdir(/* turbopackIgnore: true */ getKnowledgeSourceRoot(), { recursive: true });
   const fullPath = path.join(/* turbopackIgnore: true */ getKnowledgeSourceRoot(), `${hash}${extension}`);
   try {
-    await writeFile(fullPath, source.buffer, { flag: "wx" });
+    await writeFile(/* turbopackIgnore: true */ fullPath, source.buffer, { flag: "wx" });
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
   }
@@ -152,13 +188,29 @@ export async function createKnowledgeImportJob(
   processingMode: KnowledgeImportProcessingMode = "QUICK",
 ) {
   assertKnowledgeImportLimits(sources);
-  if (processingMode !== "QUICK" && processingMode !== "AI") throw new Error("无效的字幕处理模式。");
+  assertKnowledgeImportMode(sources, processingMode);
   if (processingMode === "AI") await processingIdentity(processingMode);
   const db = knowledgeDb();
   const active = db.prepare("SELECT id FROM KnowledgeImportJob WHERE activeKey = 'GLOBAL' LIMIT 1").get();
   if (active) throw new Error("已有知识导入任务正在运行，请等待完成。");
   if (db.prepare("SELECT id FROM KnowledgeMaintenanceJob WHERE activeKey = 'GLOBAL' LIMIT 1").get()) {
     throw new Error("知识库正在维护，请等待完成后再导入。");
+  }
+  const typeByTargetNode = new Map<string, KnowledgeSourceType>();
+  for (const source of sources) {
+    const batchType = typeByTargetNode.get(source.targetIndexNodeId);
+    if (batchType && batchType !== source.sourceType) {
+      throw new KnowledgeSourceTypeConflictError("同一导入批次不能向同一索引节点导入不同类型的资料。");
+    }
+    typeByTargetNode.set(source.targetIndexNodeId, source.sourceType);
+    const occupied = db.prepare(`SELECT d.sourceType FROM KnowledgeDocumentBinding b
+      JOIN KnowledgeDocument d ON d.id = b.documentId WHERE b.indexNodeId = ? LIMIT 1`)
+      .get(source.targetIndexNodeId) as { sourceType: KnowledgeSourceType } | undefined;
+    if (occupied && occupied.sourceType !== source.sourceType) {
+      throw new KnowledgeSourceTypeConflictError(
+        `目标索引已关联 ${occupied.sourceType} 资料，不能导入 ${source.sourceType}。`,
+      );
+    }
   }
   const jobId = randomUUID();
   acquireHeavyTaskOrThrow("knowledge-import", jobId);
@@ -172,13 +224,13 @@ export async function createKnowledgeImportJob(
         .run(jobId, manualReview ? 1 : 0, processingMode, prepared.length);
       const insert = db.prepare(`INSERT INTO KnowledgeImportItem
         (id, jobId, sourceFileName, sourceMimeType, sourceSizeBytes, sourceHash, sourcePath,
-         targetIndexNodeId, targetIndexPath)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+         sourceType, targetIndexNodeId, targetIndexPath)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       for (const entry of prepared) {
         insert.run(
           randomUUID(), jobId, entry.source.fileName, entry.source.mimeType || "text/plain",
           entry.source.buffer.length, entry.hash, entry.sourcePath,
-          entry.source.targetIndexNodeId, entry.source.targetIndexPath,
+          entry.source.sourceType, entry.source.targetIndexNodeId, entry.source.targetIndexPath,
         );
       }
     })();
@@ -194,7 +246,7 @@ function resolveSourcePath(sourcePath: string) {
   const full = path.resolve(/* turbopackIgnore: true */ process.cwd(), sourcePath);
   const root = path.resolve(getKnowledgeSourceRoot());
   const relative = path.relative(root, full);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("字幕源文件路径越界。");
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("资料源文件路径越界。");
   return full;
 }
 
@@ -206,31 +258,44 @@ function prepareDocumentAndVersion(
 ) {
   const db = knowledgeDb();
   return db.transaction(() => {
-    let document = db.prepare("SELECT id FROM KnowledgeDocument WHERE indexNodeId = ? LIMIT 1")
-      .get(item.targetIndexNodeId) as { id: string } | undefined;
+    let document = db.prepare(`SELECT d.id, d.sourceType
+      FROM KnowledgeDocumentBinding b
+      JOIN KnowledgeDocument d ON d.id = b.documentId
+      WHERE b.indexNodeId = ? LIMIT 1`)
+      .get(item.targetIndexNodeId) as { id: string; sourceType: KnowledgeSourceType } | undefined;
+    if (document && document.sourceType !== item.sourceType) {
+      throw new KnowledgeSourceTypeConflictError(
+        `目标索引已关联 ${document.sourceType} 资料，不能导入 ${item.sourceType}。`,
+      );
+    }
     if (!document) {
-      document = { id: randomUUID() };
-      const lessonCode = lessonCodeFromFile(item.sourceFileName);
+      document = { id: randomUUID(), sourceType: item.sourceType };
+      const lessonCode = item.sourceType === "SUBTITLE" ? lessonCodeFromFile(item.sourceFileName) : null;
       db.prepare(`INSERT INTO KnowledgeDocument
-        (id, title, lessonCode, normalizedLessonCode, indexNodeId, indexPathSnapshot)
-        VALUES (?, ?, ?, ?, ?, ?)`)
+        (id, title, lessonCode, normalizedLessonCode, sourceType, enabled)
+        VALUES (?, ?, ?, ?, ?, 1)`)
         .run(document.id, path.basename(item.sourceFileName, path.extname(item.sourceFileName)), lessonCode,
-          normalizeKnowledgeKeyword(lessonCode), item.targetIndexNodeId, item.targetIndexPath);
+          lessonCode ? normalizeKnowledgeKeyword(lessonCode) : null, item.sourceType);
+      db.prepare(`INSERT INTO KnowledgeDocumentBinding
+        (id, documentId, indexNodeId, indexPathSnapshot, appliesToDescendants, status)
+        VALUES (?, ?, ?, ?, 1, 'ACTIVE')`)
+        .run(randomUUID(), document.id, item.targetIndexNodeId, item.targetIndexPath);
     } else {
-      db.prepare("UPDATE KnowledgeDocument SET indexPathSnapshot = ?, bindingStatus = 'ACTIVE', updatedAt = ? WHERE id = ?")
-        .run(item.targetIndexPath, nowSql(), document.id);
+      db.prepare(`UPDATE KnowledgeDocumentBinding SET indexPathSnapshot = ?, status = 'ACTIVE', updatedAt = ?
+        WHERE documentId = ?`).run(item.targetIndexPath, nowSql(), document.id);
     }
     const row = db.prepare("SELECT COALESCE(MAX(versionNumber), 0) + 1 AS nextVersion FROM KnowledgeDocumentVersion WHERE documentId = ?")
       .get(document.id) as { nextVersion: number };
     const versionId = randomUUID();
     db.prepare(`INSERT INTO KnowledgeDocumentVersion
       (id, documentId, versionNumber, sourceFileName, sourceMimeType, sourceSizeBytes, sourceHash,
-       sourcePath, rawText, status, approvalMode, processingMode, processingRuleVersion,
+       sourcePath, rawText, status, approvalMode, processingMode, processingRuleVersion, sourceFormat,
        processorEndpointId, processorModel, processorPromptHash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSING', ?, ?, ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSING', ?, ?, ?, ?, ?, ?, ?)`)
       .run(versionId, document.id, row.nextVersion, item.sourceFileName, item.sourceMimeType,
         item.sourceSizeBytes, item.sourceHash, item.sourcePath, rawText, manualReview ? "MANUAL" : "AUTO",
-        identity.mode, KNOWLEDGE_PROCESSING_RULE_VERSION, identity.endpointId, identity.model, identity.promptHash);
+        identity.mode, identity.ruleVersion, sourceFormatForFileName(item.sourceFileName),
+        identity.endpointId, identity.model, identity.promptHash);
     db.prepare("UPDATE KnowledgeImportItem SET documentId = ?, versionId = ?, phase = 'PARSED', updatedAt = ? WHERE id = ?")
       .run(document.id, versionId, nowSql(), item.id);
     return { documentId: document.id, versionId };
@@ -250,17 +315,18 @@ function reuseProcessedVersion(item: ItemRow, identity: ProcessingIdentity) {
     item.versionId,
     item.sourceHash,
     identity.mode,
-    KNOWLEDGE_PROCESSING_RULE_VERSION,
+    identity.ruleVersion,
     identity.model,
     identity.promptHash,
   ) as { id: string } | undefined;
   if (!cached) return false;
   const chunks = db.prepare(`SELECT id, ordinal, sourceCueStart, sourceCueEnd, startMs, endMs,
-    originalText, cleanedText, topic, keywordsJson FROM KnowledgeChunk
+    originalText, cleanedText, topic, keywordsJson, locatorKind, locatorJson FROM KnowledgeChunk
     WHERE versionId = ? ORDER BY ordinal`).all(cached.id) as Array<Record<string, unknown>>;
   const insertChunk = db.prepare(`INSERT INTO KnowledgeChunk
-    (id, versionId, ordinal, sourceCueStart, sourceCueEnd, startMs, endMs, originalText, cleanedText, topic, keywordsJson)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    (id, versionId, ordinal, sourceCueStart, sourceCueEnd, startMs, endMs, originalText, cleanedText,
+     topic, keywordsJson, locatorKind, locatorJson)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const insertKeyword = db.prepare(`INSERT OR IGNORE INTO KnowledgeChunkKeyword
     (chunkId, keyword, normalizedKeyword) VALUES (?, ?, ?)`);
   const insertEmbedding = db.prepare(`INSERT OR REPLACE INTO KnowledgeChunkEmbedding
@@ -270,7 +336,8 @@ function reuseProcessedVersion(item: ItemRow, identity: ProcessingIdentity) {
     for (const chunk of chunks) {
       const chunkId = randomUUID();
       insertChunk.run(chunkId, item.versionId, chunk.ordinal, chunk.sourceCueStart, chunk.sourceCueEnd,
-        chunk.startMs, chunk.endMs, chunk.originalText, chunk.cleanedText, chunk.topic, chunk.keywordsJson);
+        chunk.startMs, chunk.endMs, chunk.originalText, chunk.cleanedText, chunk.topic, chunk.keywordsJson,
+        chunk.locatorKind, chunk.locatorJson);
       const keywords = db.prepare("SELECT keyword, normalizedKeyword FROM KnowledgeChunkKeyword WHERE chunkId = ?")
         .all(chunk.id) as Array<{ keyword: string; normalizedKeyword: string }>;
       for (const keyword of keywords) insertKeyword.run(chunkId, keyword.keyword, keyword.normalizedKeyword);
@@ -352,29 +419,28 @@ async function processWindows(item: ItemRow, windows: ReturnType<typeof createSu
   }
 }
 
-function insertChunks(
+function persistChunks(
   item: ItemRow,
-  cues: ReturnType<typeof parseSubtitle>,
-  preparedSegments?: KnowledgeProcessedSegment[],
+  chunks: Array<{
+    sourceCueStart: number; sourceCueEnd: number; startMs: number | null; endMs: number | null;
+    originalText: string; cleanedText: string; topic: string; keywords: string[];
+    locatorKind: "SUBTITLE" | "TEXT"; locator: Parameters<typeof serializeKnowledgeLocator>[0];
+  }>,
 ) {
   const db = knowledgeDb();
-  const outputs = preparedSegments ? [] : db.prepare(`SELECT outputJson FROM KnowledgeProcessingWindow
-    WHERE itemId = ? ORDER BY ordinal`).all(item.id) as Array<{ outputJson: string }>;
-  const segments = preparedSegments
-    ?? outputs.flatMap((row) => JSON.parse(row.outputJson) as KnowledgeProcessedSegment[]);
-  const chunks = segments.map((segment) => materializeChunk(cues, segment));
   db.transaction(() => {
     db.prepare("DELETE FROM KnowledgeChunk WHERE versionId = ?").run(item.versionId);
     const insertChunk = db.prepare(`INSERT INTO KnowledgeChunk
-      (id, versionId, ordinal, sourceCueStart, sourceCueEnd, startMs, endMs, originalText, cleanedText, topic, keywordsJson)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      (id, versionId, ordinal, sourceCueStart, sourceCueEnd, startMs, endMs, originalText, cleanedText,
+       topic, keywordsJson, locatorKind, locatorJson)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const insertKeyword = db.prepare(`INSERT OR IGNORE INTO KnowledgeChunkKeyword
       (chunkId, keyword, normalizedKeyword) VALUES (?, ?, ?)`);
     chunks.forEach((chunk, ordinal) => {
       const chunkId = randomUUID();
       insertChunk.run(chunkId, item.versionId, ordinal, chunk.sourceCueStart, chunk.sourceCueEnd,
         chunk.startMs, chunk.endMs, chunk.originalText, chunk.cleanedText, chunk.topic,
-        JSON.stringify(chunk.keywords));
+        JSON.stringify(chunk.keywords), chunk.locatorKind, serializeKnowledgeLocator(chunk.locator));
       const exactTerms = new Set(chunk.keywords);
       for (const match of chunk.cleanedText.matchAll(/\b[A-Za-z][A-Za-z0-9]{0,9}\b/g)) {
         if (match[0].length <= 5) exactTerms.add(match[0]);
@@ -387,10 +453,31 @@ function insertChunks(
   return chunks.length;
 }
 
+function insertSubtitleChunks(
+  item: ItemRow,
+  cues: ReturnType<typeof parseSubtitle>,
+  preparedSegments?: KnowledgeProcessedSegment[],
+) {
+  const db = knowledgeDb();
+  const outputs = preparedSegments ? [] : db.prepare(`SELECT outputJson FROM KnowledgeProcessingWindow
+    WHERE itemId = ? ORDER BY ordinal`).all(item.id) as Array<{ outputJson: string }>;
+  const segments = preparedSegments
+    ?? outputs.flatMap((row) => JSON.parse(row.outputJson) as KnowledgeProcessedSegment[]);
+  const chunks = segments.map((segment) => materializeChunk(cues, segment));
+  return persistChunks(item, chunks);
+}
+
 async function createVectorsAndIndex(item: ItemRow) {
   const db = knowledgeDb();
-  const chunks = db.prepare(`SELECT id, cleanedText FROM KnowledgeChunk WHERE versionId = ? ORDER BY ordinal`)
-    .all(item.versionId) as Array<{ id: string; cleanedText: string }>;
+  const chunks = db.prepare(`SELECT id, cleanedText, locatorJson, sourceCueStart, sourceCueEnd, startMs, endMs
+    FROM KnowledgeChunk WHERE versionId = ? ORDER BY ordinal`)
+    .all(item.versionId) as Array<{
+      id: string; cleanedText: string; locatorJson: string; sourceCueStart: number; sourceCueEnd: number;
+      startMs: number | null; endMs: number | null;
+    }>;
+  const indexedTexts = chunks.map((chunk) => knowledgeTextForIndex(parseKnowledgeLocator(chunk.locatorJson, {
+    cueStart: chunk.sourceCueStart, cueEnd: chunk.sourceCueEnd, startMs: chunk.startMs, endMs: chunk.endMs,
+  }), chunk.cleanedText));
   const config = await readStoredAiConfig();
   const configuredEmbedding = config.embeddingEndpoints.find((endpoint) => endpoint.id === config.activeEmbeddingEndpointId);
   const profile = activeEmbeddingProfile();
@@ -405,7 +492,7 @@ async function createVectorsAndIndex(item: ItemRow) {
   } else {
     const totalBatches = Math.ceil(chunks.length / EMBEDDING_BATCH_SIZE);
     setItemStage(item.id, "EMBEDDING", 0, totalBatches, "batches");
-    const embedded = await embedTexts(chunks.map((chunk) => chunk.cleanedText), {
+    const embedded = await embedTexts(indexedTexts, {
       onBatchCompleted: (completed, total) => updateItemProgress(item.id, completed, total),
     });
     const targetProfile = ensureEmbeddingProfile(embedded.endpointId, embedded.model, embedded.vectors[0]?.length ?? 0);
@@ -415,16 +502,24 @@ async function createVectorsAndIndex(item: ItemRow) {
     JOIN KnowledgeDocument d ON d.id = v.documentId WHERE v.id = ?`).get(item.versionId) as {
       documentId: string; title: string; lessonCode: string | null;
     };
-  const rows = db.prepare(`SELECT id, topic, keywordsJson, cleanedText FROM KnowledgeChunk
-    WHERE versionId = ? ORDER BY ordinal`).all(item.versionId) as Array<Record<string, string>>;
+  const rows = db.prepare(`SELECT id, topic, keywordsJson, cleanedText, locatorJson,
+    sourceCueStart, sourceCueEnd, startMs, endMs FROM KnowledgeChunk
+    WHERE versionId = ? ORDER BY ordinal`).all(item.versionId) as Array<Record<string, string | number | null>>;
   setItemStage(item.id, "FTS_INDEXING", 0, 1, "steps");
   db.transaction(() => {
     db.prepare("DELETE FROM KnowledgeChunkFts WHERE versionId = ?").run(item.versionId);
     const insert = db.prepare(`INSERT INTO KnowledgeChunkFts
       (chunkId, documentId, versionId, title, lessonCode, topic, keywords, cleanedText)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-    for (const row of rows) insert.run(row.id, version.documentId, item.versionId, version.title,
-      version.lessonCode ?? "", row.topic, (JSON.parse(row.keywordsJson) as string[]).join(" "), row.cleanedText);
+    for (const row of rows) {
+      const locator = parseKnowledgeLocator(String(row.locatorJson), {
+        cueStart: Number(row.sourceCueStart), cueEnd: Number(row.sourceCueEnd),
+        startMs: row.startMs === null ? null : Number(row.startMs), endMs: row.endMs === null ? null : Number(row.endMs),
+      });
+      insert.run(row.id, version.documentId, item.versionId, version.title,
+        version.lessonCode ?? "", row.topic, (JSON.parse(String(row.keywordsJson)) as string[]).join(" "),
+        knowledgeTextForIndex(locator, String(row.cleanedText)));
+    }
   })();
   updateItemProgress(item.id, 1, 1);
 }
@@ -455,16 +550,22 @@ async function processItem(
       .run(nowSql(), item.versionId);
   }
   setItemStage(itemId, "READING_SOURCE", 0, 1, "steps");
-  const buffer = await readFile(resolveSourcePath(item.sourcePath));
-  const rawText = buffer.toString("utf8").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
-  const cues = collapseRollingSubtitleCues(parseSubtitle(buffer, item.sourceFileName));
+  const buffer = await readFile(/* turbopackIgnore: true */ resolveSourcePath(item.sourcePath));
+  const isSubtitle = item.sourceType === "SUBTITLE";
+  const sourceFormat = sourceFormatForFileName(item.sourceFileName);
+  const rawText = (isSubtitle ? buffer.toString("utf8") : decodeKnowledgeText(buffer))
+    .replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  const cues = isSubtitle ? collapseRollingSubtitleCues(parseSubtitle(buffer, item.sourceFileName)) : null;
   updateItemProgress(itemId, 1, 1);
-  const identity = await processingIdentity(processingMode);
+  const identity = isSubtitle
+    ? await processingIdentity(processingMode)
+    : { mode: "QUICK" as const, ruleVersion: `${KNOWLEDGE_TEXT_RULE_VERSION}:${sourceFormat}`, endpointId: null, model: null, promptHash: null };
   if (!item.versionId) prepareDocumentAndVersion(item, rawText, manualReview, identity);
   item = db.prepare("SELECT * FROM KnowledgeImportItem WHERE id = ?").get(itemId) as ItemRow;
   const cacheHit = reuseProcessedVersion(item, identity);
   if (!cacheHit) {
-    if (processingMode === "AI") {
+    if (isSubtitle && processingMode === "AI") {
+      if (!cues) throw new Error("字幕解析结果不存在。");
       const windows = createSubtitleWindows(cues);
       persistWindows(item.id, windows);
       const completedWindows = db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeProcessingWindow
@@ -472,10 +573,14 @@ async function processItem(
       setItemStage(item.id, "AI_PROCESSING", completedWindows.count, windows.length, "windows");
       await processWindows(item, windows);
       setItemStage(item.id, "CHUNKING", 0, 1, "steps");
-      insertChunks(item, cues);
+      insertSubtitleChunks(item, cues);
+    } else if (isSubtitle) {
+      if (!cues) throw new Error("字幕解析结果不存在。");
+      setItemStage(item.id, "DETERMINISTIC_CHUNKING", 0, 1, "steps");
+      insertSubtitleChunks(item, cues, createDeterministicSegments(cues));
     } else {
       setItemStage(item.id, "DETERMINISTIC_CHUNKING", 0, 1, "steps");
-      insertChunks(item, cues, createDeterministicSegments(cues));
+      persistChunks(item, createKnowledgeTextChunks(parseKnowledgeText(buffer, sourceFormat === "MARKDOWN")));
     }
     updateItemProgress(item.id, 1, 1);
   } else {
@@ -604,7 +709,7 @@ export function knowledgeImportJobSnapshot(jobId: string): KnowledgeImportJobSna
       const inputTokens = itemWindows.reduce((sum, window) => sum + Number(window.inputTokens || 0), 0);
       const outputTokens = itemWindows.reduce((sum, window) => sum + Number(window.outputTokens || 0), 0);
       return {
-        id: item.id, sourceFileName: item.sourceFileName,
+        id: item.id, sourceFileName: item.sourceFileName, sourceType: item.sourceType,
         targetIndexNodeId: item.targetIndexNodeId, targetIndexPath: item.targetIndexPath,
         documentId: item.documentId, versionId: item.versionId, status: item.status,
         phase: item.phase, retryCount: item.retryCount, error: item.error,

@@ -1,7 +1,8 @@
 "use client";
 
-import { BookOpen, Check, FileSearch, Loader2, Search, UploadCloud, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BookOpen, Check, ChevronDown, FileSearch, Loader2, Search, UploadCloud, X } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { useAppDialog } from "@/app/app-dialog";
 import IndexTreeSelector, {
@@ -18,59 +19,68 @@ import KnowledgeLibraryPanel, {
   type KnowledgeMaintenanceSummary,
   type KnowledgeVersionRow,
 } from "@/app/knowledge-library-panel";
+import type { KnowledgeSourceType } from "@/lib/knowledge-types";
 
 type Locale = "zh" | "en";
-type SelectedSubtitle = { id: string; file: File; indexNodeId: string };
+type SelectedKnowledgeFile = { id: string; file: File; indexNodeId: string; sourceType: KnowledgeSourceType | ""; lockedType: boolean };
 type JobItem = KnowledgeImportJobItemView;
 type Job = KnowledgeImportJobView;
 type Version = KnowledgeVersionRow;
 type DocumentRow = KnowledgeDocumentRow;
-type Review = { id: string; title: string; sourceFileName: string; rawText: string; chunks: Array<{ ordinal: number; startMs: number | null; endMs: number | null; originalText: string; cleanedText: string; topic: string; keywords: string[] }> };
+type Review = { id: string; title: string; sourceFileName: string; rawText: string; chunks: Array<{ ordinal: number; startMs: number | null; endMs: number | null; locator?: { kind: "subtitle"; startMs: number | null; endMs: number | null } | { kind: "text"; lineStart: number; lineEnd: number; headingPath: string[] }; originalText: string; cleanedText: string; topic: string; keywords: string[] }> };
 type MaintenanceJob = KnowledgeMaintenanceJob;
 
 const text = {
   zh: {
-    title: "字幕知识库", importTab: "导入字幕", libraryTab: "知识文档", testTab: "检索测试",
-    choose: "选择字幕文件", chooseFolder: "选择字幕文件夹", root: "批量匹配根节点", autoMap: "自动匹配",
+    title: "资料知识库", importTab: "导入资料", libraryTab: "资料文档", testTab: "检索测试",
+    choose: "选择资料文件", chooseFolder: "选择资料文件夹", root: "批量匹配根节点", autoMap: "自动匹配",
+    sourceType: "资料类型（逐文件确认）", batchType: "批量设置类型", applyBatchType: "应用到可设置文件",
     mapping: "目标索引（导入前必须确认）", manual: "人工预览后再入库", manualHint: "默认关闭：处理与程序校验通过后自动批准。",
-    processingMode: "字幕处理方式", quickMode: "快速导入（推荐）", quickModeHint: "程序去重、滚动字幕合并和确定性分段，直接生成 Embedding；不调用聊天模型。",
+    processingMode: "资料处理方式", quickMode: "快速导入（推荐）", quickModeHint: "字幕使用程序去重和确定性分段；TXT/Markdown 按段落与标题切片；直接生成 Embedding，不调用聊天模型。",
     aiMode: "AI 深度整理", aiModeHint: "聊天模型只返回分段范围、主题和关键词，不重写字幕正文；适合断句较差的字幕。",
-    start: "开始导入", noFiles: "请选择 .srt、.vtt、.ass 或 .txt 文件。", progress: "导入进度",
+    start: "开始导入", noFiles: "请选择 .srt、.vtt、.ass、.txt、.md 或 .markdown 文件。TXT/Markdown 必须确认资料类型。", progress: "导入进度",
     approve: "批准", approveAll: "全部批准", reject: "拒绝", retry: "重试", review: "预览",
-    original: "原字幕", cleaned: "知识文本", close: "关闭", empty: "知识库中还没有字幕文档。",
+    original: "原文", cleaned: "知识文本", close: "关闭", empty: "知识库中还没有资料文档。",
     active: "当前版本", activate: "回退/启用此版本", disable: "停用", enable: "启用", delete: "删除文档",
     rebuildFts: "重建全文索引", rebuildVectors: "重建全部向量", maintenanceStarted: "向量重建已在后台启动。",
     confirmRebuildFts: "确认重建全文索引？", confirmRebuildFtsMessage: "系统会从现有知识片段重新生成 FTS 全文索引。不会调用 AI，也不会修改字幕、片段或向量，但执行期间会短暂占用数据库。",
     confirmRebuildVectors: "确认重建全部向量？", confirmRebuildVectorsMessage: "系统将把所有启用文档当前版本的片段发送给 Embedding 服务。此操作会调用外部 API、可能产生费用，并占用较长时间。新向量全部完成后才会切换，失败时继续使用旧向量。",
     rebuildPhrase: "确认重建向量", rebuildPhraseLabel: "请输入“确认重建向量”后继续", rebuildPhraseMismatch: "确认文字不正确，未启动向量重建。",
     testQuestion: "输入测试问题", search: "检索", currentNode: "当前索引范围", sources: "检索结果",
-    confirmDelete: "删除字幕文档？", confirmDeleteMessage: "该文档的所有版本、片段和仅由它使用的原字幕文件将被逐个删除。",
-    confirmDeleteVersion: "删除历史版本？", confirmDeleteVersionMessage: "该版本的字幕片段、关键词、全文索引、向量和版本记录都会删除；原字幕文件仅在没有其他版本引用时删除。此操作不会影响当前启用版本。",
+    confirmDelete: "删除资料文档？", confirmDeleteMessage: "该文档的所有版本、片段和仅由它使用的源文件将被逐个删除。",
+    confirmDeleteVersion: "删除历史版本？", confirmDeleteVersionMessage: "该版本的资料片段、关键词、全文索引、向量和版本记录都会删除；源文件仅在没有其他版本引用时删除。此操作不会影响当前启用版本。",
     deleteVersion: "删除版本", versionDeleted: "历史版本已删除。",
-    operationFailed: "操作失败", unmatched: "未匹配，请手动选择", resultEmpty: "没有检索到字幕片段。",
+    operationFailed: "操作失败", unmatched: "未匹配，请手动选择", resultEmpty: "没有检索到资料片段。",
+    aiSubtitleOnly: "AI 深度整理仅适用于全部为字幕的批次；混合批次和通用资料使用快速导入。",
+    updatesExisting: "将创建新版本：", typeConflict: "该节点已绑定不同类型资料：",
+    unlink: "解除关联", confirmUnlink: "解除资料与索引的关联？", confirmUnlinkMessage: "资料、版本和源文件都会保留在“未关联”分组，但不会参与检索。",
     reviewStats: "差异统计", characters: "字符", retained: "整理后占原文", ranking: "排序分", scope: "范围",
     chunkLabel: "片段", keywords: "关键词",
     collapseIndex: "收起索引", expandIndex: "展开索引", noMatchingIndex: "没有匹配的索引", searchIndex: "搜索索引名称或路径",
   },
   en: {
-    title: "Subtitle knowledge base", importTab: "Import", libraryTab: "Documents", testTab: "Search test",
-    choose: "Choose subtitle files", chooseFolder: "Choose subtitle folder", root: "Batch mapping root", autoMap: "Auto map",
+    title: "Material knowledge base", importTab: "Import materials", libraryTab: "Documents", testTab: "Search test",
+    choose: "Choose material files", chooseFolder: "Choose material folder", root: "Batch mapping root", autoMap: "Auto map",
+    sourceType: "Material type (confirm each file)", batchType: "Batch type", applyBatchType: "Apply to editable files",
     mapping: "Target index (confirmation required)", manual: "Review before activation", manualHint: "Off by default: validated processing results are approved automatically.",
-    processingMode: "Subtitle processing", quickMode: "Quick import (recommended)", quickModeHint: "Program cleanup, rolling-caption deduplication, and deterministic chunks; no chat model call.",
+    processingMode: "Material processing", quickMode: "Quick import (recommended)", quickModeHint: "Subtitles use deterministic cleanup; TXT/Markdown use paragraph and heading chunks. No chat model call.",
     aiMode: "AI deep processing", aiModeHint: "The chat model returns only ranges, topics, and keywords; subtitle text is not rewritten.",
-    start: "Start import", noFiles: "Choose .srt, .vtt, .ass, or .txt files.", progress: "Import progress",
+    start: "Start import", noFiles: "Choose .srt, .vtt, .ass, .txt, .md, or .markdown files. Confirm a type for TXT/Markdown.", progress: "Import progress",
     approve: "Approve", approveAll: "Approve all", reject: "Reject", retry: "Retry", review: "Preview",
-    original: "Original", cleaned: "Knowledge text", close: "Close", empty: "No subtitle documents yet.",
+    original: "Original", cleaned: "Knowledge text", close: "Close", empty: "No material documents yet.",
     active: "Active version", activate: "Activate this version", disable: "Disable", enable: "Enable", delete: "Delete document",
     rebuildFts: "Rebuild full-text index", rebuildVectors: "Rebuild all vectors", maintenanceStarted: "Vector rebuild started in the background.",
     confirmRebuildFts: "Rebuild the full-text index?", confirmRebuildFtsMessage: "The FTS index will be regenerated from existing chunks. This does not call AI or change subtitles, chunks, or vectors, but briefly uses the database.",
     confirmRebuildVectors: "Rebuild all vectors?", confirmRebuildVectorsMessage: "All chunks from active document versions will be sent to the Embedding service. This calls an external API, may incur charges, and can take time. The new vectors are activated only after completion; failures keep the old vectors active.",
     rebuildPhrase: "REBUILD VECTORS", rebuildPhraseLabel: "Type REBUILD VECTORS to continue", rebuildPhraseMismatch: "The confirmation text did not match. Vector rebuild was not started.",
     testQuestion: "Enter a test question", search: "Search", currentNode: "Current index scope", sources: "Results",
-    confirmDelete: "Delete subtitle document?", confirmDeleteMessage: "All versions, chunks, and source files used only by this document will be deleted one file at a time.",
-    confirmDeleteVersion: "Delete historical version?", confirmDeleteVersionMessage: "This deletes the version record, subtitle chunks, keywords, full-text index, and vectors. The source file is deleted only when no other version references it. The active version is not affected.",
+    confirmDelete: "Delete material document?", confirmDeleteMessage: "All versions, chunks, and source files used only by this document will be deleted one file at a time.",
+    confirmDeleteVersion: "Delete historical version?", confirmDeleteVersionMessage: "This deletes the version record, material chunks, keywords, full-text index, and vectors. The source file is deleted only when no other version references it. The active version is not affected.",
     deleteVersion: "Delete version", versionDeleted: "Historical version deleted.",
-    operationFailed: "Operation failed", unmatched: "Unmatched; select manually", resultEmpty: "No subtitle chunks found.",
+    operationFailed: "Operation failed", unmatched: "Unmatched; select manually", resultEmpty: "No material chunks found.",
+    aiSubtitleOnly: "AI deep processing is available only when every file is a subtitle. Mixed and general-material batches use quick import.",
+    updatesExisting: "Creates a new version of:", typeConflict: "This node has a different material type:",
+    unlink: "Unlink", confirmUnlink: "Unlink this material from its index?", confirmUnlinkMessage: "The material, versions, and source files remain in the Unlinked group, but are excluded from retrieval.",
     reviewStats: "Difference summary", characters: "characters", retained: "retained", ranking: "score", scope: "scope",
     chunkLabel: "Chunk", keywords: "Keywords",
     collapseIndex: "Collapse index", expandIndex: "Expand index", noMatchingIndex: "No matching index", searchIndex: "Search index name or path",
@@ -78,10 +88,213 @@ const text = {
 } as const;
 
 function id() { return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`; }
+const sourceTypes: KnowledgeSourceType[] = ["SUBTITLE", "BOOK", "ARTICLE", "NOTE", "OTHER"];
+
+function KnowledgeSourceTypeSelector({
+  ariaLabel,
+  className = "",
+  disabled = false,
+  invalid = false,
+  onChange,
+  options,
+  value,
+}: {
+  ariaLabel: string;
+  className?: string;
+  disabled?: boolean;
+  invalid?: boolean;
+  onChange: (value: KnowledgeSourceType) => void;
+  options: KnowledgeSourceType[];
+  value: KnowledgeSourceType | "";
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [popoverStyle, setPopoverStyle] = useState<{
+    left: number;
+    top: number;
+    width: number;
+  } | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = useId();
+
+  const closePopover = useCallback((restoreFocus = false) => {
+    setIsOpen(false);
+    setActiveIndex(-1);
+    setPopoverStyle(null);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => triggerRef.current?.focus());
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (!containerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
+        closePopover();
+      }
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closePopover(true);
+      }
+    }
+
+    function handleViewportChange(event: Event) {
+      const target = event.target;
+      if (target instanceof Node && popoverRef.current?.contains(target)) return;
+      closePopover();
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("scroll", handleViewportChange, true);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("scroll", handleViewportChange, true);
+    };
+  }, [closePopover, isOpen]);
+
+  function openPopover() {
+    if (disabled) return;
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const viewportPadding = 8;
+    const gap = 6;
+    const menuHeight = options.length * 36 + 8;
+    const width = Math.min(Math.max(rect.width, 160), window.innerWidth - viewportPadding * 2);
+    const left = Math.min(
+      Math.max(viewportPadding, rect.left),
+      window.innerWidth - width - viewportPadding,
+    );
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding - gap;
+    const spaceAbove = rect.top - viewportPadding - gap;
+    const openAbove = spaceBelow < menuHeight && spaceAbove > spaceBelow;
+    const top = openAbove
+      ? Math.max(viewportPadding, rect.top - menuHeight - gap)
+      : Math.min(rect.bottom + gap, window.innerHeight - menuHeight - viewportPadding);
+
+    setActiveIndex(Math.max(0, options.indexOf(value as KnowledgeSourceType)));
+    setPopoverStyle({ left, top, width });
+    setIsOpen(true);
+  }
+
+  function choose(nextValue: KnowledgeSourceType) {
+    onChange(nextValue);
+    closePopover(true);
+  }
+
+  function moveActive(direction: 1 | -1) {
+    if (options.length === 0) return;
+    setActiveIndex((current) => {
+      const start = current < 0 ? Math.max(0, options.indexOf(value as KnowledgeSourceType)) : current;
+      return (start + direction + options.length) % options.length;
+    });
+  }
+
+  const popover = isOpen && popoverStyle && typeof document !== "undefined"
+    ? createPortal(
+        <div
+          ref={popoverRef}
+          id={listboxId}
+          role="listbox"
+          aria-label={ariaLabel}
+          className="fixed z-[100] overflow-hidden rounded-lg border border-zinc-200 bg-white p-1 shadow-2xl shadow-zinc-950/15"
+          style={popoverStyle}
+        >
+          {options.map((option, index) => (
+            <button
+              key={option}
+              id={`${listboxId}-${option}`}
+              type="button"
+              role="option"
+              aria-selected={option === value}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => choose(option)}
+              className={`flex h-9 w-full items-center gap-2 rounded-md px-2.5 text-left text-sm transition-colors ${
+                activeIndex === index || option === value
+                  ? "bg-cyan-50 text-cyan-900"
+                  : "text-zinc-700 hover:bg-zinc-50"
+              }`}
+            >
+              <span className="min-w-0 flex-1 truncate">{option}</span>
+              {option === value ? <Check className="h-4 w-4 shrink-0 text-cyan-700" /> : null}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )
+    : null;
+
+  return (
+    <div ref={containerRef} className={`relative ${className}`}>
+      <button
+        ref={triggerRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => (isOpen ? closePopover() : openPopover())}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            if (!isOpen) openPopover();
+            moveActive(event.key === "ArrowDown" ? 1 : -1);
+            return;
+          }
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (!isOpen) openPopover();
+            else if (activeIndex >= 0) choose(options[activeIndex]);
+          }
+        }}
+        className={`flex h-9 w-full items-center rounded-md border bg-white px-2.5 text-left text-sm transition focus:outline-none focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-500 disabled:opacity-70 ${
+          invalid
+            ? "border-rose-300"
+            : isOpen
+              ? "border-cyan-600 ring-2 ring-cyan-100"
+              : "border-zinc-200 hover:border-cyan-300"
+        }`}
+        aria-controls={listboxId}
+        aria-expanded={isOpen}
+        aria-haspopup="listbox"
+        aria-label={ariaLabel}
+        aria-activedescendant={isOpen && activeIndex >= 0 ? `${listboxId}-${options[activeIndex]}` : undefined}
+      >
+        <span className={`min-w-0 flex-1 truncate ${value ? "text-zinc-800" : "text-zinc-400"}`}>
+          {value || "—"}
+        </span>
+        <ChevronDown className={`h-4 w-4 shrink-0 text-zinc-400 transition ${isOpen ? "rotate-180 text-cyan-700" : ""}`} />
+      </button>
+      {popover}
+    </div>
+  );
+}
+
+function initialSourceType(fileName: string): Pick<SelectedKnowledgeFile, "sourceType" | "lockedType"> {
+  if (/\.(srt|vtt|ass)$/i.test(fileName)) return { sourceType: "SUBTITLE", lockedType: true };
+  return { sourceType: "", lockedType: false };
+}
 function timestamp(ms: number | null) {
   if (ms === null) return "--:--";
   const total = Math.floor(ms / 1000);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function resultLocation(result: Record<string, unknown>) {
+  const locator = result.locator as { kind?: string; lineStart?: number; lineEnd?: number; headingPath?: string[] } | undefined;
+  if (locator?.kind === "text") {
+    const heading = locator.headingPath?.join(" / ");
+    return `${heading ? `${heading} · ` : ""}L${locator.lineStart}–L${locator.lineEnd}`;
+  }
+  return `${timestamp(result.startMs as number | null)}–${timestamp(result.endMs as number | null)}`;
 }
 
 export default function KnowledgeManagerDialog({ open, locale, indexTree, initialIndexNodeId, onClose }: {
@@ -91,7 +304,8 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
   const indexes = useMemo(() => flattenIndexTree(indexTree), [indexTree]);
   const { showAlert, showConfirm, showPrompt, dialogElement } = useAppDialog({ confirm: locale === "zh" ? "确认" : "Confirm", cancel: locale === "zh" ? "取消" : "Cancel" });
   const [tab, setTab] = useState<"import" | "library" | "test">("import");
-  const [files, setFiles] = useState<SelectedSubtitle[]>([]);
+  const [files, setFiles] = useState<SelectedKnowledgeFile[]>([]);
+  const [batchSourceType, setBatchSourceType] = useState<KnowledgeSourceType>("BOOK");
   const [rootId, setRootId] = useState(initialIndexNodeId ?? indexes[0]?.id ?? "");
   const [manualReview, setManualReview] = useState(false);
   const [processingMode, setProcessingMode] = useState<"QUICK" | "AI">("QUICK");
@@ -168,11 +382,33 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
     return () => window.clearTimeout(timer);
   }, [job, loadDocuments]);
 
-  const allMapped = files.length > 0 && files.every((file) => file.indexNodeId);
+  const boundByNode = useMemo(() => new Map(documents.flatMap((document) => document.binding?.indexNodeId
+    ? [[document.binding.indexNodeId, document] as const]
+    : [])), [documents]);
+  const allMapped = files.length > 0 && files.every((file) => {
+    if (!file.indexNodeId || !file.sourceType) return false;
+    const existing = boundByNode.get(file.indexNodeId);
+    return !existing || existing.sourceType === file.sourceType;
+  });
+  const allSubtitles = files.length > 0 && files.every((file) => file.sourceType === "SUBTITLE");
   function addFiles(list: FileList | null) {
     if (!list) return;
-    const accepted = [...list].filter((file) => /\.(srt|vtt|ass|txt)$/i.test(file.name));
-    setFiles(accepted.map((file) => ({ id: id(), file, indexNodeId: initialIndexNodeId ?? "" })));
+    const accepted = [...list].filter((file) => /\.(srt|vtt|ass|txt|md|markdown)$/i.test(file.name));
+    if (accepted.some((file) => !/\.(srt|vtt|ass)$/i.test(file.name))) setProcessingMode("QUICK");
+    setFiles(accepted.map((file) => ({ id: id(), file, indexNodeId: initialIndexNodeId ?? "", ...initialSourceType(file.name) })));
+  }
+
+  function applyBatchSourceType() {
+    if (batchSourceType !== "SUBTITLE") setProcessingMode("QUICK");
+    setFiles((items) => items.map((item) => item.lockedType
+      || (/\.(md|markdown)$/i.test(item.file.name) && batchSourceType === "SUBTITLE")
+      ? item
+      : { ...item, sourceType: batchSourceType }));
+  }
+
+  function setFileSourceType(fileId: string, sourceType: KnowledgeSourceType) {
+    if (sourceType !== "SUBTITLE") setProcessingMode("QUICK");
+    setFiles((items) => items.map((item) => item.id === fileId ? { ...item, sourceType } : item));
   }
 
   async function autoMap() {
@@ -197,7 +433,7 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
     try {
       const form = new FormData();
       files.forEach((entry) => form.append("files", entry.file));
-      form.set("mappings", JSON.stringify(files.map((entry, fileIndex) => ({ fileIndex, indexNodeId: entry.indexNodeId }))));
+      form.set("mappings", JSON.stringify(files.map((entry, fileIndex) => ({ fileIndex, indexNodeId: entry.indexNodeId, sourceType: entry.sourceType }))));
       form.set("manualReview", String(manualReview));
       form.set("processingMode", processingMode);
       const response = await fetch("/api/knowledge/import-jobs", { method: "POST", body: form });
@@ -232,6 +468,44 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
     const response = await fetch(`/api/knowledge/documents/${document.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (!response.ok) throw new Error(((await response.json().catch(() => null)) as { error?: string } | null)?.error ?? t.operationFailed);
     await loadDocuments();
+  }
+
+  async function putBinding(document: DocumentRow, indexNodeId: string) {
+    const response = await fetch(`/api/knowledge/documents/${document.id}/binding`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ indexNodeId, appliesToDescendants: document.binding?.appliesToDescendants ?? true }),
+    });
+    const result = await response.json().catch(() => null) as { error?: string } | null;
+    if (!response.ok) throw new Error(result?.error ?? t.operationFailed);
+    await loadDocuments();
+  }
+
+  async function patchBinding(document: DocumentRow, appliesToDescendants: boolean) {
+    const response = await fetch(`/api/knowledge/documents/${document.id}/binding`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ appliesToDescendants }),
+    });
+    const result = await response.json().catch(() => null) as { error?: string } | null;
+    if (!response.ok) throw new Error(result?.error ?? t.operationFailed);
+    await loadDocuments();
+  }
+
+  async function deleteBinding(document: DocumentRow) {
+    if (!await showConfirm({ title: t.confirmUnlink, message: t.confirmUnlinkMessage, tone: "warning", confirmLabel: t.unlink })) return;
+    const response = await fetch(`/api/knowledge/documents/${document.id}/binding`, { method: "DELETE" });
+    const result = await response.json().catch(() => null) as { error?: string } | null;
+    if (!response.ok) throw new Error(result?.error ?? t.operationFailed);
+    await loadDocuments();
+  }
+
+  function runDocumentAction(action: () => Promise<void>) {
+    void action().catch((error) => showAlert({
+      title: t.operationFailed,
+      message: error instanceof Error ? error.message : t.operationFailed,
+      tone: "danger",
+    }));
   }
 
   async function deleteDocument(document: DocumentRow) {
@@ -343,7 +617,7 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
         <main className="min-h-0 flex-1 overflow-y-auto p-5">
           {tab === "import" ? <div className="space-y-5">
             <div className="flex flex-wrap gap-2">
-              <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-700 transition-colors hover:border-zinc-300 hover:bg-zinc-50"><UploadCloud className="h-4 w-4" />{t.choose}<input type="file" multiple accept=".srt,.vtt,.ass,.txt" className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} /></label>
+              <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-700 transition-colors hover:border-zinc-300 hover:bg-zinc-50"><UploadCloud className="h-4 w-4" />{t.choose}<input type="file" multiple accept=".srt,.vtt,.ass,.txt,.md,.markdown" className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} /></label>
               <button type="button" onClick={() => folderRef.current?.click()} className="h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-700 transition-colors hover:border-zinc-300 hover:bg-zinc-50">{t.chooseFolder}</button>
               <input ref={folderRef} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} {...({ webkitdirectory: "true", directory: "true" } as Record<string, string>)} />
               <IndexTreeSelector
@@ -363,12 +637,19 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
               />
               <button type="button" disabled={!rootId || !files.length || busy} onClick={() => void autoMap()} className="h-10 rounded-md border border-cyan-200 bg-cyan-50 px-3 text-sm font-medium text-cyan-800 transition-colors hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-50">{t.autoMap}</button>
             </div>
-            {files.length ? <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white"><table className="w-full table-fixed text-left text-sm"><thead className="bg-zinc-50 text-xs text-zinc-500"><tr><th className="w-1/3 p-3 font-medium">{t.choose}</th><th className="p-3 font-medium">{t.mapping}</th><th className="w-10" /></tr></thead><tbody>{files.map((entry) => <tr key={entry.id} className="border-t border-zinc-100"><td className="truncate p-3" title={entry.file.name}>{entry.file.name}</td><td className="p-3"><IndexTreeSelector value={entry.indexNodeId} onChange={(indexNodeId) => setFiles((items) => items.map((item) => item.id === entry.id ? { ...item, indexNodeId } : item))} nodes={indexTree} invalid={!entry.indexNodeId} labels={{ choose: t.mapping, collapse: t.collapseIndex, expand: t.expandIndex, noResults: t.noMatchingIndex, searchPlaceholder: t.searchIndex, unclassified: t.unmatched }} /></td><td className="p-3"><button type="button" onClick={() => setFiles((items) => items.filter((item) => item.id !== entry.id))} className="grid h-8 w-8 place-items-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-rose-600"><X className="h-4 w-4" /></button></td></tr>)}</tbody></table></div> : <p className="rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 p-8 text-center text-sm text-zinc-500">{t.noFiles}</p>}
+            {files.length ? <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-3"><span className="text-xs font-medium text-zinc-700">{t.batchType}</span><KnowledgeSourceTypeSelector ariaLabel={t.batchType} className="w-36" value={batchSourceType} options={sourceTypes} onChange={setBatchSourceType} /><button type="button" onClick={applyBatchSourceType} className="h-9 rounded-md border border-cyan-200 bg-cyan-50 px-3 text-sm font-medium text-cyan-800 hover:bg-cyan-100">{t.applyBatchType}</button></div>
+              <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white"><table className="w-full table-fixed text-left text-sm"><thead className="bg-zinc-50 text-xs text-zinc-500"><tr><th className="w-1/4 p-3 font-medium">{t.choose}</th><th className="w-48 p-3 font-medium">{t.sourceType}</th><th className="p-3 font-medium">{t.mapping}</th><th className="w-10" /></tr></thead><tbody>{files.map((entry) => {
+                const existing = boundByNode.get(entry.indexNodeId);
+                const conflict = existing && entry.sourceType && existing.sourceType !== entry.sourceType;
+                return <tr key={entry.id} className="border-t border-zinc-100"><td className="truncate p-3" title={entry.file.name}>{entry.file.name}</td><td className="p-3"><KnowledgeSourceTypeSelector ariaLabel={`${t.sourceType}: ${entry.file.name}`} className="w-full" disabled={entry.lockedType} invalid={!entry.sourceType} value={entry.sourceType} options={sourceTypes.filter((type) => !(type === "SUBTITLE" && /\.(md|markdown)$/i.test(entry.file.name)))} onChange={(sourceType) => setFileSourceType(entry.id, sourceType)} /></td><td className="p-3"><IndexTreeSelector value={entry.indexNodeId} onChange={(indexNodeId) => setFiles((items) => items.map((item) => item.id === entry.id ? { ...item, indexNodeId } : item))} nodes={indexTree} invalid={!entry.indexNodeId || Boolean(conflict)} labels={{ choose: t.mapping, collapse: t.collapseIndex, expand: t.expandIndex, noResults: t.noMatchingIndex, searchPlaceholder: t.searchIndex, unclassified: t.unmatched }} />{existing ? <p className={`mt-1 text-[11px] ${conflict ? "text-rose-700" : "text-cyan-700"}`}>{conflict ? t.typeConflict : t.updatesExisting} {existing.title} ({existing.sourceType})</p> : null}</td><td className="p-3"><button type="button" onClick={() => setFiles((items) => items.filter((item) => item.id !== entry.id))} className="grid h-8 w-8 place-items-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-rose-600"><X className="h-4 w-4" /></button></td></tr>;
+              })}</tbody></table></div>
+            </div> : <p className="rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 p-8 text-center text-sm text-zinc-500">{t.noFiles}</p>}
             <fieldset className="rounded-lg border border-zinc-200 bg-zinc-50/60 p-4">
               <legend className="px-1 text-sm font-semibold text-zinc-800">{t.processingMode}</legend>
               <div className="mt-2 grid gap-3 md:grid-cols-2">
                 <label className={`flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors ${processingMode === "QUICK" ? "border-cyan-300 bg-cyan-50 ring-1 ring-cyan-100" : "border-zinc-200 bg-white hover:border-zinc-300"}`}><input type="radio" name="subtitle-processing-mode" value="QUICK" checked={processingMode === "QUICK"} onChange={() => setProcessingMode("QUICK")} className="mt-0.5 h-4 w-4 text-cyan-700" /><span><strong className="text-sm text-zinc-900">{t.quickMode}</strong><span className="mt-1 block text-xs leading-5 text-zinc-600">{t.quickModeHint}</span></span></label>
-                <label className={`flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors ${processingMode === "AI" ? "border-violet-300 bg-violet-50 ring-1 ring-violet-100" : "border-zinc-200 bg-white hover:border-zinc-300"}`}><input type="radio" name="subtitle-processing-mode" value="AI" checked={processingMode === "AI"} onChange={() => setProcessingMode("AI")} className="mt-0.5 h-4 w-4 text-violet-700" /><span><strong className="text-sm text-zinc-900">{t.aiMode}</strong><span className="mt-1 block text-xs leading-5 text-zinc-600">{t.aiModeHint}</span></span></label>
+                <label className={`flex items-start gap-3 rounded-lg border p-4 transition-colors ${!allSubtitles ? "cursor-not-allowed border-zinc-200 bg-zinc-100 opacity-60" : processingMode === "AI" ? "cursor-pointer border-violet-300 bg-violet-50 ring-1 ring-violet-100" : "cursor-pointer border-zinc-200 bg-white hover:border-zinc-300"}`}><input disabled={!allSubtitles} type="radio" name="subtitle-processing-mode" value="AI" checked={processingMode === "AI"} onChange={() => setProcessingMode("AI")} className="mt-0.5 h-4 w-4 text-violet-700" /><span><strong className="text-sm text-zinc-900">{t.aiMode}</strong><span className="mt-1 block text-xs leading-5 text-zinc-600">{allSubtitles ? t.aiModeHint : t.aiSubtitleOnly}</span></span></label>
               </div>
             </fieldset>
             <label className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm"><input type="checkbox" checked={manualReview} onChange={(e) => setManualReview(e.target.checked)} className="mt-0.5 h-4 w-4" /><span><strong>{t.manual}</strong><span className="mt-0.5 block text-xs text-amber-800">{t.manualHint}</span></span></label>
@@ -393,14 +674,17 @@ export default function KnowledgeManagerDialog({ open, locale, indexTree, initia
             locale={locale}
             maintenanceJob={maintenanceJob}
             maintenanceSummary={maintenanceSummary}
-            onActivate={(document, version) => void activate(document, version)}
-            onDeleteDocument={(document) => void deleteDocument(document)}
+            onActivate={(document, version) => runDocumentAction(() => activate(document, version))}
+            onDeleteDocument={(document) => runDocumentAction(() => deleteDocument(document))}
             onDeleteVersion={(document, version) => void deleteVersion(document, version)}
-            onPatchDocument={(document, patch) => void patchDocument(document, patch)}
+            onPatchDocument={(document, patch) => runDocumentAction(() => patchDocument(document, patch))}
+            onPutBinding={(document, indexNodeId) => runDocumentAction(() => putBinding(document, indexNodeId))}
+            onPatchBinding={(document, appliesToDescendants) => runDocumentAction(() => patchBinding(document, appliesToDescendants))}
+            onDeleteBinding={(document) => runDocumentAction(() => deleteBinding(document))}
             onRunMaintenance={(kind) => void runMaintenance(kind)}
             onViewChunks={(version) => void openVersionReview(version.id)}
           /> : null}
-          {tab === "test" ? <div className="space-y-4"><div className="flex gap-2"><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder={t.testQuestion} className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /><button type="button" onClick={() => void testSearch()} disabled={busy || !question.trim()} className="inline-flex h-10 items-center gap-2 rounded-md bg-cyan-800 px-4 text-sm font-medium text-white transition-colors hover:bg-cyan-900 disabled:cursor-not-allowed disabled:opacity-50">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}{t.search}</button></div><p className="text-xs text-zinc-500">{t.currentNode}: {indexes.find((node) => node.id === initialIndexNodeId)?.path ?? "—"}</p><div className="space-y-2">{results.length ? results.map((result) => <article key={String(result.id)} className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"><p className="text-xs font-semibold text-cyan-800">[{String(result.citation)}] {String(result.lessonCode ?? "")} · {String(result.title)} · {timestamp(result.startMs as number | null)}–{timestamp(result.endMs as number | null)}</p><p className="mt-1 text-[11px] text-zinc-500">{t.scope}: {String(result.scope)} · {t.ranking}: {Number(result.score).toFixed(5)}</p><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-700">{String(result.text)}</p></article>) : <p className="rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 p-8 text-center text-sm text-zinc-500">{t.resultEmpty}</p>}</div></div> : null}
+          {tab === "test" ? <div className="space-y-4"><div className="flex gap-2"><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder={t.testQuestion} className="h-10 min-w-0 flex-1 rounded-md border border-zinc-200 px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /><button type="button" onClick={() => void testSearch()} disabled={busy || !question.trim()} className="inline-flex h-10 items-center gap-2 rounded-md bg-cyan-800 px-4 text-sm font-medium text-white transition-colors hover:bg-cyan-900 disabled:cursor-not-allowed disabled:opacity-50">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}{t.search}</button></div><p className="text-xs text-zinc-500">{t.currentNode}: {indexes.find((node) => node.id === initialIndexNodeId)?.path ?? "—"}</p><div className="space-y-2">{results.length ? results.map((result) => <article key={String(result.id)} className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm"><p className="text-xs font-semibold text-cyan-800">[{String(result.citation)}] {String(result.lessonCode ?? "")} · {String(result.title)} · {resultLocation(result)}</p><p className="mt-1 text-[11px] text-zinc-500">{t.scope}: {String(result.scope)} · {t.ranking}: {Number(result.score).toFixed(5)}</p><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-700">{String(result.text)}</p></article>) : <p className="rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 p-8 text-center text-sm text-zinc-500">{t.resultEmpty}</p>}</div></div> : null}
         </main>
       </div>
     </div>

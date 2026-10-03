@@ -56,7 +56,11 @@ export function thumbnailPathForHash(hash: string, version = thumbnailVersion) {
   const safeHash = assertThumbnailHash(hash);
   const safeVersion = assertThumbnailVersion(version);
   const versionRoot = path.resolve(getThumbnailRoot(), `v${safeVersion}`);
-  const resolved = path.resolve(versionRoot, safeHash.slice(0, 2), `${safeHash}.webp`);
+  const resolved = path.resolve(
+    /* turbopackIgnore: true */ versionRoot,
+    safeHash.slice(0, 2),
+    `${safeHash}.webp`,
+  );
   const relative = path.relative(versionRoot, resolved);
 
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -72,7 +76,7 @@ export function thumbnailEtag(hash: string, version = thumbnailVersion) {
 
 export async function thumbnailExists(hash: string, version = thumbnailVersion) {
   try {
-    const fileStat = await stat(thumbnailPathForHash(hash, version));
+    const fileStat = await stat(/* turbopackIgnore: true */ thumbnailPathForHash(hash, version));
     return fileStat.isFile() && fileStat.size > 0;
   } catch (error) {
     const code = error instanceof Error && "code" in error ? error.code : null;
@@ -91,7 +95,7 @@ async function generateThumbnail(
     return { path: targetPath, generated: false };
   }
 
-  await mkdir(path.dirname(targetPath), { recursive: true });
+  await mkdir(/* turbopackIgnore: true */ path.dirname(targetPath), { recursive: true });
   const temporaryPath = `${targetPath}.tmp-${process.pid}-${randomUUID()}`;
 
   try {
@@ -105,11 +109,14 @@ async function generateThumbnail(
       })
       .webp({ quality: thumbnailWebpQuality })
       .toBuffer();
-    await writeFile(temporaryPath, thumbnailBuffer, { flag: "wx" });
-    await rename(temporaryPath, targetPath);
+    await writeFile(/* turbopackIgnore: true */ temporaryPath, thumbnailBuffer, { flag: "wx" });
+    await rename(
+      /* turbopackIgnore: true */ temporaryPath,
+      /* turbopackIgnore: true */ targetPath,
+    );
     return { path: targetPath, generated: true };
   } catch (error) {
-    await unlink(temporaryPath).catch(() => undefined);
+    await unlink(/* turbopackIgnore: true */ temporaryPath).catch(() => undefined);
     if (await thumbnailExists(hash, version).catch(() => false)) {
       return { path: targetPath, generated: false };
     }
@@ -149,19 +156,22 @@ export async function ensureStoredImageThumbnail({
   if (await thumbnailExists(hash, version)) {
     return { path: thumbnailPathForHash(hash, version), generated: false };
   }
-  const source = await readFile(absoluteImagePath(libraryPath));
+  const source = await readFile(/* turbopackIgnore: true */ absoluteImagePath(libraryPath));
   return ensureThumbnailFromBuffer(source, hash, version);
 }
 
 export async function readThumbnail(hash: string, version = thumbnailVersion) {
   const fullPath = thumbnailPathForHash(hash, version);
-  const [buffer, fileStat] = await Promise.all([readFile(fullPath), stat(fullPath)]);
+  const [buffer, fileStat] = await Promise.all([
+    readFile(/* turbopackIgnore: true */ fullPath),
+    stat(/* turbopackIgnore: true */ fullPath),
+  ]);
   return { buffer, fileStat };
 }
 
 export async function removeThumbnail(hash: string, version = thumbnailVersion) {
   try {
-    await unlink(thumbnailPathForHash(hash, version));
+    await unlink(/* turbopackIgnore: true */ thumbnailPathForHash(hash, version));
     return true;
   } catch (error) {
     const code = error instanceof Error && "code" in error ? error.code : null;

@@ -32,10 +32,10 @@ import { absoluteImagePath, getLibraryRoot, sanitizeFileName } from "@/lib/stora
 import { cleanupUnusedTags, replaceImageTags } from "@/lib/tags";
 
 const backupFormat = "brooks-pa-atlas.backup";
-const backupVersion = 6;
+const backupVersion = 7;
 const imageZipPrefix = "images/";
 const backupQueryPageSize = 400;
-// Subtitle text is stored logically in the manifest so a 50k-chunk library can
+// Knowledge text is stored logically in the manifest so a 50k-chunk library can
 // exceed the older image-only ceiling without being mistaken for a zip bomb.
 const maxManifestBytes = 256 * 1024 * 1024;
 
@@ -169,7 +169,7 @@ const backupNavigatorSchema = z.object({
 
 const backupManifestSchema = z.object({
   format: z.literal(backupFormat),
-  version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(backupVersion)]),
+  version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(backupVersion)]),
   exportedAt: z.string(),
   indexes: z.array(backupIndexSchema),
   images: z.array(backupImageSchema),

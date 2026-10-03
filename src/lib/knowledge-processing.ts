@@ -7,6 +7,7 @@ import {
   type StoredAiConfig,
 } from "@/lib/ai-config";
 import { createAiChatCompletion, type AiChatUsage } from "@/lib/ai-client";
+import { subtitleLocator } from "@/lib/knowledge-source";
 import type { KnowledgeProcessedSegment, SubtitleCue } from "@/lib/knowledge-types";
 
 export const KNOWLEDGE_PROCESSING_RULE_VERSION = "subtitle-v3-bounded-metadata-only";
@@ -370,14 +371,23 @@ export function materializeChunk(cues: SubtitleCue[], segment: KnowledgeProcesse
   const cueById = new Map(cues.map((cue) => [cue.id, cue]));
   const selected = segment.cueIds.map((id) => cueById.get(id)).filter((cue): cue is SubtitleCue => Boolean(cue));
   if (!selected.length) throw new Error("Knowledge segment does not contain any valid subtitle cues.");
+  const startMs = selected.find((cue) => cue.startMs !== null)?.startMs ?? null;
+  const endMs = [...selected].reverse().find((cue) => cue.endMs !== null)?.endMs ?? null;
   return {
     sourceCueStart: selected[0].id,
     sourceCueEnd: selected[selected.length - 1].id,
-    startMs: selected.find((cue) => cue.startMs !== null)?.startMs ?? null,
-    endMs: [...selected].reverse().find((cue) => cue.endMs !== null)?.endMs ?? null,
+    startMs,
+    endMs,
     originalText: selected.map((cue) => cue.text).join("\n"),
     cleanedText: segment.cleanedText || joinedCueText(selected),
     topic: segment.topic,
     keywords: segment.keywords,
+    locatorKind: "SUBTITLE" as const,
+    locator: subtitleLocator({
+      cueStart: selected[0].id,
+      cueEnd: selected[selected.length - 1].id,
+      startMs,
+      endMs,
+    }),
   };
 }

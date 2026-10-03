@@ -8,7 +8,7 @@ import { load as loadSqliteVec } from "sqlite-vec";
 
 import { vectorBuffer } from "@/lib/knowledge-db";
 import { expandKnowledgeKeywords } from "@/lib/knowledge-keywords";
-import { buildKnowledgeFtsQuery } from "@/lib/knowledge-search";
+import { buildKnowledgeFtsQuery, resolveCurrentKnowledgeDocumentIds } from "@/lib/knowledge-search";
 
 test("short price-action keywords include searchable aliases", () => {
   const aliases = expandKnowledgeKeywords(["H1", "H2", "MTR"]);
@@ -67,4 +67,19 @@ test("only one active document version and one active embedding profile are allo
   insert.run("v1", 1, "a".repeat(64));
   assert.throws(() => insert.run("v2", 2, "b".repeat(64)), /unique/i);
   db.close();
+});
+
+test("current retrieval scope accumulates all inheritable ancestors without stopping at the nearest binding", () => {
+  const nodes = [
+    { id: "root", parentId: null },
+    { id: "course", parentId: "root" },
+    { id: "lesson", parentId: "course" },
+  ];
+  const bindings = [
+    { documentId: "book", indexNodeId: "root", appliesToDescendants: true },
+    { documentId: "course-note", indexNodeId: "course", appliesToDescendants: false },
+    { documentId: "subtitle", indexNodeId: "lesson", appliesToDescendants: false },
+  ];
+  assert.deepEqual(resolveCurrentKnowledgeDocumentIds("lesson", nodes, bindings), ["book", "subtitle"]);
+  assert.deepEqual(resolveCurrentKnowledgeDocumentIds("course", nodes, bindings), ["book", "course-note"]);
 });

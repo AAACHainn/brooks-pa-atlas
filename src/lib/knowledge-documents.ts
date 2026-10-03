@@ -1,27 +1,35 @@
+import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { knowledgeDb, getKnowledgeSourceRoot } from "@/lib/knowledge-db";
 import { prisma } from "@/lib/db";
+import { parseKnowledgeLocator } from "@/lib/knowledge-source";
 
 function safeSourcePath(sourcePath: string) {
   const full = path.resolve(/* turbopackIgnore: true */ process.cwd(), sourcePath);
   const root = path.resolve(getKnowledgeSourceRoot());
   const relative = path.relative(root, full);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("字幕源文件路径越界。");
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("资料源文件路径越界。");
   return full;
 }
+
+export class KnowledgeBindingConflictError extends Error {}
 
 export function listKnowledgeDocuments() {
   const db = knowledgeDb();
   const documents = db.prepare(`SELECT d.*,
+    b.id AS bindingId, b.indexNodeId, b.indexPathSnapshot, b.appliesToDescendants,
+    b.status AS bindingStatus,
     (SELECT id FROM KnowledgeDocumentVersion WHERE documentId = d.id AND status = 'ACTIVE' LIMIT 1) AS activeVersionId,
     (SELECT versionNumber FROM KnowledgeDocumentVersion WHERE documentId = d.id AND status = 'ACTIVE' LIMIT 1) AS activeVersionNumber,
     (SELECT COUNT(*) FROM KnowledgeChunk c JOIN KnowledgeDocumentVersion v ON v.id = c.versionId
       WHERE v.documentId = d.id AND v.status = 'ACTIVE') AS chunkCount
-    FROM KnowledgeDocument d ORDER BY d.indexPathSnapshot, d.title`).all() as Array<Record<string, unknown>>;
+    FROM KnowledgeDocument d
+    LEFT JOIN KnowledgeDocumentBinding b ON b.documentId = d.id
+    ORDER BY COALESCE(b.indexPathSnapshot, ''), d.title`).all() as Array<Record<string, unknown>>;
   const versionStatement = db.prepare(`SELECT id, versionNumber, sourceFileName, sourceHash, status, approvalMode,
-    processingMode, processorModel, error, activatedAt, createdAt,
+    processingMode, processorModel, sourceFormat, error, activatedAt, createdAt,
     (SELECT COUNT(*) FROM KnowledgeChunk WHERE versionId = KnowledgeDocumentVersion.id) AS chunkCount,
     (SELECT COUNT(*) FROM KnowledgeChunkEmbedding e
       JOIN KnowledgeChunk c ON c.id = e.chunkId
@@ -29,7 +37,19 @@ export function listKnowledgeDocuments() {
     FROM KnowledgeDocumentVersion WHERE documentId = ? ORDER BY versionNumber DESC`);
   return documents.map((document) => ({
     ...document,
-    appliesToDescendants: Boolean(document.appliesToDescendants),
+    enabled: Boolean(document.enabled),
+    binding: document.bindingId ? {
+      id: document.bindingId,
+      indexNodeId: document.indexNodeId,
+      indexPathSnapshot: document.indexPathSnapshot,
+      appliesToDescendants: Boolean(document.appliesToDescendants),
+      status: document.bindingStatus,
+    } : null,
+    bindingId: undefined,
+    indexNodeId: undefined,
+    indexPathSnapshot: undefined,
+    appliesToDescendants: undefined,
+    bindingStatus: undefined,
     versions: versionStatement.all(document.id),
   }));
 }
@@ -38,24 +58,26 @@ export async function reconcileKnowledgeBindings() {
   const nodes = await prisma.indexNode.findMany({ select: { id: true, path: true } });
   const paths = new Map(nodes.map((node) => [node.id, node.path]));
   const db = knowledgeDb();
-  const documents = db.prepare("SELECT id, indexNodeId, indexPathSnapshot, bindingStatus FROM KnowledgeDocument WHERE indexNodeId IS NOT NULL")
-    .all() as Array<{ id: string; indexNodeId: string; indexPathSnapshot: string; bindingStatus: string }>;
+  const bindings = db.prepare(`SELECT id, indexNodeId, indexPathSnapshot, status
+    FROM KnowledgeDocumentBinding WHERE indexNodeId IS NOT NULL`)
+    .all() as Array<{ id: string; indexNodeId: string; indexPathSnapshot: string; status: string }>;
   db.transaction(() => {
-    const update = db.prepare("UPDATE KnowledgeDocument SET indexPathSnapshot = ?, bindingStatus = ?, updatedAt = ? WHERE id = ?");
-    for (const document of documents) {
-      const currentPath = paths.get(document.indexNodeId);
+    const update = db.prepare(`UPDATE KnowledgeDocumentBinding
+      SET indexPathSnapshot = ?, status = ?, updatedAt = ? WHERE id = ?`);
+    for (const binding of bindings) {
+      const currentPath = paths.get(binding.indexNodeId);
       if (!currentPath) {
-        if (document.bindingStatus !== "DISABLED") update.run(document.indexPathSnapshot, "ORPHANED", new Date().toISOString(), document.id);
-      } else if (currentPath !== document.indexPathSnapshot || document.bindingStatus === "ORPHANED") {
-        update.run(currentPath, document.bindingStatus === "DISABLED" ? "DISABLED" : "ACTIVE", new Date().toISOString(), document.id);
+        if (binding.status !== "ORPHANED") update.run(binding.indexPathSnapshot, "ORPHANED", new Date().toISOString(), binding.id);
+      } else if (currentPath !== binding.indexPathSnapshot || binding.status === "ORPHANED") {
+        update.run(currentPath, "ACTIVE", new Date().toISOString(), binding.id);
       }
     }
   })();
 }
 
 export function updateKnowledgeIndexSnapshots(nodes: Array<{ id: string; path: string }>) {
-  const update = knowledgeDb().prepare(`UPDATE KnowledgeDocument SET indexPathSnapshot = ?,
-    bindingStatus = CASE WHEN bindingStatus = 'ORPHANED' THEN 'ACTIVE' ELSE bindingStatus END,
+  const update = knowledgeDb().prepare(`UPDATE KnowledgeDocumentBinding SET indexPathSnapshot = ?,
+    status = 'ACTIVE',
     updatedAt = ? WHERE indexNodeId = ?`);
   knowledgeDb().transaction(() => {
     for (const node of nodes) update.run(node.path, new Date().toISOString(), node.id);
@@ -64,8 +86,8 @@ export function updateKnowledgeIndexSnapshots(nodes: Array<{ id: string; path: s
 
 export function orphanKnowledgeDocuments(indexNodeIds: string[]) {
   if (!indexNodeIds.length) return;
-  const statement = knowledgeDb().prepare(`UPDATE KnowledgeDocument SET bindingStatus = 'ORPHANED',
-    updatedAt = ? WHERE indexNodeId = ? AND bindingStatus <> 'DISABLED'`);
+  const statement = knowledgeDb().prepare(`UPDATE KnowledgeDocumentBinding SET status = 'ORPHANED',
+    updatedAt = ? WHERE indexNodeId = ?`);
   knowledgeDb().transaction(() => {
     for (const id of indexNodeIds) statement.run(new Date().toISOString(), id);
   })();
@@ -73,17 +95,25 @@ export function orphanKnowledgeDocuments(indexNodeIds: string[]) {
 
 export function getKnowledgeVersionReview(versionId: string) {
   const db = knowledgeDb();
-  const version = db.prepare(`SELECT v.*, d.title, d.lessonCode, d.indexPathSnapshot
-    FROM KnowledgeDocumentVersion v JOIN KnowledgeDocument d ON d.id = v.documentId WHERE v.id = ?`)
+  const version = db.prepare(`SELECT v.*, d.title, d.lessonCode, d.sourceType, b.indexPathSnapshot
+    FROM KnowledgeDocumentVersion v JOIN KnowledgeDocument d ON d.id = v.documentId
+    LEFT JOIN KnowledgeDocumentBinding b ON b.documentId = d.id WHERE v.id = ?`)
     .get(versionId) as Record<string, unknown> | undefined;
   if (!version) return null;
   const chunks = db.prepare(`SELECT ordinal, sourceCueStart, sourceCueEnd, startMs, endMs,
-    originalText, cleanedText, topic, keywordsJson FROM KnowledgeChunk WHERE versionId = ? ORDER BY ordinal`)
+    originalText, cleanedText, topic, keywordsJson, locatorKind, locatorJson
+    FROM KnowledgeChunk WHERE versionId = ? ORDER BY ordinal`)
     .all(versionId) as Array<Record<string, unknown>>;
   return {
     ...version,
     chunks: chunks.map((chunk) => ({
       ...chunk,
+      locator: parseKnowledgeLocator(String(chunk.locatorJson), {
+        cueStart: Number(chunk.sourceCueStart),
+        cueEnd: Number(chunk.sourceCueEnd),
+        startMs: chunk.startMs === null ? null : Number(chunk.startMs),
+        endMs: chunk.endMs === null ? null : Number(chunk.endMs),
+      }),
       keywords: JSON.parse(String(chunk.keywordsJson)) as string[],
       keywordsJson: undefined,
     })),
@@ -92,22 +122,57 @@ export function getKnowledgeVersionReview(versionId: string) {
 
 export function updateKnowledgeDocument(
   id: string,
-  input: { indexNodeId?: string | null; indexPathSnapshot?: string; enabled?: boolean },
+  input: { enabled?: boolean },
 ) {
   const db = knowledgeDb();
-  const current = db.prepare("SELECT indexNodeId FROM KnowledgeDocument WHERE id = ?").get(id) as
-    { indexNodeId: string | null } | undefined;
+  const current = db.prepare("SELECT id FROM KnowledgeDocument WHERE id = ?").get(id) as { id: string } | undefined;
   if (!current) throw new Error("Knowledge document not found.");
-  if (input.indexNodeId !== undefined) {
-    db.prepare(`UPDATE KnowledgeDocument SET indexNodeId = ?, indexPathSnapshot = ?, bindingStatus = ?, updatedAt = ?
-      WHERE id = ?`).run(input.indexNodeId, input.indexPathSnapshot ?? "", input.indexNodeId ? "ACTIVE" : "ORPHANED", new Date().toISOString(), id);
-  }
   if (input.enabled !== undefined) {
-    const effectiveIndexNodeId = input.indexNodeId !== undefined ? input.indexNodeId : current.indexNodeId;
-    db.prepare("UPDATE KnowledgeDocument SET bindingStatus = ?, updatedAt = ? WHERE id = ?")
-      .run(input.enabled ? (effectiveIndexNodeId ? "ACTIVE" : "ORPHANED") : "DISABLED", new Date().toISOString(), id);
+    db.prepare("UPDATE KnowledgeDocument SET enabled = ?, updatedAt = ? WHERE id = ?")
+      .run(input.enabled ? 1 : 0, new Date().toISOString(), id);
   }
   return db.prepare("SELECT * FROM KnowledgeDocument WHERE id = ?").get(id);
+}
+
+export function putKnowledgeDocumentBinding(
+  documentId: string,
+  input: { indexNodeId: string; indexPathSnapshot: string; appliesToDescendants: boolean },
+) {
+  const db = knowledgeDb();
+  const document = db.prepare("SELECT id FROM KnowledgeDocument WHERE id = ?").get(documentId);
+  if (!document) throw new Error("Knowledge document not found.");
+  const occupied = db.prepare(`SELECT documentId FROM KnowledgeDocumentBinding
+    WHERE indexNodeId = ? AND documentId <> ?`).get(input.indexNodeId, documentId) as { documentId: string } | undefined;
+  if (occupied) throw new KnowledgeBindingConflictError("Target index node already has a knowledge document.");
+  const current = db.prepare("SELECT id FROM KnowledgeDocumentBinding WHERE documentId = ?")
+    .get(documentId) as { id: string } | undefined;
+  if (current) {
+    db.prepare(`UPDATE KnowledgeDocumentBinding SET indexNodeId = ?, indexPathSnapshot = ?,
+      appliesToDescendants = ?, status = 'ACTIVE', updatedAt = ? WHERE id = ?`)
+      .run(input.indexNodeId, input.indexPathSnapshot, input.appliesToDescendants ? 1 : 0,
+        new Date().toISOString(), current.id);
+  } else {
+    db.prepare(`INSERT INTO KnowledgeDocumentBinding
+      (id, documentId, indexNodeId, indexPathSnapshot, appliesToDescendants, status)
+      VALUES (?, ?, ?, ?, ?, 'ACTIVE')`)
+      .run(randomUUID(), documentId, input.indexNodeId, input.indexPathSnapshot,
+        input.appliesToDescendants ? 1 : 0);
+  }
+  return db.prepare("SELECT * FROM KnowledgeDocumentBinding WHERE documentId = ?").get(documentId);
+}
+
+export function patchKnowledgeDocumentBinding(documentId: string, appliesToDescendants: boolean) {
+  const db = knowledgeDb();
+  const result = db.prepare(`UPDATE KnowledgeDocumentBinding SET appliesToDescendants = ?, updatedAt = ?
+    WHERE documentId = ?`).run(appliesToDescendants ? 1 : 0, new Date().toISOString(), documentId);
+  if (!result.changes) throw new Error("Knowledge document binding not found.");
+  return db.prepare("SELECT * FROM KnowledgeDocumentBinding WHERE documentId = ?").get(documentId);
+}
+
+export function deleteKnowledgeDocumentBinding(documentId: string) {
+  const result = knowledgeDb().prepare("DELETE FROM KnowledgeDocumentBinding WHERE documentId = ?").run(documentId);
+  if (!result.changes) throw new Error("Knowledge document binding not found.");
+  return { ok: true };
 }
 
 export async function deleteKnowledgeDocument(id: string) {
@@ -123,7 +188,7 @@ export async function deleteKnowledgeDocument(id: string) {
     const remaining = db.prepare("SELECT 1 FROM KnowledgeDocumentVersion WHERE sourcePath = ? LIMIT 1").get(entry.sourcePath);
     if (remaining) continue;
     try {
-      await unlink(safeSourcePath(entry.sourcePath));
+      await unlink(/* turbopackIgnore: true */ safeSourcePath(entry.sourcePath));
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
@@ -176,7 +241,7 @@ export async function deleteKnowledgeVersion(documentId: string, versionId: stri
     .get(deleted.sourcePath);
   if (!remainingSourceReference) {
     try {
-      await unlink(safeSourcePath(deleted.sourcePath));
+      await unlink(/* turbopackIgnore: true */ safeSourcePath(deleted.sourcePath));
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
@@ -195,7 +260,10 @@ export function rebuildKnowledgeFts() {
     db.prepare(`INSERT INTO KnowledgeChunkFts
       (chunkId, documentId, versionId, title, lessonCode, topic, keywords, cleanedText)
       SELECT c.id, v.documentId, v.id, d.title, COALESCE(d.lessonCode, ''), c.topic,
-        replace(replace(c.keywordsJson, '[', ''), ']', ''), c.cleanedText
+        replace(replace(c.keywordsJson, '[', ''), ']', ''),
+        CASE WHEN c.locatorKind = 'TEXT'
+          THEN replace(replace(replace(COALESCE(json_extract(c.locatorJson, '$.headingPath'), ''), '[', ''), ']', ''), '"', '') || char(10) || c.cleanedText
+          ELSE c.cleanedText END
       FROM KnowledgeChunk c
       JOIN KnowledgeDocumentVersion v ON v.id = c.versionId
       JOIN KnowledgeDocument d ON d.id = v.documentId`).run();

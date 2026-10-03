@@ -92,7 +92,7 @@ export async function saveImageBuffer(file: ImageFileLike, buffer: Buffer, hash:
 
   const safeName = sanitizeFileName(path.basename(file.name, path.extname(file.name))) || "chart";
   const fileName = `${safeName}-${hash.slice(0, 16)}${ext}`;
-  const fullPath = path.join(folder, fileName);
+  const fullPath = path.join(/* turbopackIgnore: true */ folder, fileName);
   await writeFile(fullPath, buffer);
 
   return path.relative(/*turbopackIgnore: true*/ process.cwd(), fullPath).replace(/\\/g, "/");

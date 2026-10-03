@@ -33,12 +33,14 @@ export async function knowledgeMaintenanceSummary() {
     } | undefined;
   const activeChunks = db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeChunk c
     JOIN KnowledgeDocumentVersion v ON v.id = c.versionId AND v.status = 'ACTIVE'
-    JOIN KnowledgeDocument d ON d.id = v.documentId AND d.bindingStatus = 'ACTIVE'`).get() as { count: number };
+    JOIN KnowledgeDocument d ON d.id = v.documentId AND d.enabled = 1
+    JOIN KnowledgeDocumentBinding b ON b.documentId = d.id AND b.status = 'ACTIVE' AND b.indexNodeId IS NOT NULL`).get() as { count: number };
   const activeVectors = profile
     ? db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeChunkEmbedding e
         JOIN KnowledgeChunk c ON c.id = e.chunkId
         JOIN KnowledgeDocumentVersion v ON v.id = c.versionId AND v.status = 'ACTIVE'
-        JOIN KnowledgeDocument d ON d.id = v.documentId AND d.bindingStatus = 'ACTIVE'
+        JOIN KnowledgeDocument d ON d.id = v.documentId AND d.enabled = 1
+        JOIN KnowledgeDocumentBinding b ON b.documentId = d.id AND b.status = 'ACTIVE' AND b.indexNodeId IS NOT NULL
         WHERE e.profileId = ?`).get(profile.id) as { count: number }
     : { count: 0 };
   return {
@@ -70,7 +72,8 @@ async function runEmbeddingRebuild(id: string) {
     if (!endpoint || endpoint.embeddingModel !== job.model) throw new Error("Embedding 配置已在重建期间发生变化，请重新启动任务。");
     const chunks = db.prepare(`SELECT c.id, c.cleanedText FROM KnowledgeChunk c
       JOIN KnowledgeDocumentVersion v ON v.id = c.versionId AND v.status = 'ACTIVE'
-      JOIN KnowledgeDocument d ON d.id = v.documentId AND d.bindingStatus = 'ACTIVE'
+      JOIN KnowledgeDocument d ON d.id = v.documentId AND d.enabled = 1
+      JOIN KnowledgeDocumentBinding b ON b.documentId = d.id AND b.status = 'ACTIVE' AND b.indexNodeId IS NOT NULL
       ORDER BY c.id`).all() as Array<{ id: string; cleanedText: string }>;
     for (let offset = job.processedItems; offset < chunks.length; offset += 32) {
       const batch = chunks.slice(offset, offset + 32);
@@ -130,7 +133,8 @@ export async function createEmbeddingRebuildJob() {
   try {
     const count = db.prepare(`SELECT COUNT(*) AS count FROM KnowledgeChunk c
       JOIN KnowledgeDocumentVersion v ON v.id = c.versionId AND v.status = 'ACTIVE'
-      JOIN KnowledgeDocument d ON d.id = v.documentId AND d.bindingStatus = 'ACTIVE'`).get() as { count: number };
+      JOIN KnowledgeDocument d ON d.id = v.documentId AND d.enabled = 1
+      JOIN KnowledgeDocumentBinding b ON b.documentId = d.id AND b.status = 'ACTIVE' AND b.indexNodeId IS NOT NULL`).get() as { count: number };
     db.transaction(() => {
       db.prepare(`INSERT INTO KnowledgeEmbeddingProfile
         (id, endpointId, model, dimensions, status) VALUES (?, ?, ?, 0, 'BUILDING')`)

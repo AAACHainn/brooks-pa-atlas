@@ -27,6 +27,11 @@ const nextConfig: NextConfig = {
       "./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
     ],
   },
+  // Runtime library data is provided by the local data directory or Docker volume,
+  // so it must never be copied into the immutable standalone application bundle.
+  outputFileTracingExcludes: {
+    "/*": ["./data/library/**/*"],
+  },
   turbopack: {
     // Avoid parent lockfiles making Turbopack treat a user or monorepo directory as this app's root.
     root: turbopackRoot,

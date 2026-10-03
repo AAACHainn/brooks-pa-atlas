@@ -4,6 +4,7 @@ import { activeEmbeddingProfile, embedTexts } from "@/lib/knowledge-embeddings";
 import { buildKnowledgeFtsQuery } from "@/lib/knowledge-search";
 import { parseKnowledgeLocator } from "@/lib/knowledge-source";
 import type { KnowledgeSource } from "@/lib/knowledge-types";
+import { isRelevantKnowledgeVector, knowledgeSubjectQuery } from "@/lib/knowledge-relevance";
 
 export type KnowledgeDocumentDescriptor = {
   id: string;
@@ -76,18 +77,23 @@ export async function retrieveDeepKnowledgeCandidates(options: {
   const currentIds = new Set(options.currentIds);
   const targetIds = [...new Set(options.targets.map((target) => target.documentId))];
   const otherCurrentIds = options.currentIds.filter((id) => !targetIds.includes(id));
+  const queries = options.queries.map(knowledgeSubjectQuery);
+  const semanticQueryIndexes = queries.flatMap((query, index) => query ? [index] : []);
   const profile = activeEmbeddingProfile(db);
-  let vectors: number[][] = [];
-  if (profile) {
+  const vectors: number[][] = [];
+  if (profile && semanticQueryIndexes.length) {
     try {
-      const result = await embedTexts(options.queries, { signal: options.signal });
+      const result = await embedTexts(semanticQueryIndexes.map((index) => queries[index]), { signal: options.signal });
       if (result.endpointId === profile.endpointId && result.model === profile.model
-        && result.vectors.every((vector) => vector.length === profile.dimensions)) vectors = result.vectors;
+        && result.vectors.every((vector) => vector.length === profile.dimensions)) {
+        result.vectors.forEach((vector, index) => { vectors[semanticQueryIndexes[index]] = vector; });
+      }
     } catch { options.signal.throwIfAborted(); }
   }
   const merged = new Map<string, DeepKnowledgeCandidate>();
-  for (const [queryIndex, query] of options.queries.entries()) {
+  for (const [queryIndex, query] of queries.entries()) {
     options.signal.throwIfAborted();
+    if (!query) { options.onQuery?.(queryIndex + 1, queries.length); continue; }
     const scopes: Array<string[] | null> = [
       ...targetIds.map((id) => [id]), ...(otherCurrentIds.length ? [otherCurrentIds] : []), null,
     ];
@@ -111,10 +117,11 @@ export async function retrieveDeepKnowledgeCandidates(options: {
         WHERE instr(?, k.normalizedKeyword) > 0${scope}
         GROUP BY c.id ORDER BY MAX(length(k.normalizedKeyword)) DESC, c.id LIMIT ?`)
         .all(query.normalize("NFKC").toLowerCase(), ...(ids ?? []), limit) as Row[]);
-      if (vectors[queryIndex] && profile) add(db.prepare(`${select} FROM KnowledgeChunkEmbedding e
+      if (vectors[queryIndex] && profile) add((db.prepare(`${select}, vec_distance_cosine(e.embedding, ?) AS distance FROM KnowledgeChunkEmbedding e
         JOIN KnowledgeChunk c ON c.id = e.chunkId ${joins}
-        WHERE e.profileId = ?${scope} ORDER BY vec_distance_cosine(e.embedding, ?), c.id LIMIT ?`)
-        .all(profile.id, ...(ids ?? []), vectorBuffer(vectors[queryIndex]), limit) as Row[]);
+        WHERE e.profileId = ?${scope} ORDER BY distance, c.id LIMIT ?`)
+        .all(vectorBuffer(vectors[queryIndex]), profile.id, ...(ids ?? []), limit) as Array<Row & { distance: number }>)
+        .filter((row) => isRelevantKnowledgeVector(row.distance)));
       await yieldToLoop();
       options.signal.throwIfAborted();
     }

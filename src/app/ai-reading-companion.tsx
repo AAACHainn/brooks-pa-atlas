@@ -63,7 +63,7 @@ type Message = {
       text?: string;
     }>;
     semanticSearchUsed: boolean;
-    warning: "semantic_unavailable" | "no_current_binding" | null;
+    warning: "semantic_unavailable" | "no_current_binding" | "no_relevant_evidence" | null;
     research?: DeepReadingResearch;
   } | null;
 };
@@ -114,7 +114,9 @@ const labels = {
     configure: "配置阅读伴侣",
     configureHint: "请先选择可用的 AI 端点和视觉模型。",
     recentContext: "模型接收近期会话和最多 4 张参考图；全部历史仍保存在本地。",
-    knowledgeSources: "资料来源",
+    knowledgeSources: "参考资料",
+    knowledgeSourcesHint: "以下资料提供给 AI 参考，回答采用的依据以正文引用为准。",
+    noRelevantEvidence: "未找到相关知识库资料，本次没有使用知识库片段。",
     semanticUnavailable: "本次未使用语义检索。",
     noCurrentBinding: "当前图片没有关联资料，已使用全库检索。",
   },
@@ -159,7 +161,9 @@ const labels = {
     configure: "Configure reading companion",
     configureHint: "Select an available AI endpoint and vision-capable model first.",
     recentContext: "The model receives recent chat and up to 4 reference images; all history stays saved locally.",
-    knowledgeSources: "Material sources",
+    knowledgeSources: "Reference materials",
+    knowledgeSourcesHint: "These materials were provided to the AI; answer citations indicate the evidence used.",
+    noRelevantEvidence: "No relevant knowledge materials were found; no library excerpts were used for this answer.",
     semanticUnavailable: "Semantic retrieval was unavailable for this answer.",
     noCurrentBinding: "The current image has no linked material; the full library was searched.",
   },
@@ -959,9 +963,10 @@ export default function AiReadingCompanion({
                             <div className="mt-1.5 space-y-1.5">
                               {message.knowledge.warning ? (
                                 <p className="text-amber-700">
-                                  {message.knowledge.warning === "semantic_unavailable" ? t.semanticUnavailable : t.noCurrentBinding}
+                                  {message.knowledge.warning === "no_relevant_evidence" ? t.noRelevantEvidence : message.knowledge.warning === "semantic_unavailable" ? t.semanticUnavailable : t.noCurrentBinding}
                                 </p>
                               ) : null}
+                              <p className="text-cyan-800">{t.knowledgeSourcesHint}</p>
                               {message.knowledge.sources.map((source) => (
                                 <details key={`${message.id}-${source.citation}`} className="rounded border border-cyan-100 bg-white/70 px-2 py-1">
                                   <summary className="cursor-pointer">
@@ -976,7 +981,7 @@ export default function AiReadingCompanion({
                           </details>
                         ) : message.knowledge?.warning ? (
                           <p className="mt-2 text-[11px] text-amber-700">
-                            {message.knowledge.warning === "semantic_unavailable" ? t.semanticUnavailable : t.noCurrentBinding}
+                            {message.knowledge.warning === "no_relevant_evidence" ? t.noRelevantEvidence : message.knowledge.warning === "semantic_unavailable" ? t.semanticUnavailable : t.noCurrentBinding}
                           </p>
                         ) : null}
                       </>

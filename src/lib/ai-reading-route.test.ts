@@ -9,6 +9,7 @@ import sharp from "sharp";
 import { AI_CONFIG_SETTING_KEY, defaultStoredAiConfig } from "@/lib/ai-config";
 import { acquireHeavyTask, currentHeavyTask, releaseHeavyTask } from "@/lib/background-task-coordinator";
 import type { PrismaClient } from "@/generated/prisma/client";
+import { vectorBuffer } from "@/lib/knowledge-db";
 
 let prisma: PrismaClient;
 let messagesPost: typeof import("@/app/api/ai/reading-companion/conversations/[id]/messages/route").POST;
@@ -41,6 +42,7 @@ before(async () => {
   (globalThis as typeof globalThis & { brooksKnowledgeDb?: typeof knowledge }).brooksKnowledgeDb = knowledge;
   prisma = (await import("@/lib/db")).prisma;
   await prisma.indexNode.create({ data: { id: "node", name: "19A", path: "19A" } });
+  await prisma.indexNode.create({ data: { id: "unbound-node", name: "01", path: "01" } });
   await sharp({ create: { width: 32, height: 32, channels: 3, background: "white" } }).png().toFile(path.join(directory, "chart.png"));
   const libraryPath = path.relative(process.cwd(), path.join(directory, "chart.png"));
   await prisma.chartImage.create({ data: { id: "image", originalName: "19A.png", title: "Support and resistance", libraryPath, hash: "a".repeat(64), mimeType: "image/png", sizeBytes: 100, indexNodeId: "node" } });
@@ -80,8 +82,8 @@ async function saveConfig() {
   return response.json();
 }
 async function conversation() { return prisma.aiReadingConversation.create({ data: {} }); }
-function request(mode?: "quick" | "deep", signal?: AbortSignal) {
-  return new Request("http://atlas.test/messages", { method: "POST", signal, body: JSON.stringify({ imageId: "image", content: "解释支撑与阻力", ...(mode ? { answerMode: mode } : {}) }) });
+function request(mode?: "quick" | "deep", signal?: AbortSignal, content = "解释支撑与阻力") {
+  return new Request("http://atlas.test/messages", { method: "POST", signal, body: JSON.stringify({ imageId: "image", content, ...(mode ? { answerMode: mode } : {}) }) });
 }
 function reply(text: string) { return Response.json({ choices: [{ message: { content: text } }] }); }
 function events(text: string) { return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)); }
@@ -98,6 +100,89 @@ test("legacy POST uses quick retrieval, eight sources, current priority and one 
   assert.equal(done.assistantMessage.knowledge.sources.length, 8);
   assert.ok(done.assistantMessage.knowledge.sources.filter((source: { scope: string }) => source.scope === "current").length >= 4);
   assert.equal(streamed.some((event) => event.type === "progress"), false);
+});
+
+test("unbound image context cannot pull unrelated library excerpts into quick answers", async () => {
+  const previous = await prisma.chartImage.findUniqueOrThrow({ where: { id: "image" }, select: { indexNodeId: true, ocrText: true } });
+  await prisma.chartImage.update({ where: { id: "image" }, data: { indexNodeId: "unbound-node", ocrText: "支撑与阻力 current 第19A课" } });
+  try {
+    for (const question of ["当前课程内容主要讲的是什么？", "请翻译这张图片上的内容", "怎么做西红柿炒鸡蛋？"]) {
+      const item = await conversation();
+      let calls = 0;
+      globalThis.fetch = async (_url, init) => {
+        calls++;
+        assert.match(JSON.stringify(JSON.parse(String(init?.body)).messages), /未找到符合相关性要求的知识库资料/);
+        return reply("根据图片回答");
+      };
+      const response = await messagesPost(request("quick", undefined, question), { params: Promise.resolve({ id: item.id }) });
+      const done = events(await response.text()).find((event) => event.type === "done");
+      assert.equal(calls, 1);
+      assert.deepEqual(done.assistantMessage.knowledge.sources, []);
+      assert.equal(done.assistantMessage.knowledge.hasCurrentBinding, false);
+      assert.equal(done.assistantMessage.knowledge.warning, "no_relevant_evidence");
+    }
+    // An explicitly relevant question can still use the full library without a binding.
+    const item = await conversation();
+    globalThis.fetch = async () => reply("相关解释 [K1]");
+    const response = await messagesPost(request(), { params: Promise.resolve({ id: item.id }) });
+    const done = events(await response.text()).find((event) => event.type === "done");
+    assert.equal(done.assistantMessage.knowledge.sources.length, 8);
+    assert.equal(done.assistantMessage.knowledge.warning, "no_current_binding");
+    // A vague local request can use image context once an actual binding exists.
+    await prisma.chartImage.update({ where: { id: "image" }, data: { indexNodeId: "node" } });
+    const bound = await conversation();
+    const boundResponse = await messagesPost(request("quick", undefined, "请解释当前图片"), { params: Promise.resolve({ id: bound.id }) });
+    const boundDone = events(await boundResponse.text()).find((event) => event.type === "done");
+    assert.ok(boundDone.assistantMessage.knowledge.sources.length > 0);
+    assert.ok(boundDone.assistantMessage.knowledge.sources.every((source: { scope: string }) => source.scope === "current"));
+  } finally { await prisma.chartImage.update({ where: { id: "image" }, data: previous }); }
+});
+
+test("quick and deep reject distant vectors, keep real semantic matches and never pad to eight", async () => {
+  const previous = await prisma.chartImage.findUniqueOrThrow({ where: { id: "image" }, select: { indexNodeId: true, ocrText: true } });
+  await prisma.chartImage.update({ where: { id: "image" }, data: { indexNodeId: "unbound-node", ocrText: "支撑与阻力" } });
+  config.embeddingEndpoints = [{ id: "embed-mock", name: "mock", provider: "custom", baseUrl: "http://mock.invalid/v1", apiKey: "",
+    useCustomUrls: false, embeddingsUrl: "", modelsUrl: "", models: ["embed"], embeddingModel: "embed" }];
+  config.activeEmbeddingEndpointId = "embed-mock";
+  await saveConfig();
+  knowledge.prepare("INSERT INTO KnowledgeEmbeddingProfile(id,endpointId,model,dimensions,status) VALUES ('relevance','embed-mock','embed',3,'ACTIVE')").run();
+  for (const { id } of knowledge.prepare("SELECT id FROM KnowledgeChunk").all() as Array<{ id: string }>) {
+    knowledge.prepare("INSERT INTO KnowledgeChunkEmbedding(chunkId,profileId,embedding) VALUES (?,'relevance',?)")
+      .run(id, vectorBuffer(["current-0", "current-1"].includes(id) ? [1, 0, 0] : [0, 1, 0]));
+  }
+  const inputs: string[][] = [];
+  let answerCalls = 0;
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (body.input) {
+      inputs.push(body.input);
+      return Response.json({ data: body.input.map((text: string, index: number) => ({ index, embedding: text === "market ceilings" ? [1, 0, 0] : [0, 0, 1] })) });
+    }
+    answerCalls++; return reply("说明");
+  };
+  try {
+    for (const [question, expected] of [["当前课程内容主要讲的是什么？", 0], ["怎么做西红柿炒鸡蛋？", 0], ["market ceilings", 2]] as const) {
+      const item = await conversation();
+      const response = await messagesPost(request("quick", undefined, question), { params: Promise.resolve({ id: item.id }) });
+      const done = events(await response.text()).find((event) => event.type === "done");
+      assert.equal(done.assistantMessage.knowledge.sources.length, expected, question);
+      if (!expected) assert.equal(done.assistantMessage.knowledge.warning, "no_relevant_evidence");
+    }
+    assert.equal(answerCalls, 3);
+    assert.equal(inputs.length, 2, "a generic unbound question must not request an embedding");
+    assert.ok(inputs.every((batch) => batch.every((text) => !text.includes("支撑"))), "image OCR must not contaminate the embedding query");
+    const retrieve = (await import("@/lib/knowledge-deep-search")).retrieveDeepKnowledgeCandidates;
+    const unrelated = await retrieve({ queries: ["当前课程内容主要讲的是什么？", "怎么做西红柿炒鸡蛋？"], currentIds: [], targets: [], signal: new AbortController().signal });
+    assert.equal(unrelated.semanticSearchUsed, true);
+    assert.deepEqual(unrelated.candidates, []);
+    const relevant = await retrieve({ queries: ["请翻译当前图片", "market ceilings"], currentIds: [], targets: [], signal: new AbortController().signal });
+    assert.equal(relevant.candidates.length, 2);
+    assert.ok(relevant.candidates.every((candidate) => candidate.queryIndexes.length === 1 && candidate.queryIndexes[0] === 1));
+  } finally {
+    await prisma.chartImage.update({ where: { id: "image" }, data: previous });
+    knowledge.prepare("UPDATE KnowledgeEmbeddingProfile SET status = 'INACTIVE' WHERE id = 'relevance'").run();
+    config.embeddingEndpoints = []; config.activeEmbeddingEndpointId = null; await saveConfig();
+  }
 });
 
 test("saved skill budgets round trip and stay fixed through a deep question", async () => {

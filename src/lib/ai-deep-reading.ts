@@ -413,7 +413,10 @@ export async function prepareDeepReading(options: DeepReadingOptions) {
     batchAliases.forEach((source) => markRead(source, true));
   }
   research.coverage.complete = research.coverage.availableChunks > 0 && readIds.size >= research.coverage.availableChunks && missingTargets.length === 0;
-  if (!context.sources.length) warn("本次没有可用于回答的知识证据，不能总结整章或比较课程内容。");
+  if (!context.sources.length) {
+    context.warning = "no_relevant_evidence";
+    warn("本次没有可用于回答的知识证据，不能总结整章或比较课程内容。");
+  }
   if (!research.coverage.complete && research.coverage.availableChunks) warn("已读取的资料未覆盖全部目标内容。");
   const evidence = useNotes ? notesEvidence(notes) : serializeKnowledgeForPrompt(context);
   let coverageHint = `\n实际资料覆盖：${research.coverage.readChunks}/${research.coverage.availableChunks} 个片段。${research.coverage.complete ? "仅代表上述目标或召回范围。" : "资料覆盖不完整，不得声称已完整阅读。"}`;

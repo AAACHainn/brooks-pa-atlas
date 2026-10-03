@@ -67,7 +67,7 @@ export type KnowledgeContextSnapshot = {
   sources: KnowledgeSource[];
   semanticSearchUsed: boolean;
   hasCurrentBinding: boolean;
-  warning: "semantic_unavailable" | "no_current_binding" | null;
+  warning: "semantic_unavailable" | "no_current_binding" | "no_relevant_evidence" | null;
   answerMode?: "quick" | "deep";
   research?: DeepReadingResearch;
 };

@@ -9,6 +9,23 @@ import { load as loadSqliteVec } from "sqlite-vec";
 import { vectorBuffer } from "@/lib/knowledge-db";
 import { expandKnowledgeKeywords } from "@/lib/knowledge-keywords";
 import { buildKnowledgeFtsQuery, resolveCurrentKnowledgeDocumentIds } from "@/lib/knowledge-search";
+import { isRelevantKnowledgeVector, knowledgeSubjectQuery, MAX_KNOWLEDGE_VECTOR_DISTANCE } from "@/lib/knowledge-relevance";
+
+test("generic image tasks do not invent subjects for full-library retrieval", () => {
+  for (const question of ["当前课程内容主要讲的是什么？", "请翻译这张图片上的内容", "图中英文逐字翻译成中文", "Please explain this image", "What does the current course mainly say?"]) {
+    assert.equal(knowledgeSubjectQuery(question), "", question);
+  }
+  assert.equal(knowledgeSubjectQuery("什么是支撑与阻力？"), "支撑与阻力");
+  assert.equal(knowledgeSubjectQuery("请解释 H1 setup"), "H1 setup");
+  assert.match(knowledgeSubjectQuery("比较 19A 和 20A 的支撑课程"), /19A.*20A.*支撑/);
+  assert.match(knowledgeSubjectQuery("为什么土豆能在火星种植？"), /土豆.*火星/);
+});
+
+test("semantic relevance rejects distant or invalid neighbors independently of ranking", () => {
+  assert.equal(isRelevantKnowledgeVector(0), true);
+  assert.equal(isRelevantKnowledgeVector(MAX_KNOWLEDGE_VECTOR_DISTANCE), true);
+  for (const distance of [0.36, 0.8, 1, 2, -1, Number.NaN, Infinity]) assert.equal(isRelevantKnowledgeVector(distance), false);
+});
 
 test("short price-action keywords include searchable aliases", () => {
   const aliases = expandKnowledgeKeywords(["H1", "H2", "MTR"]);

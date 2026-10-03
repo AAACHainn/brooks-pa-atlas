@@ -17,6 +17,7 @@ import {
   FolderPlus,
   GripVertical,
   ImageIcon,
+  CircleHelp,
   Loader2,
   Maximize2,
   PencilLine,
@@ -394,10 +395,15 @@ const copy = {
     bulkTagUpdateFailed: "批量更新标签失败，请稍后重试。",
     chooseImages: "选择图片",
     chooseFolder: "选择文件夹",
-    importDocuments: "导入资料",
+    importLibrary: "导入图库",
+    importLibraryTip: "选择图片、图片文件夹，或将 PDF 按页转换为图片；三种方式都会导入当前图库，右侧“导入后 OCR”对三种方式都有效。",
+    chooseImagesHint: "选择一张或多张图片",
+    chooseFolderHint: "导入文件夹中的全部图片",
+    importPdf: "导入 PDF",
+    importPdfHint: "按内置书签建索引并逐页转为图片",
     knowledgeLibrary: "资料知识库",
     importSubtitleKnowledge: "导入/关联资料",
-    importingDocuments: "导入资料中",
+    importingDocuments: "PDF 导入中",
     runImportOcr: "导入后 OCR",
     backupData: "备份管理",
     backingUp: "备份中",
@@ -633,7 +639,12 @@ const copy = {
     bulkTagUpdateFailed: "Bulk tag update failed. Please try again.",
     chooseImages: "Choose images",
     chooseFolder: "Choose folder",
-    importDocuments: "Import materials",
+    importLibrary: "Import to library",
+    importLibraryTip: "Choose images, an image folder, or convert a PDF into page images. All three options import into the current library, and Run OCR after import applies to each one.",
+    chooseImagesHint: "Choose one or more image files",
+    chooseFolderHint: "Import every image in a folder",
+    importPdf: "Import PDF",
+    importPdfHint: "Create indexes from bookmarks and convert every page",
     knowledgeLibrary: "Material knowledge",
     importSubtitleKnowledge: "Import/link materials",
     importingDocuments: "Importing materials",
@@ -1929,6 +1940,227 @@ function ModeSwitch({
   );
 }
 
+function LibraryImportMenu({
+  busy,
+  disabled,
+  label,
+  labels,
+  onChooseFolder,
+  onChooseImages,
+  onChoosePdf,
+}: {
+  busy: boolean;
+  disabled: boolean;
+  label: string;
+  labels: {
+    chooseFolder: string;
+    chooseFolderHint: string;
+    chooseImages: string;
+    chooseImagesHint: string;
+    importPdf: string;
+    importPdfHint: string;
+    tip: string;
+  };
+  onChooseFolder: (files: FileList | null) => void;
+  onChooseImages: (files: FileList | null) => void;
+  onChoosePdf: (file: File | null) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
+  const menuId = useId();
+
+  const items = [
+    {
+      id: "images",
+      label: labels.chooseImages,
+      hint: labels.chooseImagesHint,
+      icon: <ImageIcon className="h-4 w-4" />,
+      choose: () => imageInputRef.current?.click(),
+    },
+    {
+      id: "folder",
+      label: labels.chooseFolder,
+      hint: labels.chooseFolderHint,
+      icon: <FolderPlus className="h-4 w-4" />,
+      choose: () => folderInputRef.current?.click(),
+    },
+    {
+      id: "pdf",
+      label: labels.importPdf,
+      hint: labels.importPdfHint,
+      icon: <FileText className="h-4 w-4" />,
+      choose: () => pdfInputRef.current?.click(),
+    },
+  ];
+
+  const closeMenu = useCallback((restoreFocus = false) => {
+    setIsOpen(false);
+    setActiveIndex(0);
+    if (restoreFocus) window.requestAnimationFrame(() => triggerRef.current?.focus());
+  }, []);
+
+  const focusItem = useCallback((index: number) => {
+    const normalized = (index + items.length) % items.length;
+    setActiveIndex(normalized);
+    window.requestAnimationFrame(() => {
+      containerRef.current
+        ?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[normalized]
+        ?.focus();
+    });
+  }, [items.length]);
+
+  function openMenu() {
+    if (disabled) return;
+    setIsOpen(true);
+    focusItem(0);
+  }
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) closeMenu();
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMenu(true);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [closeMenu, isOpen]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="flex shrink-0 items-center gap-1.5"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) closeMenu();
+      }}
+      onKeyDown={(event) => {
+        if (!isOpen && (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          openMenu();
+          return;
+        }
+        if (!isOpen) return;
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          focusItem(activeIndex + (event.key === "ArrowDown" ? 1 : -1));
+          return;
+        }
+        if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          focusItem(event.key === "Home" ? 0 : items.length - 1);
+        }
+      }}
+    >
+      <div className="relative">
+        <button
+          ref={triggerRef}
+          type="button"
+          disabled={disabled}
+          onClick={() => (isOpen ? closeMenu() : openMenu())}
+          className={`inline-flex h-10 items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white transition-colors hover:bg-cyan-800 focus:outline-none focus:ring-2 focus:ring-cyan-200 disabled:cursor-not-allowed disabled:opacity-60 ${isOpen ? "bg-cyan-800 ring-2 ring-cyan-200" : ""}`}
+          aria-controls={menuId}
+          aria-expanded={isOpen}
+          aria-haspopup="menu"
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+          <span>{label}</span>
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+        </button>
+
+        {isOpen ? (
+          <div
+            id={menuId}
+            role="menu"
+            className="absolute left-0 top-[calc(100%+6px)] z-[60] w-72 rounded-lg border border-zinc-200 bg-white p-1.5 shadow-xl shadow-zinc-950/10"
+          >
+            {items.map((item, index) => (
+              <button
+                key={item.id}
+                type="button"
+                role="menuitem"
+                onFocus={() => setActiveIndex(index)}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => {
+                  closeMenu();
+                  item.choose();
+                }}
+                className={`flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left transition-colors ${activeIndex === index ? "bg-cyan-50 text-cyan-950" : "text-zinc-700 hover:bg-zinc-50"}`}
+              >
+                <span className={`mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md ${activeIndex === index ? "bg-cyan-100 text-cyan-800" : "bg-zinc-100 text-zinc-500"}`}>
+                  {item.icon}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium">{item.label}</span>
+                  <span className="mt-0.5 block text-xs leading-5 text-zinc-500">{item.hint}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <span className="group relative inline-flex" tabIndex={0} aria-label={labels.tip}>
+        <CircleHelp className="h-4 w-4 text-zinc-400 transition-colors group-hover:text-cyan-700 group-focus:text-cyan-700" />
+        <span
+          role="tooltip"
+          className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-[70] w-72 rounded-md border border-zinc-200 bg-zinc-900 px-3 py-2 text-xs leading-5 text-white opacity-0 shadow-xl transition-opacity group-hover:opacity-100 group-focus:opacity-100"
+        >
+          {labels.tip}
+        </span>
+      </span>
+
+      <input
+        ref={imageInputRef}
+        type="file"
+        multiple
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => {
+          onChooseImages(event.target.files);
+          event.target.value = "";
+        }}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          onChooseFolder(event.target.files);
+          event.target.value = "";
+        }}
+        {...({ webkitdirectory: "true", directory: "true" } as Record<string, string>)}
+      />
+      <input
+        ref={pdfInputRef}
+        type="file"
+        accept=".pdf,application/pdf"
+        className="hidden"
+        onChange={(event) => {
+          onChoosePdf(event.target.files?.[0] ?? null);
+          event.target.value = "";
+        }}
+      />
+    </div>
+  );
+}
+
 export default function AtlasWorkbench() {
   const [locale, setLocale] = useState<Locale>("zh");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -2073,7 +2305,6 @@ export default function AtlasWorkbench() {
   const imageSelectionPromiseRef = useRef<Promise<boolean> | null>(null);
   const pendingPageImageNavigationRef = useRef<{ direction: -1 | 1; page: number } | null>(null);
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
-  const documentInputRef = useRef<HTMLInputElement | null>(null);
   const imagesRequestRef = useRef<{ controller: AbortController | null; sequence: number }>({
     controller: null,
     sequence: 0,
@@ -2106,12 +2337,12 @@ export default function AtlasWorkbench() {
   const isManageMode = viewMode === "manage";
   const isLargeViewerActive = isBrowseMode || (isManageMode && isManageViewerOpen);
   const canReorderIndexes = isManageMode && isIndexReorderEnabled && !reorderingIndex;
-  const documentImportButtonLabel =
+  const libraryImportButtonLabel =
     documentImporting && documentImportJob?.totalPages
-      ? `${documentImportJob.processedPages}/${documentImportJob.totalPages}`
+      ? `${t.importingDocuments} ${documentImportJob.processedPages}/${documentImportJob.totalPages}`
       : documentImporting
         ? t.importingDocuments
-        : t.importDocuments;
+        : t.importLibrary;
   const backupTaskPercent = backupTask ? backupJobPercent(backupTask) : 0;
   const backupTaskTitle = backupTask?.kind === "restore" ? t.restoreTaskTitle : t.backupTaskTitle;
   const backupTaskPhase = (() => {
@@ -4823,56 +5054,22 @@ export default function AtlasWorkbench() {
               ) : null}
               {isManageMode ? (
                 <>
-                  <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white hover:bg-cyan-800">
-                    <ImageIcon className="h-4 w-4" />
-                    <span>{t.chooseImages}</span>
-                    <input
-                      type="file"
-                      multiple
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(event) => {
-                        handleFiles(event.target.files);
-                        event.target.value = "";
-                      }}
-                    />
-                  </label>
-                  <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50">
-                    <FolderPlus className="h-4 w-4" />
-                    <span>{t.chooseFolder}</span>
-                    <input
-                      type="file"
-                      multiple
-                      className="hidden"
-                      onChange={(event) => {
-                        handleFiles(event.target.files);
-                        event.target.value = "";
-                      }}
-                      {...({ webkitdirectory: "true", directory: "true" } as Record<string, string>)}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => documentInputRef.current?.click()}
+                  <LibraryImportMenu
+                    busy={documentImporting}
                     disabled={documentImporting || uploading}
-                    className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {documentImporting ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <FileText className="h-4 w-4" />
-                    )}
-                    <span>{documentImportButtonLabel}</span>
-                  </button>
-                  <input
-                    ref={documentInputRef}
-                    type="file"
-                    accept=".pdf,application/pdf"
-                    className="hidden"
-                    onChange={(event) => {
-                      void uploadDocument(event.target.files?.[0] ?? null);
-                      event.target.value = "";
+                    label={libraryImportButtonLabel}
+                    labels={{
+                      chooseFolder: t.chooseFolder,
+                      chooseFolderHint: t.chooseFolderHint,
+                      chooseImages: t.chooseImages,
+                      chooseImagesHint: t.chooseImagesHint,
+                      importPdf: t.importPdf,
+                      importPdfHint: t.importPdfHint,
+                      tip: t.importLibraryTip,
                     }}
+                    onChooseFolder={handleFiles}
+                    onChooseImages={handleFiles}
+                    onChoosePdf={(file) => void uploadDocument(file)}
                   />
                   <button
                     type="button"

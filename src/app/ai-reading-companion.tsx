@@ -18,6 +18,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { useAppDialog } from "@/app/app-dialog";
+import type { DeepReadingPhase, DeepReadingResearch } from "@/lib/knowledge-types";
 
 type Locale = "zh" | "en";
 
@@ -44,6 +45,7 @@ type Message = {
     originalName: string;
     available: boolean;
   } | null;
+  answerMode?: "quick" | "deep";
   knowledge: {
     sources: Array<{
       id: string;
@@ -56,9 +58,13 @@ type Message = {
       startMs: number | null;
       endMs: number | null;
       scope: "current" | "related";
+      versionId?: string;
+      versionNumber?: number;
+      text?: string;
     }>;
     semanticSearchUsed: boolean;
     warning: "semantic_unavailable" | "no_current_binding" | null;
+    research?: DeepReadingResearch;
   } | null;
 };
 
@@ -69,6 +75,10 @@ type ResizeDirection = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
 const labels = {
   zh: {
     title: "AI 阅读伴侣",
+    quickAnswer: "快速回答", deepAnswer: "深度思考", stop: "停止", stopped: "已停止，未完成的回答不会保存。",
+    planning: "拆解问题", retrieving: "检索资料", ranking: "排序证据", reading: "分批阅读", synthesizing: "综合回答",
+    coverage: "证据覆盖", targetChunks: "目标片段", recalledChunks: "召回片段", modelCalls: "模型调用", estimatedTokens: "估算输入 Token",
+    modeHint: "快速：当前图片局部问题；深度：整章总结、多课程比较和综合资料。",
     newConversation: "新建会话",
     untitled: "新会话",
     rename: "重命名会话",
@@ -110,6 +120,10 @@ const labels = {
   },
   en: {
     title: "AI reading companion",
+    quickAnswer: "Quick answer", deepAnswer: "Deep thinking", stop: "Stop", stopped: "Stopped. The unfinished answer was not saved.",
+    planning: "Planning", retrieving: "Retrieving", ranking: "Ranking evidence", reading: "Reading batches", synthesizing: "Synthesizing",
+    coverage: "Evidence coverage", targetChunks: "target chunks", recalledChunks: "retrieved chunks", modelCalls: "model calls", estimatedTokens: "estimated input tokens",
+    modeHint: "Quick: local image questions. Deep: chapter summaries, course comparisons and synthesis.",
     newConversation: "New conversation",
     untitled: "New conversation",
     rename: "Rename conversation",
@@ -390,6 +404,9 @@ export default function AiReadingCompanion({
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [answerMode, setAnswerMode] = useState<"quick" | "deep">("quick");
+  const [progress, setProgress] = useState<{ phase: DeepReadingPhase; completed?: number; total?: number } | null>(null);
+  const sendAbortRef = useRef<AbortController | null>(null);
   const [assistantDraft, setAssistantDraft] = useState("");
   const [assistantReasoningDraft, setAssistantReasoningDraft] = useState("");
   const [thinkingActive, setThinkingActive] = useState(false);
@@ -411,6 +428,9 @@ export default function AiReadingCompanion({
     confirm: t.confirm,
     cancel: t.cancel,
   });
+
+  useEffect(() => () => sendAbortRef.current?.abort(), []);
+  useEffect(() => { if (!open) sendAbortRef.current?.abort(); }, [open]);
 
   useEffect(() => {
     const storedPosition = window.localStorage.getItem("brooks-pa-atlas.aiReading.position");
@@ -683,13 +703,17 @@ export default function AiReadingCompanion({
     setThinkingActive(false);
     setThinkingElapsedMs(0);
     setSending(true);
+    const sendAbort = new AbortController();
+    sendAbortRef.current = sendAbort;
+    setProgress(answerMode === "deep" ? { phase: "planning" } : null);
     try {
       const response = await fetch(
         `/api/ai/reading-companion/conversations/${conversationId}/messages`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageId: image.id, content }),
+          body: JSON.stringify({ imageId: image.id, content, answerMode }),
+          signal: sendAbort.signal,
         },
       );
       if (!response.ok || !response.body) {
@@ -709,7 +733,10 @@ export default function AiReadingCompanion({
         for (const line of lines) {
           if (!line.trim()) continue;
           const event = JSON.parse(line) as {
-            type: "start" | "thinking_start" | "reasoning_delta" | "thinking_done" | "delta" | "done" | "error";
+            type: "start" | "progress" | "ping" | "thinking_start" | "reasoning_delta" | "thinking_done" | "delta" | "done" | "error";
+            phase?: DeepReadingPhase;
+            completed?: number;
+            total?: number;
             text?: string;
             error?: string;
             durationMs?: number;
@@ -722,6 +749,8 @@ export default function AiReadingCompanion({
             if (event.conversation) {
               setConversations((items) => items.map((item) => item.id === conversationId ? { ...item, title: event.conversation!.title, messageCount: item.messageCount + 1, preview: content, updatedAt: new Date().toISOString() } : item));
             }
+          } else if (event.type === "progress" && event.phase) {
+            setProgress({ phase: event.phase, completed: event.completed, total: event.total });
           } else if (event.type === "thinking_start") {
             thinkingStartedAtRef.current = Date.now();
             setThinkingElapsedMs(0);
@@ -756,9 +785,11 @@ export default function AiReadingCompanion({
       setThinkingElapsedMs(0);
       setInput(content);
       const message = caught instanceof Error ? caught.message : t.operationFailed;
-      setError(`${message}\n${t.retryHint}`);
+      setError(sendAbort.signal.aborted ? t.stopped : `${message}\n${t.retryHint}`);
     } finally {
       setSending(false);
+      setProgress(null);
+      if (sendAbortRef.current === sendAbort) sendAbortRef.current = null;
     }
   }
 
@@ -891,6 +922,9 @@ export default function AiReadingCompanion({
               {messages.map((message) => (
                 <article key={message.id} className={`flex ${message.role === "USER" ? "justify-end" : "justify-start"}`}>
                   <div className={`max-w-[88%] rounded-xl px-3 py-2 text-sm leading-6 shadow-sm ${message.role === "USER" ? "bg-zinc-950 text-white" : "border border-zinc-200 bg-white text-zinc-800"}`}>
+                    <p className={`mb-1 text-[10px] font-medium ${message.role === "USER" ? "text-zinc-300" : "text-cyan-700"}`}>
+                      {message.answerMode === "deep" ? t.deepAnswer : t.quickAnswer}
+                    </p>
                     {message.image ? (
                       <div className={`mb-1.5 truncate text-[10px] font-medium ${message.role === "USER" ? "text-cyan-200" : "text-cyan-700"}`} title={message.image.title ?? message.image.originalName}>
                         {message.image.title ?? message.image.originalName}{message.image.available ? "" : ` · ${t.unavailableImage}`}
@@ -907,6 +941,18 @@ export default function AiReadingCompanion({
                           />
                         ) : null}
                         <MarkdownContent content={message.content} />
+                        {message.knowledge?.research ? (
+                          <details className="mt-2 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-[11px] leading-5">
+                            <summary className="cursor-pointer font-semibold">
+                              {t.coverage} · {message.knowledge.research.coverage.readChunks}/{message.knowledge.research.coverage.availableChunks} {message.knowledge.research.intent === "summary" ? t.targetChunks : t.recalledChunks}
+                            </summary>
+                            <p>{message.knowledge.research.modelCalls} {t.modelCalls} · {t.estimatedTokens} {message.knowledge.research.estimatedInputTokens.toLocaleString()}</p>
+                            {message.knowledge.research.coverage.documents.map((doc) => (
+                              <p key={doc.documentId}>{doc.title} · {doc.readChunks}/{doc.availableChunks}</p>
+                            ))}
+                            {message.knowledge.research.warnings.map((warning) => <p key={warning} className="text-amber-800">{warning}</p>)}
+                          </details>
+                        ) : null}
                         {message.knowledge?.sources.length ? (
                           <details className="mt-2 rounded-md border border-cyan-100 bg-cyan-50/60 px-2 py-1.5 text-[11px] leading-4 text-cyan-950">
                             <summary className="cursor-pointer font-semibold">{t.knowledgeSources} · {message.knowledge.sources.length}</summary>
@@ -917,11 +963,14 @@ export default function AiReadingCompanion({
                                 </p>
                               ) : null}
                               {message.knowledge.sources.map((source) => (
-                                <p key={`${message.id}-${source.citation}`}>
-                                  <span className="font-semibold">[{source.citation}]</span>{" "}
-                                  {source.lessonCode ? `${source.lessonCode} · ` : ""}{source.title}{" · "}
-                                  {knowledgeLocation(source)}
-                                </p>
+                                <details key={`${message.id}-${source.citation}`} className="rounded border border-cyan-100 bg-white/70 px-2 py-1">
+                                  <summary className="cursor-pointer">
+                                    <span className="font-semibold">[{source.citation}]</span>{" "}
+                                    {source.lessonCode ? `${source.lessonCode} · ` : ""}{source.title}{" · "}{knowledgeLocation(source)}
+                                  </summary>
+                                  <p className="mt-1 text-zinc-500" title={source.versionId}>{source.sourceType}{source.versionNumber ? ` · v${source.versionNumber}` : ""}{source.versionId ? ` · ${source.versionId.slice(0, 12)}` : ""}</p>
+                                  <p className="mt-1 whitespace-pre-wrap break-words">{source.text}</p>
+                                </details>
                               ))}
                             </div>
                           </details>
@@ -961,6 +1010,23 @@ export default function AiReadingCompanion({
                   <span>{t.configureHint} {t.configure}</span>
                 </button>
               ) : null}
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex gap-3" role="group" aria-label={t.modeHint}>
+                  {(["quick", "deep"] as const).map((mode) => (
+                    <button key={mode} type="button" disabled={sending} aria-pressed={answerMode === mode}
+                      onClick={() => setAnswerMode(mode)} title={t.modeHint}
+                      className={`border-b-2 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100 disabled:opacity-60 ${answerMode === mode ? "border-cyan-700 text-cyan-800" : "border-transparent text-zinc-500 hover:text-cyan-700"}`}>
+                      {mode === "quick" ? t.quickAnswer : t.deepAnswer}
+                    </button>
+                  ))}
+                </div>
+                {sending ? <button type="button" onClick={() => sendAbortRef.current?.abort()}
+                  className="rounded-md border border-zinc-200 bg-white px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100">{t.stop}</button> : null}
+              </div>
+              {progress ? <p role="status" className="mb-2 flex items-center gap-2 text-xs text-cyan-800">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />{t[progress.phase]}
+                {progress.total !== undefined ? ` · ${progress.completed ?? 0}/${progress.total}` : ""}
+              </p> : null}
               <div className="flex items-end gap-2">
                 <textarea
                   value={input}

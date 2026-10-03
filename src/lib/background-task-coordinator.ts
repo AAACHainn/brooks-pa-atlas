@@ -1,4 +1,4 @@
-export type HeavyTaskKind = "knowledge-import" | "knowledge-embeddings" | "document-import" | "ocr-batch" | "thumbnails";
+export type HeavyTaskKind = "knowledge-import" | "knowledge-embeddings" | "document-import" | "ocr-batch" | "thumbnails" | "ai-deep-reading";
 
 type HeavyTaskLease = { kind: HeavyTaskKind; id: string };
 

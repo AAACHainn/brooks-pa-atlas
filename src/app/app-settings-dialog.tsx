@@ -7,9 +7,8 @@ import { useAppDialog } from "@/app/app-dialog";
 import { createBrowserId } from "@/lib/browser-id";
 import {
   AI_CONFIG_VERSION, type AiConfigDto, type AiEndpointDto, type AiProvider,
-  DEFAULT_OCR_REFINEMENT_PROMPT, DEFAULT_READING_COMPANION_PROMPT, DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT,
   type EmbeddingEndpointDto, OCR_REFINEMENT_SKILL_KEY, READING_COMPANION_SKILL_KEY,
-  SUBTITLE_KNOWLEDGE_SKILL_KEY, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls,
+  SUBTITLE_KNOWLEDGE_SKILL_KEY, defaultStoredAiConfig, readingCompanionSkillSchema, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls,
 } from "@/lib/ai-config";
 
 type Locale = "zh" | "en";
@@ -41,6 +40,9 @@ const labels = {
     noModel: "请选择模型", addModelPlaceholder: "输入模型 ID", add: "添加", noModels: "暂无模型，可拉取或手动添加。",
     skillTitle: "AI 精校 OCR", skillDescription: "结合原图校对当前 OCR 草稿。模型返回结果后只更新未保存草稿。",
     readingSkillTitle: "AI 阅读伴侣", readingSkillDescription: "结合当前图片及全部学习资料进行翻译、讲解、比较和讨论。",
+    deepBudget: "深度思考预算", deepInput: "单次上下文输入 Token 预算", deepTotal: "整个问题累计输入 Token 预算", deepOutput: "最终回答输出 Token 上限",
+    deepBudgetHint: "输入包含提示词、问题、历史、图片和证据，按保守估算保留安全余量。累计预算不得小于单次预算；配置不能提高模型自身的上下文容量。最多 10 次模型调用、6 个阅读批次。",
+    deepBudgetInvalid: "Token 预算必须为正整数，累计输入预算不得小于单次预算。",
     subtitleSkillTitle: "字幕知识整理", subtitleSkillDescription: "AI 深度整理只判断分段、主题和关键词，不再重写字幕正文。建议选择便宜的非推理模型。",
     subtitlePrivacy: "只有选择“AI 深度整理”时才调用大模型；快速导入只调用 Embedding。PPT 图片不会发送给 Embedding 服务。",
     prompt: "提示词", modelOverride: "模型覆盖", inheritModel: "继承启用的大模型端点",
@@ -72,6 +74,9 @@ const labels = {
     addModelPlaceholder: "Enter model ID", add: "Add", noModels: "No models yet. Fetch or add one manually.",
     skillTitle: "AI OCR refinement", skillDescription: "Proofread the OCR draft against the image.",
     readingSkillTitle: "AI reading companion", readingSkillDescription: "Explain and discuss the current image with its study context.",
+    deepBudget: "Deep reading budget", deepInput: "Input-token budget per call", deepTotal: "Total input-token budget per question", deepOutput: "Final answer output-token limit",
+    deepBudgetHint: "Input includes prompts, the question, history, images and evidence with conservative estimates and headroom. Total input must cover the per-call budget. These settings cannot increase the model's context capacity. Up to 10 model calls and 6 reading batches.",
+    deepBudgetInvalid: "Token budgets must be positive integers and the total input budget must cover the per-call budget.",
     subtitleSkillTitle: "Subtitle knowledge processing", subtitleSkillDescription: "AI deep processing only chooses ranges, topics, and keywords; it no longer rewrites subtitle text. Prefer a low-cost non-reasoning model.",
     subtitlePrivacy: "The language model is called only in AI deep mode. Quick import calls only the Embedding endpoint.",
     prompt: "Prompt", modelOverride: "Model override", inheritModel: "Inherit active language-model endpoint",
@@ -176,7 +181,7 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
       const result = await response.json().catch(() => null) as { config?: AiConfigDto; error?: string } | null;
       if (!response.ok || !result?.config) throw new Error(result?.error ?? t.loadFailed); setConfig(toDraft(result.config));
     }).catch((error) => { setConfig(toDraft({ version: AI_CONFIG_VERSION, endpoints: [], embeddingEndpoints: [], activeEndpointId: null, activeEmbeddingEndpointId: null,
-      skills: { ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" }, readingCompanion: { prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" }, subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "", retryModelOverride: "", disableReasoning: true, maxOutputTokens: 3000 } },
+      skills: defaultStoredAiConfig().skills,
       skillReady: { ocrRefinement: false, readingCompanion: false, subtitleKnowledge: false }, embeddingReady: false, ready: false }));
       void showAlert({ title: t.operationFailed, message: error instanceof Error ? error.message : t.loadFailed, tone: "danger" });
     }).finally(() => setLoading(false)); return () => window.clearTimeout(timer);
@@ -193,7 +198,7 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
   async function fetchModels(mode: "chat" | "embedding", endpoint: EndpointDraft) { const key = `${mode}:${endpoint.id}`; setBusyEndpoint(key); try { const response = await fetch(mode === "chat" ? "/api/settings/ai/models" : "/api/settings/ai/embedding-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: requestValue(endpoint) }) }); const result = await response.json().catch(() => null) as { models?: string[]; error?: string } | null; if (!response.ok || !result?.models) throw new Error(result?.error ?? t.operationFailed); const models = [...new Set([...endpoint.models, ...result.models])].sort((a, b) => a.localeCompare(b)); updateEndpoint(mode, endpoint.id, { models, ...(mode === "chat" ? { defaultModel: "defaultModel" in endpoint ? endpoint.defaultModel || models[0] || "" : "" } : { embeddingModel: "embeddingModel" in endpoint ? endpoint.embeddingModel || models[0] || "" : "" }) }); } catch (error) { await showAlert({ title: t.operationFailed, message: error instanceof Error ? error.message : t.operationFailed, tone: "danger" }); } finally { setBusyEndpoint(null); } }
   async function testConnection(mode: "chat" | "embedding", endpoint: EndpointDraft) { const model = mode === "chat" && "defaultModel" in endpoint ? endpoint.defaultModel : "embeddingModel" in endpoint ? endpoint.embeddingModel : ""; if (!model) return; const key = `${mode}:${endpoint.id}`; setTestingEndpoint(key); try { const response = await fetch(mode === "chat" ? "/api/settings/ai/test" : "/api/settings/ai/test-embedding", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: requestValue(endpoint), model }) }); const result = await response.json().catch(() => null) as { error?: string } | null; if (!response.ok) throw new Error(result?.error ?? t.operationFailed); await showAlert({ title: t.testSuccess, message: mode === "chat" ? t.testChatSuccess : t.testEmbeddingSuccess, tone: "success" }); } catch (error) { await showAlert({ title: t.operationFailed, message: error instanceof Error ? error.message : t.operationFailed, tone: "danger" }); } finally { setTestingEndpoint(null); } }
   function addManualModel(mode: "chat" | "embedding", endpoint: EndpointDraft) { const key = `${mode}:${endpoint.id}`; const model = manualModels[key]?.trim(); if (!model) return; const models = [...new Set([...endpoint.models, model])].sort((a, b) => a.localeCompare(b)); updateEndpoint(mode, endpoint.id, { models, ...(mode === "chat" ? { defaultModel: "defaultModel" in endpoint ? endpoint.defaultModel || model : model } : { embeddingModel: "embeddingModel" in endpoint ? endpoint.embeddingModel || model : model }) }); setManualModels((current) => ({ ...current, [key]: "" })); }
-  async function save() { if (!config) return; setSaving(true); try { const response = await fetch("/api/settings/ai", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ version: AI_CONFIG_VERSION, endpoints: config.endpoints.map(requestValue), embeddingEndpoints: config.embeddingEndpoints.map(requestValue), activeEndpointId: config.activeEndpointId, activeEmbeddingEndpointId: config.activeEmbeddingEndpointId, skills: config.skills }) }); const result = await response.json().catch(() => null) as { config?: AiConfigDto; error?: string } | null; if (!response.ok || !result?.config) throw new Error(result?.error ?? t.saveFailed); onSaved(result.config); onClose(); } catch (error) { await showAlert({ title: t.operationFailed, message: error instanceof Error ? error.message : t.saveFailed, tone: "danger" }); } finally { setSaving(false); } }
+  async function save() { if (!config) return; if (!readingCompanionSkillSchema.safeParse(config.skills.readingCompanion).success) { await showAlert({ title: t.saveFailed, message: t.deepBudgetInvalid, tone: "warning" }); return; } setSaving(true); try { const response = await fetch("/api/settings/ai", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ version: AI_CONFIG_VERSION, endpoints: config.endpoints.map(requestValue), embeddingEndpoints: config.embeddingEndpoints.map(requestValue), activeEndpointId: config.activeEndpointId, activeEmbeddingEndpointId: config.activeEmbeddingEndpointId, skills: config.skills }) }); const result = await response.json().catch(() => null) as { config?: AiConfigDto; error?: string } | null; if (!response.ok || !result?.config) throw new Error(result?.error ?? t.saveFailed); onSaved(result.config); onClose(); } catch (error) { await showAlert({ title: t.operationFailed, message: error instanceof Error ? error.message : t.saveFailed, tone: "danger" }); } finally { setSaving(false); } }
 
   const renderEndpoints = (mode: "chat" | "embedding") => { if (!config) return null; const endpoints: EndpointDraft[] = mode === "chat" ? config.endpoints : config.embeddingEndpoints; return <div className="space-y-4"><div className="flex justify-end"><button type="button" onClick={() => addEndpoint(mode)} className="inline-flex h-9 items-center gap-2 rounded-md bg-cyan-800 px-4 text-sm font-medium text-white transition-colors hover:bg-cyan-900"><Plus className="h-4 w-4" />{mode === "chat" ? t.addChatEndpoint : t.addEmbeddingEndpoint}</button></div>{!endpoints.length ? <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 text-sm text-zinc-500">{mode === "chat" ? t.chatEmpty : t.embeddingEmpty}</div> : null}{endpoints.map((endpoint) => { const key = `${mode}:${endpoint.id}`; return <EndpointCard key={key} mode={mode} endpoint={endpoint} active={mode === "chat" ? config.activeEndpointId === endpoint.id : config.activeEmbeddingEndpointId === endpoint.id} t={t} busy={busyEndpoint === key} testing={testingEndpoint === key} manualModel={manualModels[key] ?? ""} keyVisible={visibleKeys.has(key)} onActivate={() => setConfig((current) => current ? mode === "chat" ? { ...current, activeEndpointId: endpoint.id } : { ...current, activeEmbeddingEndpointId: endpoint.id } : current)} onPatch={(patch) => updateEndpoint(mode, endpoint.id, patch)} onDelete={() => void deleteEndpoint(mode, endpoint)} onFetch={() => void fetchModels(mode, endpoint)} onTest={() => void testConnection(mode, endpoint)} onManualModel={(value) => setManualModels((current) => ({ ...current, [key]: value }))} onAddModel={() => addManualModel(mode, endpoint)} onToggleKey={() => setVisibleKeys((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; })} />; })}</div>; };
 
@@ -209,11 +214,30 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
       const subtitleSkill = definition.key === SUBTITLE_KNOWLEDGE_SKILL_KEY
         ? config.skills.subtitleKnowledge
         : null;
+      const readingSkill = definition.key === READING_COMPANION_SKILL_KEY ? config.skills.readingCompanion : null;
       const modelOptions = activeEndpoint?.models ?? [];
       return <section key={definition.key} className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold">{definition.title}</h3>
         <p className="mt-1 text-xs text-zinc-500">{definition.description}</p>
         <label className="mt-5 block text-xs font-medium text-zinc-600">{t.modelOverride}<select value={skill.modelOverride} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, [definition.key]: { ...skill, modelOverride: e.target.value } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"><option value="">{t.inheritModel}</option>{skill.modelOverride && !modelOptions.includes(skill.modelOverride) ? <option>{skill.modelOverride}</option> : null}{modelOptions.map((model) => <option key={model}>{model}</option>)}</select></label>
+        {readingSkill ? <div className="mt-4 rounded-lg border border-cyan-200 bg-cyan-50/40 p-4">
+          <h4 className="text-sm font-semibold text-cyan-900">{t.deepBudget}</h4>
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            {([
+              ["deepInputTokenBudget", t.deepInput, 1_000_000],
+              ["deepTotalInputTokenBudget", t.deepTotal, 10_000_000],
+              ["deepMaxOutputTokens", t.deepOutput, 131_072],
+            ] as const).map(([key, label, max]) => <label key={key} className="text-xs font-medium text-zinc-600">
+              {label}
+              <input type="number" min={1} max={max} step={1} value={readingSkill[key]}
+                onChange={(event) => setConfig((current) => current ? { ...current, skills: { ...current.skills,
+                  readingCompanion: { ...current.skills.readingCompanion, [key]: Number(event.target.value) },
+                } } : current)}
+                className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" />
+            </label>)}
+          </div>
+          <p className="mt-3 text-[11px] leading-5 text-zinc-500">{t.deepBudgetHint}</p>
+        </div> : null}
         {subtitleSkill ? <div className="mt-4 grid gap-4 rounded-lg border border-violet-200 bg-violet-50/40 p-4 sm:grid-cols-2">
           <label className="text-xs font-medium text-zinc-600">{t.retryModel}<select value={subtitleSkill.retryModelOverride} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, retryModelOverride: e.target.value } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"><option value="">{t.inheritModel}</option>{subtitleSkill.retryModelOverride && !modelOptions.includes(subtitleSkill.retryModelOverride) ? <option>{subtitleSkill.retryModelOverride}</option> : null}{modelOptions.map((model) => <option key={model}>{model}</option>)}</select><span className="mt-1 block text-[11px] font-normal text-zinc-500">{t.retryModelHint}</span></label>
           <label className="text-xs font-medium text-zinc-600">{t.maxOutputTokens}<input type="number" min={512} max={3000} step={128} value={subtitleSkill.maxOutputTokens} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, maxOutputTokens: Number(e.target.value) } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /><span className="mt-1 block text-[11px] font-normal leading-4 text-zinc-500">{t.maxOutputTokensHint}</span></label>

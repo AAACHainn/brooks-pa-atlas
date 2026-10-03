@@ -103,8 +103,8 @@ docker compose down
 - `npm run test:search` 运行图片关键词搜索的字面量匹配测试，确保 `%`、`_` 和反斜杠不会被当作通配符。
 - `npm run test:thumbnails` 运行缩略图路径、缓存、尺寸、并发合并和图片查询键测试。
 - `npm run test:ocr` 运行索引子树批量 OCR 的文本判断、终态和进度计算测试。
-- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、阅读伴侣上下文和多模态 Chat Completions 测试。
-- `npm run test:knowledge` 运行字幕格式/时间码解析、AI cue 覆盖、顺序、长度比例、窗口和片段时间范围测试。
+- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、多模态 Chat Completions，以及伴读快速/深度模式、预算装载、接口保存和取消测试；接口测试使用隔离数据库、图库和模拟端点。
+- `npm run test:knowledge` 运行字幕格式/时间码解析、AI cue 覆盖、顺序、长度比例、窗口、片段时间范围、深度候选召回与章节分页读取测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
 - `npm run db:init` 使用 `scripts/init-db.mjs` 和初始 SQL migration 初始化本地 SQLite 数据库，并继续执行全部增量 migrations。
@@ -190,8 +190,10 @@ docker compose down
 - `src/lib/ai-client.ts`：OpenAI-compatible 模型发现、非流式与 SSE 流式 Chat Completions 客户端。
 - `src/lib/ai-ocr-refinement.ts`：精校图片压缩、多模态消息构造和 OCR 精校调用。
 - `src/lib/ai-reading-companion.ts` / `src/lib/ai-reading-context.ts`：阅读伴侣上下文窗口、图片资料快照、多模态消息和服务端图片上下文查询。
+- `src/lib/ai-deep-reading.ts`：伴读深度流程编排、保守 Token 估算、调用预算、范围定位、覆盖约束、排序、分批阅读笔记和引用校验。
+- `src/lib/knowledge-deep-search.ts`：启用且绑定有效的资料目录、深度多通道候选召回和有序章节分页读取；知识库检索测试入口仍使用 `knowledge-search.ts` 的快速检索。
 - `src/lib/knowledge-*.ts` / `src/lib/subtitle-parser.ts`：独立知识库连接、字幕解析、AI 硬校验、导入任务、Embedding、混合检索、管理和逻辑备份恢复。
-- `src/lib/background-task-coordinator.ts`：单进程重任务互斥租约，避免批量 OCR、PDF、缩略图、知识导入和向量重建在 2C2G 实例上并行争抢资源。
+- `src/lib/background-task-coordinator.ts`：单进程重任务互斥租约，避免批量 OCR、PDF、缩略图、知识导入、向量重建和伴读深度思考在 2C2G 实例上并行争抢资源。
 - `knowledge/migrations/`：独立 `knowledge.db` SQL migrations；由 `db:init` / `db:migrate` 与主库 migrations 分别提交。
 - `prisma/schema.prisma`：Prisma 数据模型。
 - `prisma/migrations/20260505000000_init/migration.sql`：初始 SQLite schema。
@@ -305,6 +307,8 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - 左侧目录 + 右侧图片浏览。
 - 中央大图右键菜单提供“AI 伴读”；悬浮窗默认位于右侧，可拖动、从四边或四角调整宽高、收起、关闭并记住位置、尺寸、收起状态和收起前的消息阅读位置，打开后自动跟随当前大图；AI 回复按 Markdown 渲染，兼容端点返回的可见思考过程和耗时以可折叠面板实时展示并持久化。
 - 阅读伴侣支持全局多会话、新建、切换、重命名、清空和删除；会话保存在 SQLite 但不进入备份 zip。每条用户消息记录发送时的参考图，模型可读取图片、标签、备注、OCR、文字标注、索引和导航属性。
+- 伴读输入框上方提供“快速回答 / 深度思考”，默认快速，发送期间锁定模式；深度显示拆解、检索、排序、阅读和综合阶段。停止或关闭窗口会取消上游请求，未完成草稿不能保存为成功答案；收起窗口继续运行。阶段进度与原模型思考面板保持独立。
+- 深度消息可展开查看证据覆盖、各资料读取数量、估算 Token、调用次数及降级提示；来源可展开原始片段，并显示版本与字幕时间或文本行号/标题路径。历史来源使用保存的快照。
 - 顶部搜索可与目录筛选、标签多选筛选组合；多个精确标签使用交集语义。
 - 顶部搜索按字面量匹配原始文件名、标题、备注、OCR、索引路径、标签和图片文字标注；`%`、`_`、反斜杠等字符不作为数据库通配符。
 - 索引导航器可与关键词、标签和具体目录取交集；每个导航分类内单选，不同分类间按 AND。分类、选项和节点关联首次加载后，匹配数、目录结果和零结果置灰均在浏览器本地即时计算，不随每次点击重复请求服务器。
@@ -503,6 +507,14 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 大模型与 Embedding 使用两个独立页签和两组端点，各自保存供应商、Base URL、API Key、模型列表与唯一启用端点。大模型 Base URL 追加 `/chat/completions`、`/models`；Embedding Base URL 追加 `/embeddings`、`/models`；高级模式可分别指定完整 URL，只接受 HTTP/HTTPS。
 - API Key 可为空；非空时只在服务端以 Bearer header 发送。设置 GET 仅返回 `hasApiKey`，空白保存保留旧密钥，只有显式清除才删除；日志和外部错误不能包含密钥或原始响应正文。
 - 内置技能 `ocrRefinement`、`readingCompanion`、`subtitleKnowledge` 保存可编辑提示词和可选模型覆盖；字幕知识技能还保存可选失败重试模型和单窗口输出 Token 配置上限，未覆盖时使用启用聊天端点的默认模型。字幕 AI 导入必须固定关闭 thinking/reasoning，配置读取和保存都要强制为关闭，界面不得提供重新开启入口。
+- 伴读两种回答模式共用 `readingCompanion` 的模型和提示词，不增加独立模型配置。技能增加 `deepInputTokenBudget=16000`、`deepTotalInputTokenBudget=100000`、`deepMaxOutputTokens=4096`；旧 JSON 缺失字段补默认值，仍使用 v4，无数据库 migration。三个字段为正整数，累计输入预算不得低于单次预算；设置分别限制为单次 1,000,000、累计 10,000,000、输出 131,072，不能提高上游模型容量。
+- 每个深度问题启动时固定已保存配置快照。输入按 UTF-8 字节/2 保守估算，包含提示词、问题、历史、图片和证据，图片额外预留 4096 Token，并保留单次输入预算的 10% 安全余量；累计预算统计全部聊天调用的估算输入，失败尝试同样计入。最终输出上限按供应商兼容格式传给上游。
+- 深度最多 10 次聊天模型调用、6 个阅读批次是固定常量；非最终调用必须同时为最终综合保留调用和输入预算。预算不够时停止扩展证据，不能静默截断当前问题；若当前问题、图片与提示词本身超过单次输入预算，直接提示调整预算或问题。
+- 深度拆解最多 6 个子问题，根据当前图片、课号、资料标题、索引路径和文本标题路径定位范围，目标 ID 和章节路径必须由服务端按真实目录校验；无法唯一定位时回复澄清问题。目录与章节标题可按问题相关性在拆解上下文内装载，不得捏造未展示的目标。
+- 每个深度子问题的 FTS、关键词、向量通道分别最多 50 个候选，在目标资料/当前范围/全库间分配名额。问题向量批量生成，SQLite 查询串行执行并定期让出事件循环以响应取消；向量不可用降级。按 ID 和同版本相同正文去重，按目标资料、子问题和资料轮转分配候选。
+- 深度对最多 60 个候选摘要调用伴读模型二次排序，只接受候选中已有且不重复的 ID，失败使用 RRF 和覆盖规则并提示。整章总结通过标题路径分页读取有序原文，不能由排序直接排除章节正文。超过单次输入预算时先分批读成带原始编号的笔记，再流式综合；笔记不得引用批次外编号。
+- 深度资料目录、片段与笔记始终是不可信参考数据，所有调用均保留相应规则。只使用知识库中已启用、活动版本且绑定有效的资料；未读或读取失败的片段不得列作回答依据。没有知识证据、目标资料未召回或预算/批次不足时保存并显示实际覆盖及降级说明，最终回答不得声称完整阅读。书籍通过现有 TXT/Markdown 进入知识库，不新增 PDF/EPUB 全文解析。
+- 深度使用 `ai-deep-reading` 重任务租约；停止、断开和失败必须取消上游并在 `finally` 释放。流式上游未返回完成标记或 `finish_reason` 的中断回答不得保存成功消息。
 - 精校把原图在内存中转换为最长边不超过 1920px、quality 85 的 JPEG，并与当前 OCR 草稿一并发送；不写入衍生图片文件。
 - 外部请求超时为 120 秒。精校 API 不更新 `ChartImage`；只有用户点击现有“保存 OCR 文本”后才写数据库。
 - 所选精校模型必须支持 Chat Completions 图片输入；连接测试只验证最小文本请求，不代表图片能力可用。
@@ -523,8 +535,8 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 已停用、失败或已拒绝的历史版本允许整版删除，即使向量数为 0 也必须提供删除入口；删除范围包括版本记录、资料片段、关键词、FTS 和全部 Embedding，当前启用版本禁止删除。删除后如果文档不再有任何版本，应同时清理空文档；源文件仅在没有其他版本引用时逐个删除。
 - 字幕 AI 整理按持久化窗口逐个处理，进度必须记录完成窗口数、当前窗口/尝试次数和最后更新时间；Embedding 按最多 20 条一批调用并记录批次进度，避免超过 OpenAI-compatible 供应商的批量限制。
 - 上游 AI 的结构化错误只保留经过截断和密钥脱敏的错误码/消息；不要把任意 HTML 或纯文本响应原样展示给客户端。
-- 混合检索并行使用当前范围/全库的 FTS5、短关键词和向量结果，以 RRF 合并，最多 8 个片段；当前范围结果充足时至少 4 个。当前范围累计包含当前节点资料，以及从父节点到根节点所有启用且 `appliesToDescendants=true` 的祖先资料，不得在最近祖先命中后停止。Embedding 失败必须降级而不能中断原图片伴读。
-- 阅读伴侣的助手消息把资料引用、`sourceType/sourceFormat/locator` 写入 `knowledgeContextJson`，历史显示不得重新查询当前版本替换旧引用。
+- 快速混合检索使用当前范围/全库的 FTS5、短关键词和向量结果，以 RRF 合并，最多 8 个片段；当前范围结果充足时至少 4 个，回答仅调用一次聊天模型。当前范围累计包含当前节点资料，以及从父节点到根节点所有启用且 `appliesToDescendants=true` 的祖先资料，不得在最近祖先命中后停止。Embedding 失败必须降级而不能中断原图片伴读。
+- 阅读伴侣的助手消息把原始资料正文、引用、版本、`sourceType/sourceFormat/locator` 写入 `knowledgeContextJson`；深度额外保存 `answerMode`、预算快照、覆盖、调用/Token 统计与降级提示，旧消息缺失模式时按快速显示。历史不得重新查询当前版本替换旧引用。最终编号校验只允许已读取快照中的引用，未知编号标记为“未验证引用”，不能沿用模型提供的错误链接。
 - 删除资料文档或源文件时只能逐个明确路径删除；不得删除知识目录、使用通配符或递归删除。
 
 ## 14. API 行为
@@ -550,6 +562,7 @@ AI 设置与调用 API：
 - `POST /api/settings/ai/test`：使用指定模型执行最小非流式文本请求，只验证 Chat Completions 连接。
 - `POST /api/settings/ai/test-embedding`：请求一个测试向量并返回维度，只验证 Embeddings 连接。
 - `POST /api/ai/ocr-refine`：接收 `imageId` 和最多 100,000 字符的非空 `ocrText`，把压缩原图和当前草稿发送给 `ocrRefinement` 技能，成功只返回 `{ refinedText }`，不更新图片记录。
+- `POST /api/ai/reading-companion/conversations/[id]/messages`：接收 `imageId`、最多 20,000 字符的 `content` 和可选 `answerMode: "quick" | "deep"`（缺省快速）。NDJSON 保留 `start/thinking_start/reasoning_delta/thinking_done/delta/done/error`，增加 `{ type: "progress", phase, completed?, total? }` 与心跳 `ping`；phase 为 `planning/retrieving/ranking/reading/synthesizing`。深度租约冲突返回 409；错误或取消只保留已发送的用户问题，不保存未完成助手草稿。
 - AI 上游超时返回 `504`，配置不完整返回 `409`，上游或响应错误返回 `502`；错误响应只保留清理后的状态信息，不透传上游正文。
 - `/api/knowledge/**` 提供映射预览、导入任务、逐文档审核、文档/版本管理、非当前历史版本删除、FTS/向量维护和检索测试；知识导入任务全局同时只运行一个并持久化窗口结果。
 - `GET /api/knowledge/maintenance` 返回当前 Embedding 配置、活动 profile、启用片段数、已有/缺失向量数，供维护操作在执行前展示影响范围。

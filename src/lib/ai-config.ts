@@ -54,6 +54,15 @@ export type EmbeddingEndpointInput = z.infer<typeof embeddingEndpointInputSchema
 
 export const aiSkillSchema = z.object({ prompt: z.string().trim().min(1).max(20_000), modelOverride: z.string().trim().max(200).default("") });
 export type AiSkillConfig = z.infer<typeof aiSkillSchema>;
+export const readingCompanionSkillSchema = aiSkillSchema.extend({
+  deepInputTokenBudget: z.number().int().positive().max(1_000_000).default(16_000),
+  deepTotalInputTokenBudget: z.number().int().positive().max(10_000_000).default(100_000),
+  deepMaxOutputTokens: z.number().int().positive().max(131_072).default(4_096),
+}).refine((skill) => skill.deepTotalInputTokenBudget >= skill.deepInputTokenBudget, {
+  message: "累计输入 Token 预算不得小于单次输入预算。",
+  path: ["deepTotalInputTokenBudget"],
+});
+export type ReadingCompanionSkillConfig = z.infer<typeof readingCompanionSkillSchema>;
 export const subtitleKnowledgeSkillSchema = aiSkillSchema.extend({
   retryModelOverride: z.string().trim().max(200).default(""),
   disableReasoning: z.boolean().default(true),
@@ -61,7 +70,10 @@ export const subtitleKnowledgeSkillSchema = aiSkillSchema.extend({
 });
 export type SubtitleKnowledgeSkillConfig = z.infer<typeof subtitleKnowledgeSkillSchema>;
 const defaultOcrSkill = () => ({ prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" });
-const defaultReadingSkill = () => ({ prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" });
+const defaultReadingSkill = (): ReadingCompanionSkillConfig => ({
+  prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "",
+  deepInputTokenBudget: 16_000, deepTotalInputTokenBudget: 100_000, deepMaxOutputTokens: 4_096,
+});
 const defaultSubtitleSkill = (): SubtitleKnowledgeSkillConfig => ({
   prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT,
   modelOverride: "",
@@ -71,7 +83,7 @@ const defaultSubtitleSkill = (): SubtitleKnowledgeSkillConfig => ({
 });
 const aiSkillsSchema = z.object({
   [OCR_REFINEMENT_SKILL_KEY]: aiSkillSchema.default(defaultOcrSkill),
-  [READING_COMPANION_SKILL_KEY]: aiSkillSchema.default(defaultReadingSkill),
+  [READING_COMPANION_SKILL_KEY]: readingCompanionSkillSchema.default(defaultReadingSkill),
   [SUBTITLE_KNOWLEDGE_SKILL_KEY]: subtitleKnowledgeSkillSchema.default(defaultSubtitleSkill),
 });
 
@@ -97,7 +109,7 @@ export type AiConfigDto = {
   activeEndpointId: string | null; activeEmbeddingEndpointId: string | null;
   skills: {
     [OCR_REFINEMENT_SKILL_KEY]: AiSkillConfig;
-    [READING_COMPANION_SKILL_KEY]: AiSkillConfig;
+    [READING_COMPANION_SKILL_KEY]: ReadingCompanionSkillConfig;
     [SUBTITLE_KNOWLEDGE_SKILL_KEY]: SubtitleKnowledgeSkillConfig;
   };
   skillReady: Record<AiSkillKey, boolean>; embeddingReady: boolean; ready: boolean;

@@ -19,7 +19,7 @@ export function splitEmbeddingBatches(texts: string[], batchSize = EMBEDDING_BAT
 
 export async function embedTexts(
   texts: string[],
-  options: { onBatchCompleted?: (completed: number, total: number) => void | Promise<void> } = {},
+  options: { onBatchCompleted?: (completed: number, total: number) => void | Promise<void>; signal?: AbortSignal } = {},
 ) {
   const config = await readStoredAiConfig();
   const endpoint = config.embeddingEndpoints.find((item) => item.id === config.activeEmbeddingEndpointId);
@@ -27,14 +27,15 @@ export async function embedTexts(
   const vectors: number[][] = [];
   const batches = splitEmbeddingBatches(texts);
   for (let index = 0; index < batches.length; index += 1) {
-    vectors.push(...await createAiEmbeddings(endpoint, endpoint.embeddingModel, batches[index]));
+    options.signal?.throwIfAborted();
+    vectors.push(...await createAiEmbeddings(endpoint, endpoint.embeddingModel, batches[index], { signal: options.signal }));
     await options.onBatchCompleted?.(index + 1, batches.length);
   }
   return { vectors, endpointId: endpoint.id, model: endpoint.embeddingModel, totalBatches: batches.length };
 }
 
-export function activeEmbeddingProfile() {
-  return knowledgeDb().prepare(
+export function activeEmbeddingProfile(db = knowledgeDb()) {
+  return db.prepare(
     "SELECT id, endpointId, model, dimensions, status FROM KnowledgeEmbeddingProfile WHERE status = 'ACTIVE' LIMIT 1",
   ).get() as ProfileRow | undefined;
 }

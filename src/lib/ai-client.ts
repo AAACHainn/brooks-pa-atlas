@@ -60,9 +60,12 @@ function translateRequestError(error: unknown, controller: AbortController) {
 async function fetchJson(
   url: string,
   init: RequestInit,
-  options: { fetchImpl?: AiFetch; timeoutMs?: number; visionRequest?: boolean } = {},
+  options: { fetchImpl?: AiFetch; timeoutMs?: number; visionRequest?: boolean; signal?: AbortSignal } = {},
 ) {
   const controller = new AbortController();
+  options.signal?.throwIfAborted();
+  const abortFromCaller = () => controller.abort();
+  options.signal?.addEventListener("abort", abortFromCaller, { once: true });
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000);
   try {
     const response = await (options.fetchImpl ?? fetch)(url, {
@@ -103,6 +106,7 @@ async function fetchJson(
     throw new AiServiceError("upstream", "Could not reach the AI service.", { cause: error });
   } finally {
     clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -191,7 +195,7 @@ export async function createAiEmbeddings(
   endpoint: StoredEmbeddingEndpoint,
   model: string,
   input: string[],
-  options: { fetchImpl?: AiFetch; timeoutMs?: number } = {},
+  options: { fetchImpl?: AiFetch; timeoutMs?: number; signal?: AbortSignal } = {},
 ) {
   if (!model.trim()) {
     throw new AiServiceError("configuration", "An embedding model is required.");
@@ -339,6 +343,7 @@ type AiChatCompletionOptions = {
   temperature?: number;
   jsonMode?: boolean;
   disableReasoning?: boolean;
+  signal?: AbortSignal;
   onUsage?: (usage: AiChatUsage) => void | Promise<void>;
   onFinishReason?: (reason: string | null) => void | Promise<void>;
   onReasoningDetected?: (detected: boolean) => void | Promise<void>;
@@ -445,13 +450,14 @@ export async function* streamAiChatCompletionEvents(
   endpoint: StoredAiEndpoint,
   model: string,
   messages: ChatMessage[],
-  options: { fetchImpl?: AiFetch; timeoutMs?: number; signal?: AbortSignal } = {},
+  options: { fetchImpl?: AiFetch; timeoutMs?: number; signal?: AbortSignal; maxOutputTokens?: number } = {},
 ) {
   if (!model.trim()) {
     throw new AiServiceError("configuration", "An AI model is required.");
   }
   const { chatCompletionsUrl } = resolveAiEndpointUrls(endpoint);
   const controller = new AbortController();
+  options.signal?.throwIfAborted();
   const abortFromCaller = () => controller.abort();
   options.signal?.addEventListener("abort", abortFromCaller, { once: true });
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000);
@@ -466,7 +472,7 @@ export async function* streamAiChatCompletionEvents(
     const response = await (options.fetchImpl ?? fetch)(chatCompletionsUrl, {
       method: "POST",
       headers: requestHeaders(endpoint.apiKey),
-      body: JSON.stringify({ model: model.trim(), messages, stream: true }),
+      body: JSON.stringify({ model: model.trim(), messages, stream: true, ...outputTokenControl(endpoint, options.maxOutputTokens) }),
       cache: "no-store",
       signal: controller.signal,
     });
@@ -513,6 +519,7 @@ export async function* streamAiChatCompletionEvents(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = "";
+    let sawFinishReason = false;
 
     function consumeLines(lines: string[]) {
       const events: AiChatStreamEvent[] = [];
@@ -536,6 +543,7 @@ export async function* streamAiChatCompletionEvents(
           });
         }
         const parts = extractResponseParts(payload, "delta");
+        if (chatFinishReason(payload)) sawFinishReason = true;
         if (parts.reasoning) events.push({ type: "reasoning", text: parts.reasoning });
         if (parts.content) events.push({ type: "content", text: parts.content });
       }
@@ -569,11 +577,15 @@ export async function* streamAiChatCompletionEvents(
     if (!emittedContent) {
       throw new AiServiceError("invalid-response", "AI service returned an empty response.");
     }
+    if (!finished && !sawFinishReason) {
+      throw new AiServiceError("invalid-response", "AI service stream ended before the answer completed.");
+    }
   } catch (error) {
     throw translateRequestError(error, controller);
   } finally {
     clearTimeout(timeout);
     options.signal?.removeEventListener("abort", abortFromCaller);
+    controller.abort();
   }
 }
 

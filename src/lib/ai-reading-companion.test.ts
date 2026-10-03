@@ -75,6 +75,7 @@ test("serialized assistant messages retain visible reasoning and duration", () =
   });
   assert.equal(serialized.reasoningContent, "Visible provider reasoning");
   assert.equal(serialized.reasoningDurationMs, 1250);
+  assert.equal(serialized.answerMode, "quick");
 });
 
 test("reading messages include untrusted context and multimodal image data", () => {

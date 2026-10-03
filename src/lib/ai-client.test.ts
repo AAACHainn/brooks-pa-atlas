@@ -56,6 +56,35 @@ test("model discovery sends optional bearer auth and parses unique model ids", a
   assert.equal(anonymousHeaders!.has("Authorization"), false);
 });
 
+test("deep final streaming passes provider-specific output limits", async () => {
+  for (const provider of ["custom", "openai"] as const) {
+    let body: Record<string, unknown> = {};
+    const events = [];
+    for await (const event of streamAiChatCompletionEvents({ ...endpoint(), provider }, "vision", [{ role: "user", content: "answer" }], {
+      maxOutputTokens: 8_192,
+      fetchImpl: async (_url, init) => { body = JSON.parse(String(init?.body)); return Response.json({ choices: [{ message: { content: "answer" } }] }); },
+    })) events.push(event);
+    assert.equal(body[provider === "openai" ? "max_completion_tokens" : "max_tokens"], 8_192);
+    assert.equal(events[0].text, "answer");
+  }
+});
+
+test("cancellation propagates to structured chat and embedding requests", async () => {
+  for (const kind of ["chat", "embedding"] as const) {
+    const controller = new AbortController();
+    let cancelled = false;
+    const fetchImpl: typeof fetch = async (_url, init) => new Promise((_resolve, reject) => {
+      init!.signal!.addEventListener("abort", () => { cancelled = true; reject(new DOMException("Aborted", "AbortError")); }, { once: true });
+      queueMicrotask(() => controller.abort());
+    });
+    const promise = kind === "chat"
+      ? createAiChatCompletion(endpoint(), "vision", [{ role: "user", content: "plan" }], { signal: controller.signal, fetchImpl })
+      : createAiEmbeddings(embeddingEndpoint(), "embedding", ["question"], { signal: controller.signal, fetchImpl });
+    await assert.rejects(promise);
+    assert.equal(cancelled, true);
+  }
+});
+
 test("embedding requests use float encoding and preserve response index order", async () => {
   let encodingFormat = "";
   const vectors = await createAiEmbeddings(embeddingEndpoint(), "embedding-model", ["a", "b"], {

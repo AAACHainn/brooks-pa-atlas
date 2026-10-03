@@ -45,6 +45,7 @@ export type KnowledgeSource = {
   id: string;
   documentId: string;
   versionId: string;
+  versionNumber?: number;
   title: string;
   lessonCode: string | null;
   sourceType: KnowledgeSourceType;
@@ -67,6 +68,30 @@ export type KnowledgeContextSnapshot = {
   semanticSearchUsed: boolean;
   hasCurrentBinding: boolean;
   warning: "semantic_unavailable" | "no_current_binding" | null;
+  answerMode?: "quick" | "deep";
+  research?: DeepReadingResearch;
+};
+
+export type DeepReadingPhase = "planning" | "retrieving" | "ranking" | "reading" | "synthesizing";
+export type DeepReadingBudgetSnapshot = {
+  deepInputTokenBudget: number;
+  deepTotalInputTokenBudget: number;
+  deepMaxOutputTokens: number;
+};
+export type DeepReadingResearch = {
+  intent: "local" | "summary" | "comparison" | "synthesis";
+  queries: string[];
+  budget: DeepReadingBudgetSnapshot;
+  modelCalls: number;
+  estimatedInputTokens: number;
+  readingBatches: number;
+  coverage: {
+    availableChunks: number;
+    readChunks: number;
+    complete: boolean;
+    documents: Array<{ documentId: string; title: string; versionId: string; availableChunks: number; readChunks: number }>;
+  };
+  warnings: string[];
 };
 
 export type KnowledgeImportJobSnapshot = {

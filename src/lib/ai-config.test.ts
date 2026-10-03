@@ -5,7 +5,7 @@ import {
   AI_CONFIG_VERSION, DEFAULT_OCR_REFINEMENT_PROMPT, DEFAULT_READING_COMPANION_PROMPT,
   DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, defaultStoredAiConfig, mergeAiConfigSecrets,
   parseStoredAiConfig, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls, sanitizeAiConfig,
-  type AiConfigInput, type StoredAiEndpoint, type StoredEmbeddingEndpoint,
+  type AiConfigInput, type StoredAiEndpoint, type StoredEmbeddingEndpoint, aiConfigInputSchema, readingCompanionSkillSchema,
 } from "@/lib/ai-config";
 
 function chatEndpoint(overrides: Partial<StoredAiEndpoint> = {}): StoredAiEndpoint {
@@ -23,7 +23,7 @@ function input(overrides: Partial<AiConfigInput> = {}): AiConfigInput {
     embeddingEndpoints: [{ ...embeddingEndpoint(), apiKey: undefined }], activeEndpointId: "chat-1",
     activeEmbeddingEndpointId: "embedding-1",
     skills: { ocrRefinement: { prompt: DEFAULT_OCR_REFINEMENT_PROMPT, modelOverride: "" },
-      readingCompanion: { prompt: DEFAULT_READING_COMPANION_PROMPT, modelOverride: "" },
+      readingCompanion: defaultStoredAiConfig().skills.readingCompanion,
       subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "", retryModelOverride: "", disableReasoning: true, maxOutputTokens: 3000 } }, ...overrides };
 }
 
@@ -31,6 +31,33 @@ test("missing or invalid persisted AI config falls back to v4 defaults", () => {
   assert.deepEqual(parseStoredAiConfig(null), defaultStoredAiConfig());
   assert.deepEqual(parseStoredAiConfig("not-json"), defaultStoredAiConfig());
   assert.equal(parseStoredAiConfig("{}").version, 4);
+});
+
+test("legacy reading skills gain deep budgets without losing endpoints or prompts", () => {
+  const config = input();
+  const old = { ...config, skills: { ...config.skills, readingCompanion: { prompt: "custom reading", modelOverride: "vision" } } };
+  const parsed = parseStoredAiConfig(JSON.stringify(old));
+  assert.equal(parsed.skills.readingCompanion.prompt, "custom reading");
+  assert.equal(parsed.skills.readingCompanion.deepInputTokenBudget, 16_000);
+  assert.equal(parsed.skills.readingCompanion.deepTotalInputTokenBudget, 100_000);
+  assert.equal(parsed.skills.readingCompanion.deepMaxOutputTokens, 4_096);
+  assert.equal(parsed.activeEndpointId, "chat-1");
+});
+
+test("deep skill budgets round trip through secret merging and sanitized DTOs", () => {
+  const draft = input();
+  Object.assign(draft.skills.readingCompanion, { deepInputTokenBudget: 32_000, deepTotalInputTokenBudget: 240_000, deepMaxOutputTokens: 8_192 });
+  const saved = mergeAiConfigSecrets(aiConfigInputSchema.parse(draft), defaultStoredAiConfig());
+  const reread = parseStoredAiConfig(JSON.stringify(saved));
+  assert.deepEqual(sanitizeAiConfig(reread).skills.readingCompanion, draft.skills.readingCompanion);
+});
+
+test("deep budgets reject non-positive, fractional and inconsistent values", () => {
+  const skill = defaultStoredAiConfig().skills.readingCompanion;
+  for (const value of [0, -1, 1.5, Infinity]) {
+    assert.equal(readingCompanionSkillSchema.safeParse({ ...skill, deepInputTokenBudget: value }).success, false);
+  }
+  assert.equal(readingCompanionSkillSchema.safeParse({ ...skill, deepTotalInputTokenBudget: 10_000 }).success, false);
 });
 
 test("v3 gains bounded metadata-only subtitle processing options", () => {

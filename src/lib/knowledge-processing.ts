@@ -14,6 +14,8 @@ export const KNOWLEDGE_PROCESSING_RULE_VERSION = "subtitle-v3-bounded-metadata-o
 export const SUBTITLE_WINDOW_MAX_CHARACTERS = 6_000;
 export const SUBTITLE_OUTPUT_TOKEN_RATIO = 2;
 export const SUBTITLE_OUTPUT_TOKEN_HARD_LIMIT = 3_000;
+const SUBTITLE_GROUP_BOUNDARY_REPAIR_MINIMUM = 5;
+const SUBTITLE_AI_VALIDATION_RULE_VERSION = "group-boundaries-v1-feedback";
 
 const metadataSegmentSchema = z.object({
   cueStart: z.number().int().positive(),
@@ -32,6 +34,14 @@ const outputSchema = z.object({
 });
 
 class AiSubtitleOutputFuseError extends Error {}
+
+class AiSubtitleValidationError extends Error {
+  constructor(message: string, readonly retryFeedback: string) {
+    super(message);
+  }
+}
+
+type CueRange = { cueStart: number; cueEnd: number };
 
 function compactText(value: string) {
   return value
@@ -194,7 +204,10 @@ function parseJsonResponse(raw: string) {
       lastError = error;
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("AI returned invalid JSON.");
+  throw new AiSubtitleValidationError(
+    lastError instanceof Error ? lastError.message : "AI returned invalid JSON.",
+    "上次输出不是符合约定结构的 JSON。请重新返回完整的 segments JSON，每项仅包含 cueStart、cueEnd、topic、keywords。",
+  );
 }
 
 export function validateProcessedSegments(cues: SubtitleCue[], segments: KnowledgeProcessedSegment[]) {
@@ -210,35 +223,102 @@ export function validateProcessedSegments(cues: SubtitleCue[], segments: Knowled
   }));
 }
 
-function metadataToSegments(cues: SubtitleCue[], rawSegments: z.infer<typeof outputSchema>["segments"]) {
+function missingCueRanges(firstId: number, lastId: number, ranges: CueRange[]) {
+  const missing: CueRange[] = [];
+  let cursor = firstId;
+  for (const range of ranges) {
+    if (range.cueStart > cursor) missing.push({ cueStart: cursor, cueEnd: range.cueStart - 1 });
+    cursor = range.cueEnd + 1;
+  }
+  if (cursor <= lastId) missing.push({ cueStart: cursor, cueEnd: lastId });
+  return missing;
+}
+
+function countRangeCues(ranges: CueRange[]) {
+  return ranges.reduce((count, range) => count + range.cueEnd - range.cueStart + 1, 0);
+}
+
+function formatCueRanges(ranges: CueRange[]) {
+  return ranges.slice(0, 12).map((range) => range.cueStart === range.cueEnd
+    ? String(range.cueStart)
+    : `${range.cueStart}–${range.cueEnd}`).join("、") + (ranges.length > 12 ? "等" : "");
+}
+
+function metadataToSegments(
+  cues: SubtitleCue[],
+  rawSegments: z.infer<typeof outputSchema>["segments"],
+  inputGroups: ReturnType<typeof mergeShortCueInputs>,
+) {
   const firstId = cues[0].id;
   const lastId = cues.at(-1)!.id;
+  const coverageFeedback = `当前窗口必须完整覆盖 ${firstId}–${lastId}，每个编号恰好一次。请重新返回完整的 segments JSON；首段从 ${firstId} 开始，末段到 ${lastId} 结束，相邻段连续、按原顺序且无重叠。输入字幕组的 cueStart–cueEnd 包含首尾，必须完整归入一个片段。`;
   const ranges = rawSegments.map((segment) => {
     const cueStart = "cueStart" in segment ? segment.cueStart : segment.cueIds[0];
     const cueEnd = "cueEnd" in segment ? segment.cueEnd : segment.cueIds.at(-1)!;
     return { cueStart, cueEnd, topic: segment.topic, keywords: segment.keywords };
-  }).sort((left, right) => left.cueStart - right.cueStart);
-  let cursor = firstId;
-  let missing = 0;
-  const repaired: Array<{ cueStart: number; cueEnd: number; topic: string; keywords: string[] }> = [];
-  for (const range of ranges) {
+  });
+  for (const [index, range] of ranges.entries()) {
     if (range.cueStart < firstId || range.cueEnd > lastId || range.cueEnd < range.cueStart) {
-      throw new Error("AI output referenced an unknown or reversed cue range.");
+      throw new AiSubtitleValidationError(
+        "AI output referenced an unknown or reversed cue range.",
+        `上次输出的第 ${index + 1} 段范围 ${range.cueStart}–${range.cueEnd} 越界或首尾颠倒。${coverageFeedback}`,
+      );
     }
-    if (range.cueStart < cursor) throw new Error("AI output contains overlapping or reordered cue ranges.");
+    const previous = ranges[index - 1];
+    if (previous && range.cueStart <= previous.cueEnd) {
+      throw new AiSubtitleValidationError(
+        "AI output contains overlapping or reordered cue ranges.",
+        `上次输出的第 ${index}、${index + 1} 段重叠或倒序（${previous.cueStart}–${previous.cueEnd}、${range.cueStart}–${range.cueEnd}）。${coverageFeedback}`,
+      );
+    }
+  }
+  const originalGaps = missingCueRanges(firstId, lastId, ranges);
+  const originalMissing = countRangeCues(originalGaps);
+  const groupByCueId = new Map<number, CueRange>();
+  for (const group of inputGroups) {
+    const bounds = { cueStart: group.cueIds[0], cueEnd: group.cueIds.at(-1)! };
+    for (const id of group.cueIds) groupByCueId.set(id, bounds);
+  }
+  // Extend only uncovered edges of a group already touched by this range.
+  // An entirely omitted group or an edge owned by another segment is never absorbed.
+  for (const [index, range] of ranges.entries()) {
+    const startGroup = groupByCueId.get(range.cueStart)!;
+    const previous = ranges[index - 1];
+    if (startGroup.cueStart < range.cueStart && (!previous || previous.cueEnd < startGroup.cueStart)) {
+      range.cueStart = startGroup.cueStart;
+    }
+    const endGroup = groupByCueId.get(range.cueEnd)!;
+    const next = ranges[index + 1];
+    if (endGroup.cueEnd > range.cueEnd && (!next || next.cueStart > endGroup.cueEnd)) {
+      range.cueEnd = endGroup.cueEnd;
+    }
+  }
+  const remainingMissing = countRangeCues(missingCueRanges(firstId, lastId, ranges));
+  const repairLimit = Math.max(3, Math.ceil(cues.length * 0.05));
+  // Group-edge repairs share a bounded total budget with ordinary gap repairs.
+  const totalRepairLimit = originalMissing > remainingMissing
+    ? Math.max(SUBTITLE_GROUP_BOUNDARY_REPAIR_MINIMUM, repairLimit)
+    : repairLimit;
+  if (remainingMissing > repairLimit || originalMissing > totalRepairLimit) {
+    const limit = remainingMissing > repairLimit ? repairLimit : totalRepairLimit;
+    const omitted = formatCueRanges(originalGaps);
+    throw new AiSubtitleValidationError(
+      `AI output omitted ${originalMissing} cues, exceeding the repair limit ${limit}. Missing cue ranges: ${omitted}.`,
+      `上次输出遗漏了字幕编号 ${omitted}（共 ${originalMissing} 条）。${coverageFeedback}`,
+    );
+  }
+  let cursor = firstId;
+  const repaired: Array<z.infer<typeof metadataSegmentSchema>> = [];
+  for (const range of ranges) {
     if (range.cueStart > cursor) {
-      missing += range.cueStart - cursor;
       repaired.push({ cueStart: cursor, cueEnd: range.cueStart - 1, topic: "", keywords: [] });
     }
     repaired.push(range);
     cursor = range.cueEnd + 1;
   }
   if (cursor <= lastId) {
-    missing += lastId - cursor + 1;
     repaired.push({ cueStart: cursor, cueEnd: lastId, topic: "", keywords: [] });
   }
-  const repairLimit = Math.max(3, Math.ceil(cues.length * 0.05));
-  if (missing > repairLimit) throw new Error(`AI output omitted ${missing} cues, exceeding the repair limit ${repairLimit}.`);
   const cueById = new Map(cues.map((cue) => [cue.id, cue]));
   return validateProcessedSegments(cues, repaired.map((range) => {
     const selected: SubtitleCue[] = [];
@@ -258,6 +338,7 @@ export function subtitlePromptHash(
 ) {
   return createHash("sha256").update(JSON.stringify({
     rule: KNOWLEDGE_PROCESSING_RULE_VERSION,
+    validationRule: SUBTITLE_AI_VALIDATION_RULE_VERSION,
     prompt,
     retryModelOverride: options.retryModelOverride ?? "",
     disableReasoning: true,
@@ -291,8 +372,9 @@ export async function processSubtitleWindow(
   const skill = config.skills[SUBTITLE_KNOWLEDGE_SKILL_KEY];
   const primaryModel = skill.modelOverride || endpoint?.defaultModel || "";
   if (!endpoint || !primaryModel) throw new Error("字幕知识整理技能尚未配置可用的聊天模型。");
+  const inputGroups = mergeShortCueInputs(cues);
   const input = JSON.stringify({
-    cues: mergeShortCueInputs(cues).map((group) => ({
+    cues: inputGroups.map((group) => ({
       cueStart: group.cueIds[0],
       cueEnd: group.cueIds.at(-1),
       text: group.text,
@@ -300,19 +382,21 @@ export async function processSubtitleWindow(
   });
   const contract = "硬性输出约束：只返回 segments；每项仅允许 cueStart、cueEnd、topic、keywords。禁止输出 cleanedText、字幕正文、解释、Markdown 或思考过程。";
   const systemPrompt = `${skill.prompt}\n\n${contract}`;
-  const estimatedInputTokens = estimateTokens(`${systemPrompt}\n${input}`);
-  const maxOutputTokens = calculateSubtitleOutputTokenBudget(estimatedInputTokens, skill.maxOutputTokens);
   let lastError: unknown;
+  let retryFeedback: string | null = null;
   const maxAttempts = 2;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const model = attempt === 1 && skill.retryModelOverride ? skill.retryModelOverride : primaryModel;
+    const attemptPrompt = retryFeedback ? `${systemPrompt}\n\n校验反馈：${retryFeedback}` : systemPrompt;
+    const estimatedInputTokens = estimateTokens(`${attemptPrompt}\n${input}`);
+    const maxOutputTokens = calculateSubtitleOutputTokenBudget(estimatedInputTokens, skill.maxOutputTokens);
     let finishReason: string | null = null;
     let reasoningDetected = false;
     try {
       await options.onAttempt?.(attempt + 1, maxAttempts);
       let usage: AiChatUsage = { inputTokens: null, outputTokens: null, reasoningTokens: null };
       const raw = await createAiChatCompletion(endpoint, model, [
-        { role: "system", content: systemPrompt },
+        { role: "system", content: attemptPrompt },
         { role: "user", content: input },
       ], {
         temperature: 0,
@@ -341,7 +425,7 @@ export async function processSubtitleWindow(
       }
       return {
         raw,
-        segments: metadataToSegments(cues, parseJsonResponse(raw)),
+        segments: metadataToSegments(cues, parseJsonResponse(raw), inputGroups),
         endpointId: endpoint.id,
         model,
         promptHash: subtitlePromptHash(skill.prompt, skill),
@@ -362,6 +446,7 @@ export async function processSubtitleWindow(
         );
       }
       if (error instanceof AiSubtitleOutputFuseError) throw error;
+      retryFeedback = error instanceof AiSubtitleValidationError ? error.retryFeedback : null;
     }
   }
   throw lastError instanceof Error ? lastError : new Error("AI subtitle processing failed.");

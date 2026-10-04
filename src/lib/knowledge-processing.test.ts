@@ -14,6 +14,75 @@ import {
 import { defaultStoredAiConfig } from "@/lib/ai-config";
 import { EMBEDDING_BATCH_SIZE, splitEmbeddingBatches } from "@/lib/knowledge-embeddings";
 import { parseSubtitle } from "@/lib/subtitle-parser";
+import type { SubtitleCue } from "@/lib/knowledge-types";
+
+function subtitleTestConfig() {
+  const config = defaultStoredAiConfig();
+  config.endpoints = [{
+    id: "test", name: "Test", provider: "deepseek", baseUrl: "https://subtitle.test",
+    useCustomUrls: false, chatCompletionsUrl: "", modelsUrl: "", apiKey: "",
+    models: ["primary"], defaultModel: "primary",
+  }];
+  config.activeEndpointId = "test";
+  return config;
+}
+
+function windowCues(shortTexts: Record<number, string> = {}): SubtitleCue[] {
+  return Array.from({ length: 59 }, (_, index) => {
+    const id = index + 122;
+    return {
+      id, startMs: id * 1_000, endMs: id * 1_000 + 900,
+      text: shortTexts[id] ?? `Subtitle ${id}: ${"x".repeat(130)}`,
+    };
+  });
+}
+
+const reversalGroup = {
+  126: "Trying to reverse, look to buy.",
+  127: "Trying to reverse, buy.",
+  128: "Buy, buy.",
+  129: "Trying to reverse, buy, buy.",
+  130: "Buy again.",
+};
+
+function rangeOutput(ranges: Array<[number, number]>) {
+  return JSON.stringify({ segments: ranges.map(([cueStart, cueEnd], index) => ({
+    cueStart, cueEnd, topic: `Topic ${index + 1}`, keywords: ["Buy"],
+  })) });
+}
+
+type SubtitleTestRequest = {
+  model: string;
+  messages: Array<{ role: string; content: string }>;
+  max_tokens: number;
+  temperature: number;
+  response_format: { type: string };
+  thinking: { type: string };
+};
+
+async function withSubtitleResponses(
+  responses: Array<{ content: string; reasoningTokens?: number; outputTokens?: number }>,
+  run: (requests: SubtitleTestRequest[]) => Promise<void>,
+) {
+  const requests: SubtitleTestRequest[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    const response = responses[Math.min(requests.length, responses.length - 1)];
+    requests.push(JSON.parse(String(init?.body)) as SubtitleTestRequest);
+    return Response.json({
+      choices: [{ message: { content: response.content }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 1_000, completion_tokens: response.outputTokens ?? 100,
+        completion_tokens_details: { reasoning_tokens: response.reasoningTokens ?? 0 },
+      },
+    });
+  };
+  try {
+    await run(requests);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
 
 test("SRT and VTT retain program-owned time ranges and remove exact consecutive duplicates", () => {
   const srt = parseSubtitle(`1\n00:00:01,000 --> 00:00:02,500\nFirst line\n\n2\n00:00:02,500 --> 00:00:03,500\nFirst line\n\n3\n00:00:04,000 --> 00:00:05,000\nSecond`, "40A.srt");
@@ -117,5 +186,165 @@ test("a provider length limit fails the AI window without retrying or falling ba
     assert.equal(requests, 1);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("a truncated 126–130 input group is repaired without retry and retains source text and times", async () => {
+  const cues = windowCues(reversalGroup);
+  assert.ok(mergeShortCueInputs(cues).some((group) => group.cueIds.join(",") === "126,127,128,129,130"));
+  await withSubtitleResponses([{ content: rangeOutput([[122, 126], [131, 180]]) }], async (requests) => {
+    const result = await processSubtitleWindow(subtitleTestConfig(), cues);
+    assert.equal(requests.length, 1);
+    assert.equal(result.attempts, 1);
+    assert.deepEqual(result.segments.flatMap((segment) => segment.cueIds), cues.map((cue) => cue.id));
+    assert.deepEqual(result.segments[0].cueIds, cues.slice(0, 9).map((cue) => cue.id));
+    assert.equal(result.segments[0].topic, "Topic 1");
+    assert.deepEqual(result.segments[0].keywords, ["Buy"]);
+    assert.equal(result.segments[0].cleanedText, cues.slice(0, 9).map((cue) => cue.text).join(" "));
+    const chunk = materializeChunk(cues, result.segments[0]);
+    assert.equal(chunk.originalText, cues.slice(0, 9).map((cue) => cue.text).join("\n"));
+    assert.equal(chunk.startMs, cues[0].startMs);
+    assert.equal(chunk.endMs, cues[8].endMs);
+  });
+});
+
+test("an omitted group prefix is restored to the segment already covering its suffix", async () => {
+  const cues = windowCues(reversalGroup);
+  await withSubtitleResponses([{ content: rangeOutput([[122, 125], [130, 180]]) }], async (requests) => {
+    const result = await processSubtitleWindow(subtitleTestConfig(), cues);
+    assert.equal(requests.length, 1);
+    assert.equal(result.segments[1].cueIds[0], 126);
+    assert.deepEqual(result.segments.flatMap((segment) => segment.cueIds), cues.map((cue) => cue.id));
+  });
+});
+
+test("both window edges can be repaired inside one partially covered input group", async () => {
+  const cues = windowCues(reversalGroup).filter((cue) => cue.id >= 126 && cue.id <= 130);
+  await withSubtitleResponses([{ content: rangeOutput([[127, 129]]) }], async () => {
+    const result = await processSubtitleWindow(subtitleTestConfig(), cues);
+    assert.equal(result.segments.length, 1);
+    assert.deepEqual(result.segments[0].cueIds, [126, 127, 128, 129, 130]);
+    assert.equal(result.segments[0].topic, "Topic 1");
+  });
+});
+
+test("group repair never steals cues from a neighboring segment", async () => {
+  const cues = windowCues(reversalGroup);
+  for (const nextStart of [127, 129]) {
+    await withSubtitleResponses([{ content: rangeOutput([[122, 126], [nextStart, 180]]) }], async (requests) => {
+      const result = await processSubtitleWindow(subtitleTestConfig(), cues);
+      assert.equal(requests.length, 1);
+      assert.equal(result.segments[0].cueIds.at(-1), 126);
+      assert.equal(result.segments.at(-1)!.cueIds[0], nextStart);
+      assert.deepEqual(result.segments.flatMap((segment) => segment.cueIds), cues.map((cue) => cue.id));
+      if (nextStart === 129) {
+        assert.deepEqual(result.segments[1].cueIds, [127, 128]);
+        assert.equal(result.segments[1].topic, "");
+      }
+    });
+  }
+});
+
+test("an entirely omitted 127–130 group triggers explicit feedback and the configured retry model", async () => {
+  const cues = windowCues({ 127: "Buy.", 128: "Buy again.", 129: "Look to buy.", 130: "Buy, buy." });
+  assert.ok(mergeShortCueInputs(cues).some((group) => group.cueIds.join(",") === "127,128,129,130"));
+  const config = subtitleTestConfig();
+  config.skills.subtitleKnowledge.retryModelOverride = "cheap-retry";
+  await withSubtitleResponses([
+    { content: rangeOutput([[122, 126], [131, 180]]) },
+    { content: rangeOutput([[122, 130], [131, 180]]) },
+  ], async (requests) => {
+    const result = await processSubtitleWindow(config, cues);
+    assert.equal(requests.length, 2);
+    assert.equal(result.attempts, 2);
+    assert.equal(requests[0].model, "primary");
+    assert.equal(requests[1].model, "cheap-retry");
+    assert.doesNotMatch(requests[0].messages[0].content, /校验反馈/);
+    assert.match(requests[1].messages[0].content, /遗漏了字幕编号 127–130/);
+    assert.match(requests[1].messages[0].content, /完整覆盖 122–180/);
+    assert.equal(requests[1].messages[1].content, requests[0].messages[1].content);
+    assert.deepEqual(result.segments.flatMap((segment) => segment.cueIds), cues.map((cue) => cue.id));
+    for (const request of requests) {
+      const estimate = Math.ceil(`${request.messages[0].content}\n${request.messages[1].content}`.length / 3);
+      assert.equal(request.max_tokens, calculateSubtitleOutputTokenBudget(estimate, config.skills.subtitleKnowledge.maxOutputTokens));
+      assert.equal(request.temperature, 0);
+      assert.equal(request.response_format.type, "json_object");
+      assert.equal(request.thinking.type, "disabled");
+    }
+  });
+});
+
+test("ordinary omissions retain the existing repair limit and report every missing interval", async () => {
+  await withSubtitleResponses([{ content: rangeOutput([[122, 125], [130, 150], [155, 180]]) }], async (requests) => {
+    await assert.rejects(processSubtitleWindow(subtitleTestConfig(), windowCues()), /omitted 8 cues, exceeding the repair limit 3/);
+    assert.equal(requests.length, 2);
+    assert.match(requests[1].messages[0].content, /126–129、151–154/);
+  });
+});
+
+test("group-edge and ordinary gap repairs share a total limit", async () => {
+  const cases = [
+    { cues: windowCues({ 126: "Buy.", 127: "Buy.", 128: "Buy.", 129: "Buy.", 130: "Buy.", 131: "Buy.", 132: "Buy." }), ranges: [[122, 126], [133, 180]], omitted: "127–132" },
+    { cues: windowCues(reversalGroup), ranges: [[122, 126], [131, 178]], omitted: "127–130、179–180" },
+  ];
+  for (const example of cases) {
+    await withSubtitleResponses([{ content: rangeOutput(example.ranges as Array<[number, number]>) }], async (requests) => {
+      await assert.rejects(processSubtitleWindow(subtitleTestConfig(), example.cues), /omitted 6 cues, exceeding the repair limit 5/);
+      assert.equal(requests.length, 2);
+      assert.ok(requests[1].messages[0].content.includes(example.omitted));
+    });
+  }
+});
+
+test("ordinary small gaps remain repairable alongside a bounded group-edge correction", async () => {
+  const cues = windowCues(reversalGroup);
+  await withSubtitleResponses([{ content: rangeOutput([[122, 126], [131, 179]]) }], async (requests) => {
+    const result = await processSubtitleWindow(subtitleTestConfig(), cues);
+    assert.equal(requests.length, 1);
+    assert.deepEqual(result.segments.flatMap((segment) => segment.cueIds), cues.map((cue) => cue.id));
+    assert.deepEqual(result.segments.at(-1)!.cueIds, [180]);
+    assert.equal(result.segments.at(-1)!.topic, "");
+  });
+});
+
+test("overlapping, reordered, out-of-window, and reversed ranges cannot be normalized into success", async () => {
+  const cases: Array<{ ranges: Array<[number, number]>; error: RegExp; feedback: RegExp }> = [
+    { ranges: [[122, 130], [130, 180]], error: /overlapping|reordered/, feedback: /重叠或倒序/ },
+    { ranges: [[131, 180], [122, 130]], error: /overlapping|reordered/, feedback: /重叠或倒序/ },
+    { ranges: [[121, 180]], error: /unknown|reversed/, feedback: /越界或首尾颠倒/ },
+    { ranges: [[122, 181]], error: /unknown|reversed/, feedback: /越界或首尾颠倒/ },
+    { ranges: [[130, 129]], error: /unknown|reversed/, feedback: /越界或首尾颠倒/ },
+  ];
+  for (const example of cases) {
+    await withSubtitleResponses([{ content: rangeOutput(example.ranges) }], async (requests) => {
+      await assert.rejects(processSubtitleWindow(subtitleTestConfig(), windowCues(reversalGroup)), example.error);
+      assert.equal(requests.length, 2);
+      assert.match(requests[1].messages[0].content, example.feedback);
+    });
+  }
+});
+
+test("invalid JSON gets program-owned format feedback without replaying arbitrary model text", async () => {
+  await withSubtitleResponses([
+    { content: "ARBITRARY_MODEL_INSTRUCTION" },
+    { content: rangeOutput([[122, 180]]) },
+  ], async (requests) => {
+    const result = await processSubtitleWindow(subtitleTestConfig(), windowCues());
+    assert.equal(result.attempts, 2);
+    assert.match(requests[1].messages[0].content, /不是符合约定结构的 JSON/);
+    assert.ok(!requests[1].messages[0].content.includes("ARBITRARY_MODEL_INSTRUCTION"));
+  });
+});
+
+test("reasoning and output-ratio fuses still fail immediately without validation retries", async () => {
+  const cases = [
+    { response: { content: rangeOutput([[122, 126], [131, 180]]), reasoningTokens: 1 }, error: /reasoning/ },
+    { response: { content: rangeOutput([[122, 126], [131, 180]]), outputTokens: 2_001 }, error: /safety ratio/ },
+  ];
+  for (const example of cases) {
+    await withSubtitleResponses([example.response], async (requests) => {
+      await assert.rejects(processSubtitleWindow(subtitleTestConfig(), windowCues(reversalGroup)), example.error);
+      assert.equal(requests.length, 1);
+    });
   }
 });

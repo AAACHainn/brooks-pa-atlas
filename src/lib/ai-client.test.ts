@@ -158,6 +158,49 @@ test("DeepSeek subtitle requests explicitly disable thinking", async () => {
   assert.equal(reasoningDetected, true);
 });
 
+test("MiMo official chat URLs disable thinking for custom and OpenAI endpoint types", async () => {
+  for (const provider of ["custom", "openai"] as const) {
+    for (const useCustomUrls of [false, true]) {
+      const mimo = {
+        ...endpoint(), provider, useCustomUrls,
+        baseUrl: useCustomUrls ? "https://other.test/v1" : "https://api.xiaomimimo.com/v1",
+        chatCompletionsUrl: useCustomUrls ? "https://api.xiaomimimo.com/v1/chat/completions" : "",
+      };
+      let body: Record<string, unknown> = {};
+      await createAiChatCompletion(mimo, "mimo-v2.6-flash", [{ role: "user", content: "segment" }], {
+        disableReasoning: true,
+        fetchImpl: async (_url, init) => {
+          body = JSON.parse(String(init?.body));
+          return Response.json({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }] });
+        },
+      });
+      assert.deepEqual(body.thinking, { type: "disabled" });
+      assert.equal("reasoning_effort" in body, false);
+      assert.equal("enable_thinking" in body, false);
+    }
+  }
+});
+
+test("MiMo thinking controls follow the effective URL and apply only when reasoning is disabled", async () => {
+  const cases = [
+    { ...endpoint(), baseUrl: "https://api.xiaomimimo.com/v1", useCustomUrls: true, chatCompletionsUrl: "https://other.test/chat/completions", disabled: true },
+    { ...endpoint(), baseUrl: "https://api.xiaomimimo.com.other.test/v1", disabled: true },
+    { ...endpoint(), baseUrl: "https://other.test/v1?redirect=api.xiaomimimo.com", disabled: true },
+    { ...endpoint(), baseUrl: "https://api.xiaomimimo.com/v1", disabled: false },
+  ];
+  for (const { disabled, ...target } of cases) {
+    let body: Record<string, unknown> = {};
+    await createAiChatCompletion(target, "mimo-v2.6-flash", [{ role: "user", content: "segment" }], {
+      disableReasoning: disabled,
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body));
+        return Response.json({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }] });
+      },
+    });
+    assert.equal("thinking" in body, false);
+  }
+});
+
 test("OpenAI output limits use max_completion_tokens", async () => {
   let requestBody: Record<string, unknown> = {};
   await createAiChatCompletion({ ...endpoint(), provider: "openai" }, "gpt-5.1", [{ role: "user", content: "segment" }], {

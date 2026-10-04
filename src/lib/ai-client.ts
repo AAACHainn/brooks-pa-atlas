@@ -368,6 +368,10 @@ function chatUsage(payload: unknown): AiChatUsage {
 
 function reasoningControl(endpoint: StoredAiEndpoint, model: string, disabled: boolean | undefined) {
   if (!disabled) return {};
+  const chatUrl = resolveAiEndpointUrls(endpoint).chatCompletionsUrl;
+  if (new URL(chatUrl).hostname.toLowerCase() === "api.xiaomimimo.com") {
+    return { thinking: { type: "disabled" } };
+  }
   const identity = `${endpoint.baseUrl} ${endpoint.chatCompletionsUrl} ${model}`.toLowerCase();
   if (/qwen|dashscope|aliyun|alibabacloud/.test(identity)) return { enable_thinking: false };
   if (endpoint.provider === "deepseek" || /deepseek/.test(identity)) {

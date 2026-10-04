@@ -372,7 +372,7 @@ async function processWindows(item: ItemRow, windows: ReturnType<typeof createSu
     if (stored.status === "COMPLETED") continue;
     try {
       const startedAt = nowSql();
-      db.prepare(`UPDATE KnowledgeProcessingWindow SET status = 'RUNNING', error = NULL,
+      db.prepare(`UPDATE KnowledgeProcessingWindow SET status = 'RUNNING', error = NULL, retryCount = 0,
         startedAt = ?, finishedAt = NULL, updatedAt = ? WHERE itemId = ? AND ordinal = ?`)
         .run(startedAt, startedAt, item.id, ordinal);
       const result = await processSubtitleWindow(config, windows[ordinal], {
@@ -408,7 +408,7 @@ async function processWindows(item: ItemRow, windows: ReturnType<typeof createSu
       updateItemProgress(item.id, completed.count, windows.length);
     } catch (error) {
       const failedAt = nowSql();
-      db.prepare(`UPDATE KnowledgeProcessingWindow SET status = 'FAILED', retryCount = 1, error = ?,
+      db.prepare(`UPDATE KnowledgeProcessingWindow SET status = 'FAILED', error = ?,
         finishedAt = ?, updatedAt = ?
         WHERE itemId = ? AND ordinal = ?`)
         .run(error instanceof Error ? error.message : String(error), failedAt, failedAt, item.id, ordinal);

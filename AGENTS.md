@@ -103,7 +103,7 @@ docker compose down
 - `npm run test:search` 运行图片关键词搜索的字面量匹配测试，确保 `%`、`_` 和反斜杠不会被当作通配符。
 - `npm run test:thumbnails` 运行缩略图路径、缓存、尺寸、并发合并和图片查询键测试。
 - `npm run test:ocr` 运行索引子树批量 OCR 的文本判断、终态和进度计算测试。
-- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、多模态 Chat Completions，以及伴读快速/深度模式、预算装载、接口保存和取消测试；接口测试使用隔离数据库、图库和模拟端点。
+- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、多模态 Chat Completions，以及伴读快速/深度模式、预算装载、接口保存和取消测试；也覆盖窗口按帧合并、流式草稿合并/清理和输入法回车保护；接口测试使用隔离数据库、图库和模拟端点。
 - `npm run test:knowledge` 运行字幕格式/时间码解析、AI cue 覆盖、顺序、长度比例、窗口、片段时间范围、深度候选召回与章节分页读取测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
@@ -132,6 +132,7 @@ docker compose down
 - `src/app/app-dialog.tsx`：全局统一的应用内提示、确认和文本输入弹窗，提供危险级别样式、焦点管理和键盘操作。
 - `src/app/app-settings-dialog.tsx`：可扩展的全局设置弹窗，当前提供 AI 端点和内置技能配置。
 - `src/app/ai-reading-companion.tsx`：浏览模式 AI 阅读伴侣悬浮窗，负责全局多会话、流式消息、拖动和收起交互。
+- `src/lib/reading-companion-ui.ts`：伴侣窗口按帧合并、流式文字合并和输入法回车保护 helper。
 - `src/app/knowledge-manager-dialog.tsx`：资料知识库导入、类型确认、节点映射、人工审核、版本管理、维护和检索测试弹窗。
 - `src/app/index-tree-selector.tsx`：工作台详情与资料知识库共用的树形索引选择器，支持层级展开、路径搜索和键盘选择；不要再用平铺的原生下拉框复制索引选择逻辑。
 - `src/app/knowledge-import-progress.tsx`：字幕导入的文件级、AI 窗口级和 Embedding 批次级进度展示，包含耗时、预计剩余时间、慢响应和疑似停滞提示。
@@ -306,6 +307,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 
 - 左侧目录 + 右侧图片浏览。
 - 中央大图右键菜单提供“AI 伴读”；悬浮窗默认位于右侧，可拖动、从四边或四角调整宽高、收起、关闭并记住位置、尺寸、收起状态和收起前的消息阅读位置，打开后自动跟随当前大图；AI 回复按 Markdown 渲染，兼容端点返回的可见思考过程和耗时以可折叠面板实时展示并持久化。
+- 伴侣输入状态保留在独立输入组件，关闭后重开仍恢复草稿；组词中的回车只确认输入法候选字。历史消息及 Markdown 使用稳定组件和缓存，输入、拖动、缩放或计时不会重复解析未变化的回答。拖动通过 `requestAnimationFrame` 合并并更新 `transform`，缩放按帧更新尺寸，松手提交最终位置和尺寸。流式草稿每 50ms 合并刷新，结束、失败或取消时清理待刷新内容；思考计时只更新思考面板。
 - 阅读伴侣支持全局多会话、新建、切换、重命名、清空和删除；会话保存在 SQLite 但不进入备份 zip。每条用户消息记录发送时的参考图，模型可读取图片、标签、备注、OCR、文字标注、索引和导航属性。
 - 伴读输入框上方提供“快速回答 / 深度思考”，默认快速，发送期间锁定模式；深度显示拆解、检索、排序、阅读和综合阶段。停止或关闭窗口会取消上游请求，未完成草稿不能保存为成功答案；收起窗口继续运行。阶段进度与原模型思考面板保持独立。
 - 深度消息可展开查看证据覆盖、各资料读取数量、估算 Token、调用次数及降级提示；来源可展开原始片段，并显示版本与字幕时间或文本行号/标题路径。历史来源使用保存的快照。

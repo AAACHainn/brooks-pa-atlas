@@ -13,12 +13,14 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { useAppDialog } from "@/app/app-dialog";
 import type { DeepReadingPhase, DeepReadingResearch } from "@/lib/knowledge-types";
+import { createBufferedReadingText, createLatestValueScheduler, shouldSendReadingInput } from "@/lib/reading-companion-ui";
 
 type Locale = "zh" | "en";
 
@@ -269,60 +271,63 @@ function resizedFrame(
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
-function MarkdownContent({ content }: { content: string }) {
+const markdownPlugins = [remarkGfm];
+const markdownComponents: Components = {
+  h1: ({ children }) => <h1 className="mb-2 mt-3 text-lg font-bold first:mt-0">{children}</h1>,
+  h2: ({ children }) => <h2 className="mb-2 mt-3 text-base font-bold first:mt-0">{children}</h2>,
+  h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-sm font-semibold first:mt-0">{children}</h3>,
+  p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
+  ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
+  ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
+  blockquote: ({ children }) => (
+    <blockquote className="my-2 border-l-3 border-cyan-500 bg-cyan-50/70 py-1 pl-3 text-zinc-600">
+      {children}
+    </blockquote>
+  ),
+  a: ({ children, href }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="text-cyan-700 underline decoration-cyan-300 underline-offset-2 hover:text-cyan-900"
+    >
+      {children}
+    </a>
+  ),
+  pre: ({ children }) => (
+    <pre className="my-2 overflow-x-auto rounded-md bg-zinc-950 p-3 text-xs leading-5 text-zinc-100">
+      {children}
+    </pre>
+  ),
+  code: ({ children, className }) => className ? (
+    <code className={className}>{children}</code>
+  ) : (
+    <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-[0.9em] text-rose-700">
+      {children}
+    </code>
+  ),
+  table: ({ children }) => (
+    <div className="my-3 overflow-x-auto">
+      <table className="w-full border-collapse text-left text-xs">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => <th className="border border-zinc-300 bg-zinc-100 px-2 py-1.5 font-semibold">{children}</th>,
+  td: ({ children }) => <td className="border border-zinc-300 px-2 py-1.5 align-top">{children}</td>,
+  hr: () => <hr className="my-3 border-zinc-200" />,
+};
+
+const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
   return (
     <div className="min-w-0 break-words text-sm leading-6">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          h1: ({ children }) => <h1 className="mb-2 mt-3 text-lg font-bold first:mt-0">{children}</h1>,
-          h2: ({ children }) => <h2 className="mb-2 mt-3 text-base font-bold first:mt-0">{children}</h2>,
-          h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-sm font-semibold first:mt-0">{children}</h3>,
-          p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
-          ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
-          ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
-          blockquote: ({ children }) => (
-            <blockquote className="my-2 border-l-3 border-cyan-500 bg-cyan-50/70 py-1 pl-3 text-zinc-600">
-              {children}
-            </blockquote>
-          ),
-          a: ({ children, href }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-cyan-700 underline decoration-cyan-300 underline-offset-2 hover:text-cyan-900"
-            >
-              {children}
-            </a>
-          ),
-          pre: ({ children }) => (
-            <pre className="my-2 overflow-x-auto rounded-md bg-zinc-950 p-3 text-xs leading-5 text-zinc-100">
-              {children}
-            </pre>
-          ),
-          code: ({ children, className }) => className ? (
-            <code className={className}>{children}</code>
-          ) : (
-            <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-[0.9em] text-rose-700">
-              {children}
-            </code>
-          ),
-          table: ({ children }) => (
-            <div className="my-3 overflow-x-auto">
-              <table className="w-full border-collapse text-left text-xs">{children}</table>
-            </div>
-          ),
-          th: ({ children }) => <th className="border border-zinc-300 bg-zinc-100 px-2 py-1.5 font-semibold">{children}</th>,
-          td: ({ children }) => <td className="border border-zinc-300 px-2 py-1.5 align-top">{children}</td>,
-          hr: () => <hr className="my-3 border-zinc-200" />,
-        }}
+        remarkPlugins={markdownPlugins}
+        components={markdownComponents}
       >
         {content}
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 function formattedThinkingTime(durationMs: number, locale: Locale) {
   const seconds = Math.max(0, durationMs) / 1000;
@@ -330,22 +335,31 @@ function formattedThinkingTime(durationMs: number, locale: Locale) {
   return locale === "zh" ? `${value} 秒` : `${value}s`;
 }
 
-function ReasoningPanel({
+const ReasoningPanel = memo(function ReasoningPanel({
   content,
   durationMs,
   active,
+  startedAt = 0,
   locale,
   defaultExpanded = false,
 }: {
   content: string;
   durationMs: number;
   active: boolean;
+  startedAt?: number;
   locale: Locale;
   defaultExpanded?: boolean;
 }) {
   const t = labels[locale];
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const time = formattedThinkingTime(durationMs, locale);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const updateElapsed = () => setElapsedMs(Date.now() - startedAt);
+    const timer = window.setInterval(updateElapsed, 100);
+    return () => window.clearInterval(timer);
+  }, [active, startedAt]);
+  const time = formattedThinkingTime(active ? elapsedMs : durationMs, locale);
 
   return (
     <section className="mb-2 overflow-hidden rounded-lg border border-amber-200 bg-amber-50/70 text-zinc-700">
@@ -383,7 +397,162 @@ function ReasoningPanel({
       ) : null}
     </section>
   );
-}
+});
+
+const MessageItem = memo(function MessageItem({ message, locale }: { message: Message; locale: Locale }) {
+  const t = labels[locale];
+  return (
+    <article className={`flex ${message.role === "USER" ? "justify-end" : "justify-start"}`}>
+      <div className={`max-w-[88%] rounded-xl px-3 py-2 text-sm leading-6 shadow-sm ${message.role === "USER" ? "bg-zinc-950 text-white" : "border border-zinc-200 bg-white text-zinc-800"}`}>
+        <p className={`mb-1 text-[10px] font-medium ${message.role === "USER" ? "text-zinc-300" : "text-cyan-700"}`}>
+          {message.answerMode === "deep" ? t.deepAnswer : t.quickAnswer}
+        </p>
+        {message.image ? (
+          <div className={`mb-1.5 truncate text-[10px] font-medium ${message.role === "USER" ? "text-cyan-200" : "text-cyan-700"}`} title={message.image.title ?? message.image.originalName}>
+            {message.image.title ?? message.image.originalName}{message.image.available ? "" : ` · ${t.unavailableImage}`}
+          </div>
+        ) : null}
+        {message.role === "ASSISTANT" ? (
+          <>
+            {message.reasoningContent || message.reasoningDurationMs !== null ? (
+              <ReasoningPanel
+                content={message.reasoningContent ?? ""}
+                durationMs={message.reasoningDurationMs ?? 0}
+                active={false}
+                locale={locale}
+              />
+            ) : null}
+            <MarkdownContent content={message.content} />
+            {message.knowledge?.research ? (
+              <details className="mt-2 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-[11px] leading-5">
+                <summary className="cursor-pointer font-semibold">
+                  {t.coverage} · {message.knowledge.research.coverage.readChunks}/{message.knowledge.research.coverage.availableChunks} {message.knowledge.research.intent === "summary" ? t.targetChunks : t.recalledChunks}
+                </summary>
+                <p>{message.knowledge.research.modelCalls} {t.modelCalls} · {t.estimatedTokens} {message.knowledge.research.estimatedInputTokens.toLocaleString()}</p>
+                {message.knowledge.research.coverage.documents.map((doc) => (
+                  <p key={doc.documentId}>{doc.title} · {doc.readChunks}/{doc.availableChunks}</p>
+                ))}
+                {message.knowledge.research.warnings.map((warning) => <p key={warning} className="text-amber-800">{warning}</p>)}
+              </details>
+            ) : null}
+            {message.knowledge?.sources.length ? (
+              <details className="mt-2 rounded-md border border-cyan-100 bg-cyan-50/60 px-2 py-1.5 text-[11px] leading-4 text-cyan-950">
+                <summary className="cursor-pointer font-semibold">{t.knowledgeSources} · {message.knowledge.sources.length}</summary>
+                <div className="mt-1.5 space-y-1.5">
+                  {message.knowledge.warning ? (
+                    <p className="text-amber-700">
+                      {message.knowledge.warning === "no_relevant_evidence" ? t.noRelevantEvidence : message.knowledge.warning === "semantic_unavailable" ? t.semanticUnavailable : t.noCurrentBinding}
+                    </p>
+                  ) : null}
+                  <p className="text-cyan-800">{t.knowledgeSourcesHint}</p>
+                  {message.knowledge.sources.map((source) => (
+                    <details key={`${message.id}-${source.citation}`} className="rounded border border-cyan-100 bg-white/70 px-2 py-1">
+                      <summary className="cursor-pointer">
+                        <span className="font-semibold">[{source.citation}]</span>{" "}
+                        {source.lessonCode ? `${source.lessonCode} · ` : ""}{source.title}{" · "}{knowledgeLocation(source)}
+                      </summary>
+                      <p className="mt-1 text-zinc-500" title={source.versionId}>{source.sourceType}{source.versionNumber ? ` · v${source.versionNumber}` : ""}{source.versionId ? ` · ${source.versionId.slice(0, 12)}` : ""}</p>
+                      <p className="mt-1 whitespace-pre-wrap break-words">{source.text}</p>
+                    </details>
+                  ))}
+                </div>
+              </details>
+            ) : message.knowledge?.warning ? (
+              <p className="mt-2 text-[11px] text-amber-700">
+                {message.knowledge.warning === "no_relevant_evidence" ? t.noRelevantEvidence : message.knowledge.warning === "semantic_unavailable" ? t.semanticUnavailable : t.noCurrentBinding}
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+        )}
+      </div>
+    </article>
+  );
+});
+
+const MessageList = memo(function MessageList({ messages, locale }: { messages: Message[]; locale: Locale }) {
+  return messages.map((message) => <MessageItem key={message.id} message={message} locale={locale} />);
+});
+
+type ComposerHandle = { setValue: (value: string) => void };
+type ReadingProgress = { phase: DeepReadingPhase; completed?: number; total?: number };
+
+const ReadingComposer = memo(function ReadingComposer({
+  composerRef, locale, configured, canSend, sending, answerMode, progress,
+  onInputChange, onSend, onStop, onAnswerModeChange, onOpenSettings,
+}: {
+  composerRef: RefObject<ComposerHandle | null>;
+  locale: Locale;
+  configured: boolean;
+  canSend: boolean;
+  sending: boolean;
+  answerMode: "quick" | "deep";
+  progress: ReadingProgress | null;
+  onInputChange: (value: string) => void;
+  onSend: () => Promise<void>;
+  onStop: () => void;
+  onAnswerModeChange: (mode: "quick" | "deep") => void;
+  onOpenSettings: () => void;
+}) {
+  const t = labels[locale];
+  const [input, setInput] = useState("");
+  const composingRef = useRef(false);
+  useImperativeHandle(composerRef, () => ({ setValue: setInput }), []);
+  return (
+    <div className="shrink-0 border-t border-zinc-200 bg-white p-3">
+      {!configured ? (
+        <button type="button" onClick={onOpenSettings} className="mb-2 flex w-full items-center justify-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 hover:bg-amber-100">
+          <Settings className="h-3.5 w-3.5" />
+          <span>{t.configureHint} {t.configure}</span>
+        </button>
+      ) : null}
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex gap-3" role="group" aria-label={t.modeHint}>
+          {(["quick", "deep"] as const).map((mode) => (
+            <button key={mode} type="button" disabled={sending} aria-pressed={answerMode === mode}
+              onClick={() => onAnswerModeChange(mode)} title={t.modeHint}
+              className={`border-b-2 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100 disabled:opacity-60 ${answerMode === mode ? "border-cyan-700 text-cyan-800" : "border-transparent text-zinc-500 hover:text-cyan-700"}`}>
+              {mode === "quick" ? t.quickAnswer : t.deepAnswer}
+            </button>
+          ))}
+        </div>
+        {sending ? <button type="button" onClick={onStop}
+          className="rounded-md border border-zinc-200 bg-white px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100">{t.stop}</button> : null}
+      </div>
+      {progress ? <p role="status" className="mb-2 flex items-center gap-2 text-xs text-cyan-800">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />{t[progress.phase]}
+        {progress.total !== undefined ? ` · ${progress.completed ?? 0}/${progress.total}` : ""}
+      </p> : null}
+      <div className="flex items-end gap-2">
+        <textarea
+          value={input}
+          onChange={(event) => {
+            setInput(event.target.value);
+            onInputChange(event.target.value);
+          }}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
+          onKeyDown={(event) => {
+            if (shouldSendReadingInput(event.nativeEvent, composingRef.current)) {
+              event.preventDefault();
+              void onSend();
+            }
+          }}
+          disabled={sending}
+          maxLength={20_000}
+          rows={2}
+          placeholder={t.placeholder}
+          className="min-h-16 min-w-0 flex-1 resize-none rounded-lg border border-zinc-200 px-3 py-2 text-sm leading-5 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:bg-zinc-100"
+        />
+        <button type="button" onClick={() => void onSend()} disabled={!canSend || !input.trim() || sending || !configured} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-cyan-700 text-white hover:bg-cyan-800 disabled:bg-zinc-200 disabled:text-zinc-400" title={sending ? t.sending : t.send}>
+          {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+        </button>
+      </div>
+      <p className="mt-1.5 text-[10px] leading-4 text-zinc-400">{t.recentContext}</p>
+    </div>
+  );
+});
 
 export default function AiReadingCompanion({
   open,
@@ -405,11 +574,13 @@ export default function AiReadingCompanion({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [nextBefore, setNextBefore] = useState<number | null>(null);
-  const [input, setInput] = useState("");
+  const inputValueRef = useRef("");
+  const composerRef = useRef<ComposerHandle | null>(null);
+  const windowRef = useRef<HTMLElement | null>(null);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [answerMode, setAnswerMode] = useState<"quick" | "deep">("quick");
-  const [progress, setProgress] = useState<{ phase: DeepReadingPhase; completed?: number; total?: number } | null>(null);
+  const [progress, setProgress] = useState<ReadingProgress | null>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
   const [assistantDraft, setAssistantDraft] = useState("");
   const [assistantReasoningDraft, setAssistantReasoningDraft] = useState("");
@@ -427,11 +598,22 @@ export default function AiReadingCompanion({
   const messagePaneRef = useRef<HTMLDivElement | null>(null);
   const savedMessageScrollRef = useRef<{ scrollTop: number; stickToBottom: boolean } | null>(null);
   const activeIdRef = useRef<string | null>(null);
-  const thinkingStartedAtRef = useRef(0);
+  const [thinkingStartedAt, setThinkingStartedAt] = useState(0);
   const { showAlert, showConfirm, showPrompt, dialogElement } = useAppDialog({
     confirm: t.confirm,
     cancel: t.cancel,
   });
+
+  const rememberInput = useCallback((value: string) => { inputValueRef.current = value; }, []);
+  const updateInput = useCallback((value: string) => {
+    inputValueRef.current = value;
+    composerRef.current?.setValue(value);
+  }, []);
+  const stopSending = useCallback(() => { sendAbortRef.current?.abort(); }, []);
+
+  useLayoutEffect(() => {
+    if (open) composerRef.current?.setValue(inputValueRef.current);
+  }, [open]);
 
   useEffect(() => () => sendAbortRef.current?.abort(), []);
   useEffect(() => { if (!open) sendAbortRef.current?.abort(); }, [open]);
@@ -515,16 +697,6 @@ export default function AiReadingCompanion({
   }, [minimized, open]);
 
   useEffect(() => {
-    if (!thinkingActive) return;
-    const updateElapsed = () => {
-      setThinkingElapsedMs(Date.now() - thinkingStartedAtRef.current);
-    };
-    updateElapsed();
-    const timer = window.setInterval(updateElapsed, 100);
-    return () => window.clearInterval(timer);
-  }, [thinkingActive]);
-
-  useEffect(() => {
     function handleResize() {
       setFrame((current) => (current ? clampedFrame(current) : current));
     }
@@ -533,8 +705,17 @@ export default function AiReadingCompanion({
   }, []);
 
   useEffect(() => {
-    if (!interaction) return;
+    if (!interaction || !open) return;
     const activeInteraction = interaction;
+    let latestFrame = interactionRef.current.frame;
+    const updates = createLatestValueScheduler<FloatingFrame>((next) => {
+      if (activeInteraction === "drag") {
+        // Keep message rendering and layout out of the drag animation.
+        if (windowRef.current) windowRef.current.style.transform = `translate3d(${next.x}px, ${next.y}px, 0)`;
+      } else {
+        setFrame(next);
+      }
+    }, window.requestAnimationFrame.bind(window), window.cancelAnimationFrame.bind(window));
     const previousCursor = document.body.style.cursor;
     document.body.style.cursor = activeInteraction === "drag" ? "grabbing" : `${activeInteraction}-resize`;
     function handlePointerMove(event: PointerEvent) {
@@ -542,37 +723,31 @@ export default function AiReadingCompanion({
       const deltaY = event.clientY - interactionRef.current.pointerY;
       if (activeInteraction === "drag") {
         const start = interactionRef.current.frame;
-        setFrame(clampedFrame({ ...start, x: start.x + deltaX, y: start.y + deltaY }));
+        latestFrame = clampedFrame({ ...start, x: start.x + deltaX, y: start.y + deltaY });
       } else {
-        setFrame(resizedFrame(interactionRef.current.frame, activeInteraction, deltaX, deltaY));
+        latestFrame = resizedFrame(interactionRef.current.frame, activeInteraction, deltaX, deltaY);
       }
+      updates.queue(latestFrame);
     }
     function handlePointerUp() {
+      // A pointerup can arrive before the scheduled animation frame.
+      updates.flush();
+      setFrame(latestFrame);
       setInteraction(null);
-      setFrame((current) => {
-        if (current) {
-          window.localStorage.setItem(
-            "brooks-pa-atlas.aiReading.position",
-            JSON.stringify({ x: current.x, y: current.y }),
-          );
-          window.localStorage.setItem(
-            "brooks-pa-atlas.aiReading.size",
-            JSON.stringify({ width: current.width, height: current.height }),
-          );
-        }
-        return current;
-      });
+      window.localStorage.setItem("brooks-pa-atlas.aiReading.position", JSON.stringify({ x: latestFrame.x, y: latestFrame.y }));
+      window.localStorage.setItem("brooks-pa-atlas.aiReading.size", JSON.stringify({ width: latestFrame.width, height: latestFrame.height }));
     }
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp, { once: true });
     window.addEventListener("pointercancel", handlePointerUp, { once: true });
     return () => {
+      updates.cancel();
       document.body.style.cursor = previousCursor;
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, [interaction]);
+  }, [interaction, open]);
 
   async function loadConversations(preferredId?: string) {
     setLoading(true);
@@ -692,15 +867,15 @@ export default function AiReadingCompanion({
     }
   }
 
-  async function sendMessage() {
-    const content = input.trim();
+  const sendMessage = useCallback(async () => {
+    const content = inputValueRef.current.trim();
     if (!activeId || !image || !content || sending) return;
     if (!configured) {
       onOpenSettings();
       return;
     }
     const conversationId = activeId;
-    setInput("");
+    updateInput("");
     setError(null);
     setAssistantDraft("");
     setAssistantReasoningDraft("");
@@ -710,6 +885,10 @@ export default function AiReadingCompanion({
     const sendAbort = new AbortController();
     sendAbortRef.current = sendAbort;
     setProgress(answerMode === "deep" ? { phase: "planning" } : null);
+    const scheduleText = (callback: () => void) => window.setTimeout(callback, 50);
+    const cancelText = (handle: number) => window.clearTimeout(handle);
+    const answerBuffer = createBufferedReadingText(setAssistantDraft, scheduleText, cancelText);
+    const reasoningBuffer = createBufferedReadingText(setAssistantReasoningDraft, scheduleText, cancelText);
     try {
       const response = await fetch(
         `/api/ai/reading-companion/conversations/${conversationId}/messages`,
@@ -727,7 +906,6 @@ export default function AiReadingCompanion({
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let pending = "";
-      let draft = "";
       let completed = false;
       while (true) {
         const { value, done } = await reader.read();
@@ -756,19 +934,21 @@ export default function AiReadingCompanion({
           } else if (event.type === "progress" && event.phase) {
             setProgress({ phase: event.phase, completed: event.completed, total: event.total });
           } else if (event.type === "thinking_start") {
-            thinkingStartedAtRef.current = Date.now();
+            setThinkingStartedAt(Date.now());
             setThinkingElapsedMs(0);
             setThinkingActive(true);
           } else if (event.type === "reasoning_delta") {
-            setAssistantReasoningDraft((current) => current + (event.text ?? ""));
+            reasoningBuffer.append(event.text ?? "");
           } else if (event.type === "thinking_done") {
+            reasoningBuffer.flush();
             setThinkingActive(false);
             setThinkingElapsedMs(event.durationMs ?? 0);
           } else if (event.type === "delta") {
-            draft += event.text ?? "";
-            setAssistantDraft(draft);
+            answerBuffer.append(event.text ?? "");
           } else if (event.type === "done" && event.assistantMessage) {
             completed = true;
+            answerBuffer.dispose();
+            reasoningBuffer.dispose();
             setMessages((current) => [...current, event.assistantMessage!]);
             setAssistantDraft("");
             setAssistantReasoningDraft("");
@@ -783,19 +963,23 @@ export default function AiReadingCompanion({
       }
       if (!completed) throw new Error(t.operationFailed);
     } catch (caught) {
+      answerBuffer.dispose();
+      reasoningBuffer.dispose();
       setAssistantDraft("");
       setAssistantReasoningDraft("");
       setThinkingActive(false);
       setThinkingElapsedMs(0);
-      setInput(content);
+      updateInput(content);
       const message = caught instanceof Error ? caught.message : t.operationFailed;
       setError(sendAbort.signal.aborted ? t.stopped : `${message}\n${t.retryHint}`);
     } finally {
+      answerBuffer.dispose();
+      reasoningBuffer.dispose();
       setSending(false);
       setProgress(null);
       if (sendAbortRef.current === sendAbort) sendAbortRef.current = null;
     }
-  }
+  }, [activeId, image, configured, sending, onOpenSettings, answerMode, updateInput, t.operationFailed, t.retryHint, t.stopped]);
 
   function rememberMessageScrollPosition() {
     const pane = messagePaneRef.current;
@@ -843,8 +1027,9 @@ export default function AiReadingCompanion({
   const activeConversation = conversations.find((item) => item.id === activeId) ?? null;
   const windowStyle = frame
     ? {
-        left: frame.x,
-        top: frame.y,
+        left: 0,
+        top: 0,
+        transform: `translate3d(${frame.x}px, ${frame.y}px, 0)`,
         width: frame.width,
         height: minimized ? 52 : frame.height,
       }
@@ -858,11 +1043,12 @@ export default function AiReadingCompanion({
   return (
     <>
       <section
+        ref={windowRef}
         role="dialog"
         aria-modal="false"
         aria-label={t.title}
         className={`fixed z-[60] flex flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-2xl shadow-zinc-950/20 ${interaction ? "select-none" : ""}`}
-        style={windowStyle}
+        style={{ ...windowStyle, willChange: interaction === "drag" ? "transform" : undefined }}
       >
         <div
           onPointerDown={beginDrag}
@@ -923,80 +1109,14 @@ export default function AiReadingCompanion({
               ) : messages.length === 0 && !assistantDraft && !thinkingActive ? (
                 <div className="grid h-full place-items-center px-6 text-center text-sm leading-6 text-zinc-500">{t.noMessages}</div>
               ) : null}
-              {messages.map((message) => (
-                <article key={message.id} className={`flex ${message.role === "USER" ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[88%] rounded-xl px-3 py-2 text-sm leading-6 shadow-sm ${message.role === "USER" ? "bg-zinc-950 text-white" : "border border-zinc-200 bg-white text-zinc-800"}`}>
-                    <p className={`mb-1 text-[10px] font-medium ${message.role === "USER" ? "text-zinc-300" : "text-cyan-700"}`}>
-                      {message.answerMode === "deep" ? t.deepAnswer : t.quickAnswer}
-                    </p>
-                    {message.image ? (
-                      <div className={`mb-1.5 truncate text-[10px] font-medium ${message.role === "USER" ? "text-cyan-200" : "text-cyan-700"}`} title={message.image.title ?? message.image.originalName}>
-                        {message.image.title ?? message.image.originalName}{message.image.available ? "" : ` · ${t.unavailableImage}`}
-                      </div>
-                    ) : null}
-                    {message.role === "ASSISTANT" ? (
-                      <>
-                        {message.reasoningContent || message.reasoningDurationMs !== null ? (
-                          <ReasoningPanel
-                            content={message.reasoningContent ?? ""}
-                            durationMs={message.reasoningDurationMs ?? 0}
-                            active={false}
-                            locale={locale}
-                          />
-                        ) : null}
-                        <MarkdownContent content={message.content} />
-                        {message.knowledge?.research ? (
-                          <details className="mt-2 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-[11px] leading-5">
-                            <summary className="cursor-pointer font-semibold">
-                              {t.coverage} · {message.knowledge.research.coverage.readChunks}/{message.knowledge.research.coverage.availableChunks} {message.knowledge.research.intent === "summary" ? t.targetChunks : t.recalledChunks}
-                            </summary>
-                            <p>{message.knowledge.research.modelCalls} {t.modelCalls} · {t.estimatedTokens} {message.knowledge.research.estimatedInputTokens.toLocaleString()}</p>
-                            {message.knowledge.research.coverage.documents.map((doc) => (
-                              <p key={doc.documentId}>{doc.title} · {doc.readChunks}/{doc.availableChunks}</p>
-                            ))}
-                            {message.knowledge.research.warnings.map((warning) => <p key={warning} className="text-amber-800">{warning}</p>)}
-                          </details>
-                        ) : null}
-                        {message.knowledge?.sources.length ? (
-                          <details className="mt-2 rounded-md border border-cyan-100 bg-cyan-50/60 px-2 py-1.5 text-[11px] leading-4 text-cyan-950">
-                            <summary className="cursor-pointer font-semibold">{t.knowledgeSources} · {message.knowledge.sources.length}</summary>
-                            <div className="mt-1.5 space-y-1.5">
-                              {message.knowledge.warning ? (
-                                <p className="text-amber-700">
-                                  {message.knowledge.warning === "no_relevant_evidence" ? t.noRelevantEvidence : message.knowledge.warning === "semantic_unavailable" ? t.semanticUnavailable : t.noCurrentBinding}
-                                </p>
-                              ) : null}
-                              <p className="text-cyan-800">{t.knowledgeSourcesHint}</p>
-                              {message.knowledge.sources.map((source) => (
-                                <details key={`${message.id}-${source.citation}`} className="rounded border border-cyan-100 bg-white/70 px-2 py-1">
-                                  <summary className="cursor-pointer">
-                                    <span className="font-semibold">[{source.citation}]</span>{" "}
-                                    {source.lessonCode ? `${source.lessonCode} · ` : ""}{source.title}{" · "}{knowledgeLocation(source)}
-                                  </summary>
-                                  <p className="mt-1 text-zinc-500" title={source.versionId}>{source.sourceType}{source.versionNumber ? ` · v${source.versionNumber}` : ""}{source.versionId ? ` · ${source.versionId.slice(0, 12)}` : ""}</p>
-                                  <p className="mt-1 whitespace-pre-wrap break-words">{source.text}</p>
-                                </details>
-                              ))}
-                            </div>
-                          </details>
-                        ) : message.knowledge?.warning ? (
-                          <p className="mt-2 text-[11px] text-amber-700">
-                            {message.knowledge.warning === "no_relevant_evidence" ? t.noRelevantEvidence : message.knowledge.warning === "semantic_unavailable" ? t.semanticUnavailable : t.noCurrentBinding}
-                          </p>
-                        ) : null}
-                      </>
-                    ) : (
-                      <p className="whitespace-pre-wrap break-words">{message.content}</p>
-                    )}
-                  </div>
-                </article>
-              ))}
+              <MessageList messages={messages} locale={locale} />
               {thinkingActive || assistantReasoningDraft || assistantDraft ? (
                 <div className="flex justify-start">
                   <div className="max-w-[88%] rounded-xl border border-cyan-200 bg-white px-3 py-2 text-sm leading-6 text-zinc-800 shadow-sm">
                     <ReasoningPanel
                       content={assistantReasoningDraft}
                       durationMs={thinkingElapsedMs}
+                      startedAt={thinkingStartedAt}
                       active={thinkingActive}
                       locale={locale}
                       defaultExpanded
@@ -1008,52 +1128,20 @@ export default function AiReadingCompanion({
               {error ? <p className="whitespace-pre-wrap rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p> : null}
             </div>
 
-            <div className="shrink-0 border-t border-zinc-200 bg-white p-3">
-              {!configured ? (
-                <button type="button" onClick={onOpenSettings} className="mb-2 flex w-full items-center justify-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 hover:bg-amber-100">
-                  <Settings className="h-3.5 w-3.5" />
-                  <span>{t.configureHint} {t.configure}</span>
-                </button>
-              ) : null}
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex gap-3" role="group" aria-label={t.modeHint}>
-                  {(["quick", "deep"] as const).map((mode) => (
-                    <button key={mode} type="button" disabled={sending} aria-pressed={answerMode === mode}
-                      onClick={() => setAnswerMode(mode)} title={t.modeHint}
-                      className={`border-b-2 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100 disabled:opacity-60 ${answerMode === mode ? "border-cyan-700 text-cyan-800" : "border-transparent text-zinc-500 hover:text-cyan-700"}`}>
-                      {mode === "quick" ? t.quickAnswer : t.deepAnswer}
-                    </button>
-                  ))}
-                </div>
-                {sending ? <button type="button" onClick={() => sendAbortRef.current?.abort()}
-                  className="rounded-md border border-zinc-200 bg-white px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100">{t.stop}</button> : null}
-              </div>
-              {progress ? <p role="status" className="mb-2 flex items-center gap-2 text-xs text-cyan-800">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />{t[progress.phase]}
-                {progress.total !== undefined ? ` · ${progress.completed ?? 0}/${progress.total}` : ""}
-              </p> : null}
-              <div className="flex items-end gap-2">
-                <textarea
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void sendMessage();
-                    }
-                  }}
-                  disabled={sending}
-                  maxLength={20_000}
-                  rows={2}
-                  placeholder={t.placeholder}
-                  className="min-h-16 min-w-0 flex-1 resize-none rounded-lg border border-zinc-200 px-3 py-2 text-sm leading-5 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:bg-zinc-100"
-                />
-                <button type="button" onClick={() => void sendMessage()} disabled={!activeId || !image || !input.trim() || sending || !configured} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-cyan-700 text-white hover:bg-cyan-800 disabled:bg-zinc-200 disabled:text-zinc-400" title={sending ? t.sending : t.send}>
-                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                </button>
-              </div>
-              <p className="mt-1.5 text-[10px] leading-4 text-zinc-400">{t.recentContext}</p>
-            </div>
+            <ReadingComposer
+              composerRef={composerRef}
+              locale={locale}
+              configured={configured}
+              canSend={Boolean(activeId && image)}
+              sending={sending}
+              answerMode={answerMode}
+              progress={progress}
+              onInputChange={rememberInput}
+              onSend={sendMessage}
+              onStop={stopSending}
+              onAnswerModeChange={setAnswerMode}
+              onOpenSettings={onOpenSettings}
+            />
         </div>
         {!minimized ? (
           <>

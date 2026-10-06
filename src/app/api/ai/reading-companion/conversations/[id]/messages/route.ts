@@ -4,7 +4,7 @@ import { z } from "zod";
 import { AiServiceError, streamAiChatCompletionEvents } from "@/lib/ai-client";
 import { prepareDeepReading, validateDeepCitations } from "@/lib/ai-deep-reading";
 import {
-  buildReadingCompanionMessages, readingConversationTitle, selectRecentReadingImageIds,
+  buildReadingCompanionMessages, readingConversationTitle, selectReadingImageIdsForQuestion,
   selectRecentReadingMessages, serializeReadingMessage,
 } from "@/lib/ai-reading-companion";
 import { loadReadingImageContext, prepareReadingImageDataUrls } from "@/lib/ai-reading-context";
@@ -109,7 +109,7 @@ export async function POST(
           })).reverse();
           const history = selectRecentReadingMessages(historyRows);
           const imageDataUrls = await prepareReadingImageDataUrls(
-            selectRecentReadingImageIds(history), { id: imageContext.id, libraryPath: imageContext.libraryPath },
+            selectReadingImageIdsForQuestion(history, content), { id: imageContext.id, libraryPath: imageContext.libraryPath },
           );
           signal.throwIfAborted();
           let aiMessages;

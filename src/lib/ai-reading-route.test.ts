@@ -46,6 +46,11 @@ before(async () => {
   await sharp({ create: { width: 32, height: 32, channels: 3, background: "white" } }).png().toFile(path.join(directory, "chart.png"));
   const libraryPath = path.relative(process.cwd(), path.join(directory, "chart.png"));
   await prisma.chartImage.create({ data: { id: "image", originalName: "19A.png", title: "Support and resistance", libraryPath, hash: "a".repeat(64), mimeType: "image/png", sizeBytes: 100, indexNodeId: "node" } });
+  await prisma.indexNode.create({ data: { id: "switch-node", name: "Flash cards", path: "Flash cards / Charts" } });
+  await sharp({ create: { width: 32, height: 32, channels: 3, background: "red" } }).png().toFile(path.join(directory, "cross-chart.png"));
+  await sharp({ create: { width: 32, height: 32, channels: 3, background: "blue" } }).png().toFile(path.join(directory, "cross-next.png"));
+  await prisma.chartImage.create({ data: { id: "cross-image", originalName: "price-time.png", title: "Charts: Price vs. Time", libraryPath: path.relative(process.cwd(), path.join(directory, "cross-chart.png")), hash: "d".repeat(64), mimeType: "image/png", sizeBytes: 100, indexNodeId: "switch-node", ocrText: "CURRENT_PRICE_VS_TIME" } });
+  await prisma.chartImage.create({ data: { id: "cross-next", originalName: "ownership.png", title: "Market ownership", libraryPath: path.relative(process.cwd(), path.join(directory, "cross-next.png")), hash: "e".repeat(64), mimeType: "image/png", sizeBytes: 100, indexNodeId: "switch-node", ocrText: "CURRENT_MARKET_OWNERSHIP" } });
   for (const id of ["current", "related"]) {
     knowledge.prepare("INSERT INTO KnowledgeDocument(id,title,lessonCode,sourceType,enabled) VALUES (?,?,?,'SUBTITLE',1)").run(id, id, id === "current" ? "19A" : "20A");
     knowledge.prepare(`INSERT INTO KnowledgeDocumentVersion(id,documentId,versionNumber,sourceFileName,sourceMimeType,sourceSizeBytes,sourceHash,sourcePath,rawText,status,sourceFormat)
@@ -73,6 +78,8 @@ after(async () => {
   await prisma?.$disconnect();
   // Remove only the two files this fixture created, using explicit individual paths.
   await unlink(path.join(directory, "chart.png"));
+  await unlink(path.join(directory, "cross-chart.png"));
+  await unlink(path.join(directory, "cross-next.png"));
   await unlink(path.join(directory, "main.db"));
 });
 
@@ -82,8 +89,8 @@ async function saveConfig() {
   return response.json();
 }
 async function conversation() { return prisma.aiReadingConversation.create({ data: {} }); }
-function request(mode?: "quick" | "deep", signal?: AbortSignal, content = "解释支撑与阻力") {
-  return new Request("http://atlas.test/messages", { method: "POST", signal, body: JSON.stringify({ imageId: "image", content, ...(mode ? { answerMode: mode } : {}) }) });
+function request(mode?: "quick" | "deep", signal?: AbortSignal, content = "解释支撑与阻力", imageId = "image") {
+  return new Request("http://atlas.test/messages", { method: "POST", signal, body: JSON.stringify({ imageId, content, ...(mode ? { answerMode: mode } : {}) }) });
 }
 function reply(text: string) { return Response.json({ choices: [{ message: { content: text } }] }); }
 function events(text: string) { return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)); }
@@ -100,6 +107,85 @@ test("legacy POST uses quick retrieval, eight sources, current priority and one 
   assert.equal(done.assistantMessage.knowledge.sources.length, 8);
   assert.ok(done.assistantMessage.knowledge.sources.filter((source: { scope: string }) => source.scope === "current").length >= 4);
   assert.equal(streamed.some((event) => event.type === "progress"), false);
+});
+
+test("quick and deep keep one conversation while sending the actual current pixels across and within index nodes", async () => {
+  const prepareImage = (await import("@/lib/ai-ocr-refinement")).prepareAiReferenceImage;
+  const expectedImages = new Map<string, string>();
+  for (const [id, name] of [["image", "chart.png"], ["cross-image", "cross-chart.png"], ["cross-next", "cross-next.png"]]) {
+    expectedImages.set(id, `data:image/jpeg;base64,${(await prepareImage(await readFile(path.join(directory, name)))).toString("base64")}`);
+  }
+  const previous = await prisma.chartImage.findUniqueOrThrow({ where: { id: "image" }, select: { ocrText: true } });
+  await prisma.chartImage.update({ where: { id: "image" }, data: { ocrText: "OLD_STOP_OCR" } });
+  try {
+    for (const mode of ["quick", "deep"] as const) {
+      const item = await conversation();
+      let currentId = "image";
+      let answerCalls = 0;
+      globalThis.fetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        if (!body.stream) return reply(JSON.stringify({ intent: "local", queries: ["translate"], targets: [] }));
+        answerCalls++;
+        const urls = body.messages.flatMap((message: { content: unknown }) => Array.isArray(message.content)
+          ? message.content.filter((part: { type: string }) => part.type === "image_url").map((part: { image_url: { url: string } }) => part.image_url.url) : []);
+        assert.deepEqual(urls, [expectedImages.get(currentId)], `${mode}: ${currentId}`);
+        const latest = JSON.stringify(body.messages.at(-1).content);
+        assert.match(latest, /当前参考图/);
+        assert.ok(latest.includes(currentId));
+        if (currentId === "cross-image") {
+          assert.match(latest, /CURRENT_PRICE_VS_TIME/);
+          assert.doesNotMatch(JSON.stringify(body.messages), /OLD_STOP_OCR/);
+          assert.ok(body.messages.some((message: { role: string; content: unknown }) => message.role === "assistant" && message.content === "回答 image"));
+        } else if (currentId === "cross-next") {
+          assert.match(latest, /CURRENT_MARKET_OWNERSHIP/);
+          assert.doesNotMatch(JSON.stringify(body.messages), /CURRENT_PRICE_VS_TIME|OLD_STOP_OCR/);
+        }
+        return reply(`回答 ${currentId}`);
+      };
+      for (const imageId of expectedImages.keys()) {
+        currentId = imageId;
+        const response = await messagesPost(request(mode, undefined, "翻译这一页", imageId), { params: Promise.resolve({ id: item.id }) });
+        const streamed = events(await response.text());
+        assert.equal(streamed.find((event) => event.type === "start").userMessage.image.id, imageId);
+        assert.equal(streamed.find((event) => event.type === "done")?.assistantMessage.content, `回答 ${imageId}`, JSON.stringify(streamed));
+      }
+      assert.equal(answerCalls, 3);
+      const saved = await prisma.aiReadingMessage.findMany({ where: { conversationId: item.id, role: "USER" }, orderBy: { sequence: "asc" } });
+      assert.deepEqual(saved.map((message) => message.chartImageId), [...expectedImages.keys()]);
+      assert.equal(await prisma.aiReadingMessage.count({ where: { conversationId: item.id } }), 6);
+    }
+  } finally { await prisma.chartImage.update({ where: { id: "image" }, data: previous }); }
+});
+
+test("explicit cross-topic comparisons retain both actual image files and distinguish current from history", async () => {
+  const prepareImage = (await import("@/lib/ai-ocr-refinement")).prepareAiReferenceImage;
+  const previousUrl = `data:image/jpeg;base64,${(await prepareImage(await readFile(path.join(directory, "chart.png")))).toString("base64")}`;
+  const currentUrl = `data:image/jpeg;base64,${(await prepareImage(await readFile(path.join(directory, "cross-chart.png")))).toString("base64")}`;
+  const item = await conversation();
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    const body = JSON.parse(String(init?.body));
+    const visualMessages = body.messages.filter((message: { content: unknown }) => Array.isArray(message.content));
+    if (calls === 1) {
+      assert.deepEqual(visualMessages[0].content[1].image_url.url, previousUrl);
+    } else {
+      assert.equal(visualMessages.length, 2);
+      assert.equal(visualMessages[0].content[1].image_url.url, previousUrl);
+      assert.equal(visualMessages[1].content[1].image_url.url, currentUrl);
+      assert.match(visualMessages[0].content[0].text, /历史参考图/);
+      assert.match(visualMessages[0].content[0].text, /"ocr"/);
+      assert.match(visualMessages[1].content[0].text, /当前参考图/);
+      assert.match(visualMessages[1].content[0].text, /CURRENT_PRICE_VS_TIME/);
+    }
+    return reply("比较结果");
+  };
+  for (const [imageId, question] of [["image", "解释当前图片"], ["cross-image", "比较当前图片和上一张图"]]) {
+    const response = await messagesPost(request("quick", undefined, question, imageId), { params: Promise.resolve({ id: item.id }) });
+    assert.ok(events(await response.text()).some((event) => event.type === "done"));
+  }
+  assert.equal(calls, 2);
+  assert.equal(await prisma.aiReadingMessage.count({ where: { conversationId: item.id } }), 4);
 });
 
 test("unbound image context cannot pull unrelated library excerpts into quick answers", async () => {

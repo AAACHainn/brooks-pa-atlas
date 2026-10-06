@@ -7,6 +7,7 @@ import {
   readingConversationTitle,
   readingImageLimit,
   selectRecentReadingImageIds,
+  selectReadingImageIdsForQuestion,
   selectRecentReadingMessages,
   serializeReadingMessage,
   type ReadingHistoryMessage,
@@ -121,4 +122,72 @@ test("recent context stops before exceeding the text budget but always keeps the
   const selected = selectRecentReadingMessages(history);
   assert.equal(selected.at(-1)?.content, "latest");
   assert.ok(selected.length < history.length);
+});
+
+function switchedImageHistory(question = "翻译这一页") {
+  const previous = snapshot("old-stop-chart.png");
+  previous.index = { name: "Stops", path: "Encyclopedia / Stops", navigatorAttributes: [] };
+  previous.ocr.text = "OLD_OCR: Wait for Strong Signal Bar, Use Appropriate Protective Stop";
+  const current = snapshot("new-price-time.png");
+  current.index = { name: "Charts", path: "Flash Cards / Charts: Price vs. Time", navigatorAttributes: [] };
+  current.ocr.text = "CURRENT_OCR: Charts: Price vs. Time";
+  const history: ReadingHistoryMessage[] = [
+    { role: "USER", content: "解释上一页", chartImageId: "old", imageContextJson: JSON.stringify(previous) },
+    { role: "ASSISTANT", content: "上一页的回答", chartImageId: null, imageContextJson: null },
+    { role: "USER", content: question, chartImageId: "current", imageContextJson: JSON.stringify(current) },
+  ];
+  return { history, imageDataUrls: new Map([["old", "data:image/jpeg;base64,OLD"], ["current", "data:image/jpeg;base64,CURRENT"]]) };
+}
+
+test("switching topics sends only the current image and fresh OCR while preserving chat history", () => {
+  const { history, imageDataUrls } = switchedImageHistory();
+  assert.deepEqual([...selectReadingImageIdsForQuestion(history, "翻译这一页")], ["current"]);
+  const messages = buildReadingCompanionMessages({ prompt: "Read charts", history, imageDataUrls });
+  assert.equal(messages[2].content, "上一页的回答");
+  assert.match(String(messages[1].content), /old-stop-chart/);
+  assert.match(String(messages[1].content), /历史参考图/);
+  assert.doesNotMatch(String(messages[1].content), /OLD_OCR/);
+  const latest = messages.at(-1)!.content;
+  assert.ok(Array.isArray(latest));
+  assert.equal(latest.filter((part) => part.type === "image_url").length, 1);
+  assert.deepEqual(latest.find((part) => part.type === "image_url"), { type: "image_url", image_url: { url: "data:image/jpeg;base64,CURRENT" } });
+  assert.match(JSON.stringify(latest), /当前参考图/);
+  assert.match(JSON.stringify(latest), /CURRENT_OCR/);
+  assert.doesNotMatch(JSON.stringify(messages), /base64,OLD/);
+});
+
+test("explicit image comparisons retain historical images and label their separate references", () => {
+  for (const question of ["比较当前图片和上一张图", "和刚才的有什么区别？", "回看历史图", "Compare this chart with the previous image", "Compare these two slides", "Revisit the old chart"]) {
+    const { history, imageDataUrls } = switchedImageHistory(question);
+    assert.deepEqual([...selectReadingImageIdsForQuestion(history, question)], ["current", "old"], question);
+    const messages = buildReadingCompanionMessages({ prompt: "Read charts", history, imageDataUrls });
+    assert.match(JSON.stringify(messages[1].content), /历史参考图/);
+    assert.match(JSON.stringify(messages[1].content), /OLD_OCR/);
+    assert.match(JSON.stringify(messages[1].content), /base64,OLD/);
+    assert.match(JSON.stringify(messages.at(-1)!.content), /当前参考图/);
+    assert.match(JSON.stringify(messages.at(-1)!.content), /base64,CURRENT/);
+  }
+});
+
+test("generic topic comparisons and explicit current-only instructions do not attach previous images", () => {
+  for (const question of ["牛趋势和熊趋势有什么区别？", "只看当前图片，不要使用之前的图", "Only translate the current image; ignore previous images", "解释这一页"]) {
+    const { history } = switchedImageHistory(question);
+    assert.deepEqual([...selectReadingImageIdsForQuestion(history, question)], ["current"], question);
+  }
+});
+
+test("revisiting the same image uses its latest snapshot and attaches its pixels only once", () => {
+  const { history, imageDataUrls } = switchedImageHistory();
+  history[0].chartImageId = "current";
+  const messages = buildReadingCompanionMessages({ prompt: "Read charts", history, imageDataUrls });
+  assert.doesNotMatch(JSON.stringify(messages[1].content), /OLD_OCR/);
+  assert.match(JSON.stringify(messages.at(-1)!.content), /CURRENT_OCR/);
+  assert.equal(JSON.stringify(messages).split('"type":"image_url"').length - 1, 1);
+});
+
+test("historical comparisons keep the current image within the four-image limit", () => {
+  const history: ReadingHistoryMessage[] = Array.from({ length: 8 }, (_, index) => ({
+    role: "USER", content: index === 7 ? "比较这几张图片" : "解释图片", chartImageId: `image-${index}`, imageContextJson: null,
+  }));
+  assert.deepEqual([...selectReadingImageIdsForQuestion(history, history.at(-1)!.content)], ["image-7", "image-6", "image-5", "image-4"]);
 });

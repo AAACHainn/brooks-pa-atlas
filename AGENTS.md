@@ -103,7 +103,8 @@ docker compose down
 - `npm run test:search` 运行图片关键词搜索的字面量匹配测试，确保 `%`、`_` 和反斜杠不会被当作通配符。
 - `npm run test:thumbnails` 运行缩略图路径、缓存、尺寸、并发合并和图片查询键测试。
 - `npm run test:ocr` 运行索引子树批量 OCR 的文本判断、终态和进度计算测试。
-- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、多模态 Chat Completions，以及伴读快速/深度模式、预算装载、接口保存和取消测试；也覆盖窗口按帧合并、流式草稿合并/清理和输入法回车保护；接口测试使用隔离数据库、图库和模拟端点。
+- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、多模态 Chat Completions，以及伴读快速/深度模式、预算装载、接口保存和取消测试；也覆盖窗口按帧合并、流式草稿合并/清理和输入法回车保护；接口测试使用隔离数据库、图库和模拟端点。此命令还包含 `test:ai-tools`。
+- `npm run test:ai-tools` 单独运行结构化模型响应、工具流式参数组装、只读注册/授权、多轮执行、取消/预算/超时、能力探测及真实系统工具的隔离测试；使用 `react-server` 条件加载 `server-only` 模块，不代表向界面开放工具。
 - `npm run test:knowledge` 运行字幕格式/时间码解析、AI cue 覆盖、顺序、长度比例、窗口、片段时间范围、深度候选召回与章节分页读取测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
@@ -189,6 +190,10 @@ docker compose down
 - `src/lib/ocr-batch-jobs.ts`：索引子树批量 OCR 的任务快照、确认校验、恢复和进度统计。
 - `src/lib/ai-config.ts`：版本化 AI 配置 schema、默认技能、密钥合并/脱敏和端点 URL 解析。
 - `src/lib/ai-client.ts`：OpenAI-compatible 模型发现、非流式与 SSE 流式 Chat Completions 客户端。
+- `src/lib/ai-model-types.ts`：与供应商协议分离的结构化消息、调用、单轮结果与流式事件类型；`ai-client.ts` 负责协议序列化和解析，原文本接口保持兼容。
+- `src/lib/ai-tool-registry.ts` / `src/lib/ai-tool-runtime.ts`：仅服务端的 Zod 工具注册、白名单/资源范围、串行多轮执行、预算/取消/超时及结构化记录；不提供公开执行 API。
+- `src/lib/ai-system-tools.ts` / `src/lib/ai-tool-probe.ts`：正式内部图片资料/索引只读工具及仅显式调用的无副作用能力探测，暂未接入现有 AI 业务或界面。
+- `docs/AI_TOOL_ARCHITECTURE.md`：工具基础设施接口、注册、资源授权、运行限制、记录扩展及兼容约束。
 - `src/lib/ai-ocr-refinement.ts`：精校图片压缩、多模态消息构造和 OCR 精校调用。
 - `src/lib/ai-reading-companion.ts` / `src/lib/ai-reading-context.ts`：阅读伴侣上下文窗口、图片资料快照、多模态消息和服务端图片上下文查询。
 - `src/lib/ai-deep-reading.ts`：伴读深度流程编排、保守 Token 估算、调用预算、范围定位、覆盖约束、排序、分批阅读笔记和引用校验。
@@ -506,6 +511,13 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 ### AI 与资料知识库规则
 
+- AI 工具基础设施通过服务端 `runAiToolTask` 显式启用，固定已有设置的启用端点、默认模型或既有技能的模型覆盖及提示词。当前聊天、快速/深度伴读、OCR 精校、字幕整理和知识检索不启用工具，界面、HTTP 接口及原流式事件保持不变。
+- 工具模块使用 `server-only` 边界，不创建 Server Action、通用 HTTP 执行接口或 MCP。注册工具使用同一 strict Zod schema 导出 JSON Schema 并校验参数；运行要求显式工具白名单和全库/精确图片与索引 ID 集合授权，首版只允许 read 工具，模型不能扩大范围。当前图片/索引 ID 在提交时固定，并提供给模型。
+- 工具响应允许正文为空；SSE 按调用 index 组装交错参数，完整结束后才执行。截断、取消、无效/重复 ID 不执行半成品。完整 assistant 调用消息与供应商思考字段先进入上下文，工具串行执行，通过匹配的 `tool_call_id` 回传结果；结果是不可信参考数据。
+- 新执行器默认最多 6 次模型请求、12 次工具调用；模型/工具/运行超时为 120 秒/30 秒/5 分钟。单次输入 16000 Token（保留 10% 余量）、累计输入 100000 Token、输出 4096 Token，估算包括工具定义、参数与结果；单工具结果最多 32KiB，超限明确报错，不静默裁剪。未知工具、无效参数、越权和读取失败可回传给模型修正；请求错误、取消、超时及预算耗尽返回失败终态和空最终答案。
+- 首批正式只读工具 `get_image_context` 复用现有服务读取最新资料，不返回路径或图片字节；`list_index_nodes` 对授权索引做字面量搜索和分页，默认 20 项、最多 50 项，不隐式授权后代。
+- 执行记录仅在运行内返回，可通过 `AiToolTraceSink` 接入未来存储，不写会话或数据库。记录只包含运行/调用/资源 ID、端点/模型标识、状态、耗时、Token 和结果数量/大小摘要；不保存密钥、原始响应、参数正文、完整资料或思考正文。sink 失败记录警告，取消后的最终记录仍在返回结果中，可由调用方补存。
+- `probeAiToolSupport` 通过临时无副作用工具验证调用、回传和最终回答，返回 supported/unsupported/unconfirmed/failed；可能产生费用，必须显式触发，不在启动或既有连接测试时运行。不支持工具的模型仍可使用原有 AI 功能，不把普通文本或 JSON 当作工具指令执行。
 - AI 配置保存在 `AppSetting` 的 `ai.config.v4`，读取时兼容迁移 `ai.config.v1` / `ai.config.v2` / `ai.config.v3`；配置是当前实例本地设置，不进入备份 zip，恢复也不覆盖。
 - 大模型与 Embedding 使用两个独立页签和两组端点，各自保存供应商、Base URL、API Key、模型列表与唯一启用端点。大模型 Base URL 追加 `/chat/completions`、`/models`；Embedding Base URL 追加 `/embeddings`、`/models`；高级模式可分别指定完整 URL，只接受 HTTP/HTTPS。
 - API Key 可为空；非空时只在服务端以 Bearer header 发送。设置 GET 仅返回 `hasApiKey`，空白保存保留旧密钥，只有显式清除才删除；日志和外部错误不能包含密钥或原始响应正文。

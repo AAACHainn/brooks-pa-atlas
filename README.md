@@ -181,7 +181,8 @@ npm run build
 说明：
 
 - `npm run lint` 运行 ESLint。
-- `npm run test:ai` 运行 AI 配置、密钥脱敏、兼容接口、流式响应、阅读伴侣上下文和多模态消息测试。
+- `npm run test:ai` 运行 AI 配置、密钥脱敏、兼容接口、流式响应、阅读伴侣上下文和多模态消息测试，并运行工具调用专项测试。
+- `npm run test:ai-tools` 单独验证工具流式参数、多轮执行、资源授权、超时/取消/预算及真实系统只读工具；使用模拟模型与隔离数据库，不产生实际模型费用。
 - `npm run test:knowledge` 运行 SRT/VTT/ASS/TXT 解析、时间码、AI 片段覆盖/顺序/长度比例和切片测试。
 - `npm run build` 运行生产构建和类型检查。
 
@@ -289,6 +290,8 @@ AI 端点、技能提示词、API Key 和阅读伴侣会话属于当前实例的
 编辑后点击“保存”生效。
 
 #### AI 阅读伴侣与 OCR 精校
+
+项目已提供供后续功能复用的服务端 AI 工具调用基础设施，包括图片资料和索引查询两个正式只读工具。当前界面没有入口，现有 AI 功能不会自动调用；不增加公开执行接口、不修改数据库。开发接入方式见 [AI 工具架构说明](docs/AI_TOOL_ARCHITECTURE.md)。
 
 管理模式顶部的“设置”把“大模型”和“Embedding”分成两个独立页签。两类端点分别配置供应商、API Base URL、API Key、模型列表和启用项，因此可以让 DeepSeek 等大模型供应商与 OpenAI-compatible Embedding 供应商完全独立。高级模式可分别填写完整的 Chat Completions、Embeddings 与 Models URL。API Key 为空时不会发送 `Authorization` 请求头，适合不要求鉴权的本地模型服务。旧 `ai.config.v1` / `ai.config.v2` / `ai.config.v3` 会在读取时自动迁移到 v4，不丢失已有端点和密钥。
 

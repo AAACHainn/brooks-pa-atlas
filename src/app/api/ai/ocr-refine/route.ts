@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { AiServiceError } from "@/lib/ai-client";
-import { OCR_REFINEMENT_SKILL_KEY, resolveAiEndpointUrls } from "@/lib/ai-config";
+import { OCR_REFINEMENT_SKILL_KEY, resolveAiEndpointUrls, resolveAiModelSelection } from "@/lib/ai-config";
 import { refineOcrTextWithAi } from "@/lib/ai-ocr-refinement";
 import { readStoredAiConfig } from "@/lib/ai-settings";
 import { prisma } from "@/lib/db";
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
   const config = await readStoredAiConfig();
   const endpoint = config.endpoints.find((item) => item.id === config.activeEndpointId);
   const skill = config.skills[OCR_REFINEMENT_SKILL_KEY];
-  const model = skill.modelOverride || endpoint?.defaultModel || "";
+  const { model } = resolveAiModelSelection(config, skill.modelOverride);
   try {
     if (!endpoint || !model) {
       return NextResponse.json(

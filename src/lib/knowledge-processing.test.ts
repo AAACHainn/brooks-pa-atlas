@@ -274,6 +274,23 @@ test("an entirely omitted 127–130 group triggers explicit feedback and the con
   });
 });
 
+test("a retained retry model from another endpoint uses the current primary override", async () => {
+  const config = subtitleTestConfig();
+  config.endpoints[0].models.push("active-special");
+  config.endpoints.push({ ...config.endpoints[0], id: "old", name: "Old endpoint", models: ["old-retry"], defaultModel: "old-retry" });
+  config.skills.subtitleKnowledge.modelOverride = "active-special";
+  config.skills.subtitleKnowledge.retryModelOverride = "old-retry";
+  await withSubtitleResponses([
+    { content: "invalid JSON" },
+    { content: rangeOutput([[122, 180]]) },
+  ], async (requests) => {
+    const result = await processSubtitleWindow(config, windowCues());
+    assert.equal(result.attempts, 2);
+    assert.deepEqual(requests.map((request) => request.model), ["active-special", "active-special"]);
+    assert.equal(config.skills.subtitleKnowledge.retryModelOverride, "old-retry");
+  });
+});
+
 test("ordinary omissions retain the existing repair limit and report every missing interval", async () => {
   await withSubtitleResponses([{ content: rangeOutput([[122, 125], [130, 150], [155, 180]]) }], async (requests) => {
     await assert.rejects(processSubtitleWindow(subtitleTestConfig(), windowCues()), /omitted 8 cues, exceeding the repair limit 3/);

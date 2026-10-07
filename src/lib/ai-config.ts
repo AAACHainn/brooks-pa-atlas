@@ -128,6 +128,22 @@ export function defaultStoredAiConfig(): StoredAiConfig {
     skills: { [OCR_REFINEMENT_SKILL_KEY]: defaultOcrSkill(), [READING_COMPANION_SKILL_KEY]: defaultReadingSkill(), [SUBTITLE_KNOWLEDGE_SKILL_KEY]: defaultSubtitleSkill(), [GLOBAL_ROBOT_SKILL_KEY]: defaultRobotSkill() } };
 }
 
+type ModelSelectionConfig = {
+  activeEndpointId: string | null;
+  endpoints: readonly Pick<StoredAiEndpoint, "id" | "models" | "defaultModel">[];
+};
+
+/** Ignore a retained override known only to another endpoint, without deleting it. */
+export function resolveAiModelSelection(config: ModelSelectionConfig, modelOverride = "") {
+  const active = config.endpoints.find((endpoint) => endpoint.id === config.activeEndpointId);
+  if (!active) return { model: "", ignoredOverride: false };
+  const override = modelOverride.trim();
+  const hasModel = (endpoint: ModelSelectionConfig["endpoints"][number]) => endpoint.defaultModel === override || endpoint.models.includes(override);
+  const ignoredOverride = Boolean(override && active.models.length && !hasModel(active)
+    && config.endpoints.some((endpoint) => endpoint.id !== active.id && hasModel(endpoint)));
+  return { model: override && !ignoredOverride ? override : active.defaultModel, ignoredOverride };
+}
+
 function normalizeModelList(models: string[], selected: string) {
   return [...new Set([...models, selected].map((model) => model.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
@@ -230,7 +246,7 @@ export function sanitizeAiConfig(config: StoredAiConfig): AiConfigDto {
   const active = config.endpoints.find((endpoint) => endpoint.id === config.activeEndpointId);
   const activeEmbedding = config.embeddingEndpoints.find((endpoint) => endpoint.id === config.activeEmbeddingEndpointId);
   const skillIsReady = (skill: AiSkillConfig) => {
-    if (!active || !(skill.modelOverride || active.defaultModel)) return false;
+    if (!active || !resolveAiModelSelection(config, skill.modelOverride).model) return false;
     try { return Boolean(resolveAiEndpointUrls(active).chatCompletionsUrl); } catch { return false; }
   };
   const skillReady = { [OCR_REFINEMENT_SKILL_KEY]: skillIsReady(config.skills[OCR_REFINEMENT_SKILL_KEY]),

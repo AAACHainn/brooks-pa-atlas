@@ -8,7 +8,7 @@ import { createBrowserId } from "@/lib/browser-id";
 import {
   AI_CONFIG_VERSION, type AiConfigDto, type AiEndpointDto, type AiProvider,
   type EmbeddingEndpointDto, OCR_REFINEMENT_SKILL_KEY, READING_COMPANION_SKILL_KEY,
-  SUBTITLE_KNOWLEDGE_SKILL_KEY, GLOBAL_ROBOT_SKILL_KEY, defaultStoredAiConfig, readingCompanionSkillSchema, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls,
+  SUBTITLE_KNOWLEDGE_SKILL_KEY, GLOBAL_ROBOT_SKILL_KEY, defaultStoredAiConfig, readingCompanionSkillSchema, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls, resolveAiModelSelection,
 } from "@/lib/ai-config";
 
 type Locale = "zh" | "en";
@@ -47,6 +47,8 @@ const labels = {
     subtitleSkillTitle: "字幕知识整理", subtitleSkillDescription: "AI 深度整理只判断分段、主题和关键词，不再重写字幕正文。建议选择便宜的非推理模型。",
     subtitlePrivacy: "只有选择“AI 深度整理”时才调用大模型；快速导入只调用 Embedding。PPT 图片不会发送给 Embedding 服务。",
     prompt: "提示词", modelOverride: "模型覆盖", inheritModel: "继承启用的大模型端点",
+    effectiveModel: "实际调用模型", foreignModel: "此覆盖模型仅在其他端点的模型列表中出现，本次将继承当前启用端点的默认模型。请重新选择，或将该模型添加到当前端点后使用。",
+    foreignRetryModel: "此重试模型仅在其他端点的模型列表中出现，本次重试将沿用首次模型。",
     retryModel: "失败重试模型（可选）", retryModelHint: "建议选择更便宜的非推理模型；留空则继续使用首次模型。",
     disableReasoning: "字幕导入固定关闭 thinking / reasoning", maxOutputTokens: "单窗口输出 Token 配置上限",
     maxOutputTokensHint: "实际请求还会取“输入 Token × 2”和 3000 的更小值；触顶或超限会直接失败。",
@@ -82,6 +84,8 @@ const labels = {
     subtitleSkillTitle: "Subtitle knowledge processing", subtitleSkillDescription: "AI deep processing only chooses ranges, topics, and keywords; it no longer rewrites subtitle text. Prefer a low-cost non-reasoning model.",
     subtitlePrivacy: "The language model is called only in AI deep mode. Quick import calls only the Embedding endpoint.",
     prompt: "Prompt", modelOverride: "Model override", inheritModel: "Inherit active language-model endpoint",
+    effectiveModel: "Effective model", foreignModel: "This override is listed only under another endpoint. The current endpoint's default model will be used. Select another model or add this model to the current endpoint to use it.",
+    foreignRetryModel: "This retry model is listed only under another endpoint. Retries will use the primary model.",
     retryModel: "Retry model (optional)", retryModelHint: "Prefer a cheaper non-reasoning model. Empty uses the primary model again.",
     disableReasoning: "Thinking / reasoning is always disabled for subtitle imports", maxOutputTokens: "Configured output-token limit per window",
     maxOutputTokensHint: "The request also uses the lower of input tokens × 2 and 3000. Truncation or overrun fails immediately.",
@@ -219,11 +223,14 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
         : null;
       const readingSkill = definition.key === READING_COMPANION_SKILL_KEY ? config.skills.readingCompanion : null;
       const modelOptions = activeEndpoint?.models ?? [];
+      const modelSelection = resolveAiModelSelection(config, skill.modelOverride);
       return <section key={definition.key} className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold">{definition.title}</h3>
         <p className="mt-1 text-xs text-zinc-500">{definition.description}</p>
         {definition.key === GLOBAL_ROBOT_SKILL_KEY ? <label className="mt-4 flex items-center gap-2 text-sm text-zinc-700"><input type="checkbox" checked={config.skills.globalRobot.enabled} onChange={(event) => setConfig((current) => current ? { ...current, skills: { ...current.skills, globalRobot: { ...current.skills.globalRobot, enabled: event.target.checked } } } : current)} className="h-4 w-4 accent-cyan-700" />{t.robotEnabled}</label> : null}
         <label className="mt-5 block text-xs font-medium text-zinc-600">{t.modelOverride}<select value={skill.modelOverride} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, [definition.key]: { ...skill, modelOverride: e.target.value } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"><option value="">{t.inheritModel}</option>{skill.modelOverride && !modelOptions.includes(skill.modelOverride) ? <option>{skill.modelOverride}</option> : null}{modelOptions.map((model) => <option key={model}>{model}</option>)}</select></label>
+        <p className="mt-2 text-[11px] text-zinc-500">{t.effectiveModel}：{activeEndpoint?.name ?? "—"} · {modelSelection.model || t.noModel}</p>
+        {modelSelection.ignoredOverride ? <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">{t.foreignModel}</p> : null}
         {readingSkill ? <div className="mt-4 rounded-lg border border-cyan-200 bg-cyan-50/40 p-4">
           <h4 className="text-sm font-semibold text-cyan-900">{t.deepBudget}</h4>
           <div className="mt-3 grid gap-3 sm:grid-cols-3">
@@ -243,6 +250,7 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
           <p className="mt-3 text-[11px] leading-5 text-zinc-500">{t.deepBudgetHint}</p>
         </div> : null}
         {subtitleSkill ? <div className="mt-4 grid gap-4 rounded-lg border border-violet-200 bg-violet-50/40 p-4 sm:grid-cols-2">
+          {resolveAiModelSelection(config, subtitleSkill.retryModelOverride).ignoredOverride ? <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 sm:col-span-2">{t.foreignRetryModel}</p> : null}
           <label className="text-xs font-medium text-zinc-600">{t.retryModel}<select value={subtitleSkill.retryModelOverride} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, retryModelOverride: e.target.value } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"><option value="">{t.inheritModel}</option>{subtitleSkill.retryModelOverride && !modelOptions.includes(subtitleSkill.retryModelOverride) ? <option>{subtitleSkill.retryModelOverride}</option> : null}{modelOptions.map((model) => <option key={model}>{model}</option>)}</select><span className="mt-1 block text-[11px] font-normal text-zinc-500">{t.retryModelHint}</span></label>
           <label className="text-xs font-medium text-zinc-600">{t.maxOutputTokens}<input type="number" min={512} max={3000} step={128} value={subtitleSkill.maxOutputTokens} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, subtitleKnowledge: { ...current.skills.subtitleKnowledge, maxOutputTokens: Number(e.target.value) } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100" /><span className="mt-1 block text-[11px] font-normal leading-4 text-zinc-500">{t.maxOutputTokensHint}</span></label>
           <p className="flex items-center gap-2 text-xs font-medium text-emerald-800 sm:col-span-2"><Check className="h-4 w-4" />{t.disableReasoning}</p>

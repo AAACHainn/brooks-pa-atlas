@@ -8,7 +8,7 @@ import {
   selectRecentReadingMessages, serializeReadingMessage,
 } from "@/lib/ai-reading-companion";
 import { loadReadingImageContext, prepareReadingImageDataUrls } from "@/lib/ai-reading-context";
-import { READING_COMPANION_SKILL_KEY, resolveAiEndpointUrls } from "@/lib/ai-config";
+import { READING_COMPANION_SKILL_KEY, resolveAiEndpointUrls, resolveAiModelSelection } from "@/lib/ai-config";
 import { readStoredAiConfig } from "@/lib/ai-settings";
 import { acquireHeavyTask, releaseHeavyTask } from "@/lib/background-task-coordinator";
 import { prisma } from "@/lib/db";
@@ -47,7 +47,7 @@ export async function POST(
   if (!imageContext) return NextResponse.json({ error: "Image not found." }, { status: 404 });
   const endpoint = config.endpoints.find((item) => item.id === config.activeEndpointId);
   const skill = config.skills[READING_COMPANION_SKILL_KEY];
-  const model = skill.modelOverride || endpoint?.defaultModel || "";
+  const { model } = resolveAiModelSelection(config, skill.modelOverride);
   if (!endpoint || !model) return NextResponse.json({ error: "AI configuration is incomplete. Select an active endpoint and model." }, { status: 409 });
   try { resolveAiEndpointUrls(endpoint); }
   catch { return NextResponse.json({ error: "AI endpoint URL is invalid." }, { status: 409 }); }

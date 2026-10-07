@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   AI_CONFIG_VERSION, DEFAULT_OCR_REFINEMENT_PROMPT, DEFAULT_READING_COMPANION_PROMPT,
   DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, defaultStoredAiConfig, mergeAiConfigSecrets,
-  parseStoredAiConfig, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls, sanitizeAiConfig,
+  parseStoredAiConfig, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls, resolveAiModelSelection, sanitizeAiConfig,
   type AiConfigInput, type StoredAiEndpoint, type StoredEmbeddingEndpoint, aiConfigInputSchema, readingCompanionSkillSchema,
 } from "@/lib/ai-config";
 
@@ -31,6 +31,42 @@ test("missing or invalid persisted AI config falls back to v4 defaults", () => {
   assert.deepEqual(parseStoredAiConfig(null), defaultStoredAiConfig());
   assert.deepEqual(parseStoredAiConfig("not-json"), defaultStoredAiConfig());
   assert.equal(parseStoredAiConfig("{}").version, 4);
+});
+
+test("switching endpoints ignores a known foreign override without deleting the saved preference", () => {
+  const config = defaultStoredAiConfig();
+  config.endpoints = [chatEndpoint({ models: ["deepseek-flash"], defaultModel: "deepseek-flash" }),
+    chatEndpoint({ id: "mimo", name: "MiMo", provider: "custom", baseUrl: "https://api.xiaomimimo.com/v1", models: ["mimo-v2.6-flash", "mimo-v2.6-pro"], defaultModel: "mimo-v2.6-flash" })];
+  config.activeEndpointId = "mimo";
+  config.skills.ocrRefinement.modelOverride = "deepseek-flash";
+  assert.deepEqual(resolveAiModelSelection(config, config.skills.ocrRefinement.modelOverride), { model: "mimo-v2.6-flash", ignoredOverride: true });
+  assert.equal(sanitizeAiConfig(config).skillReady.ocrRefinement, true);
+  assert.equal(config.skills.ocrRefinement.modelOverride, "deepseek-flash");
+  config.activeEndpointId = "chat-1";
+  assert.deepEqual(resolveAiModelSelection(config, config.skills.ocrRefinement.modelOverride), { model: "deepseek-flash", ignoredOverride: false });
+});
+
+test("current endpoint overrides, shared model IDs and unknown manual models still take precedence", () => {
+  const config = defaultStoredAiConfig();
+  config.endpoints = [chatEndpoint(), chatEndpoint({ id: "proxy", models: ["deepseek-chat", "vision"], defaultModel: "vision" })];
+  config.activeEndpointId = "proxy";
+  assert.deepEqual(resolveAiModelSelection(config, "deepseek-chat"), { model: "deepseek-chat", ignoredOverride: false });
+  assert.deepEqual(resolveAiModelSelection(config, "vision"), { model: "vision", ignoredOverride: false });
+  assert.deepEqual(resolveAiModelSelection(config, "manual-model"), { model: "manual-model", ignoredOverride: false });
+  assert.deepEqual(resolveAiModelSelection(config), { model: "vision", ignoredOverride: false });
+  config.endpoints[1].models = [];
+  assert.deepEqual(resolveAiModelSelection(config, "deepseek-chat"), { model: "deepseek-chat", ignoredOverride: false });
+});
+
+test("a foreign override cannot make a missing active default model ready", () => {
+  const config = defaultStoredAiConfig();
+  config.endpoints = [chatEndpoint(), chatEndpoint({ id: "other", models: ["other-model"], defaultModel: "" })];
+  config.activeEndpointId = "other";
+  config.skills.ocrRefinement.modelOverride = "deepseek-chat";
+  assert.deepEqual(resolveAiModelSelection(config, "deepseek-chat"), { model: "", ignoredOverride: true });
+  assert.equal(sanitizeAiConfig(config).skillReady.ocrRefinement, false);
+  config.activeEndpointId = null;
+  assert.deepEqual(resolveAiModelSelection(config, "manual-model"), { model: "", ignoredOverride: false });
 });
 
 test("robot defaults extend v4 while old saves preserve its custom configuration", () => {

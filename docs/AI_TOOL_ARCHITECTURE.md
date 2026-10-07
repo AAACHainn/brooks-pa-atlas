@@ -41,6 +41,8 @@ const result = await runAiToolTask({
 
 默认读取已有设置的启用端点和默认模型。可指定 `skill: "readingCompanion" | "ocrRefinement" | "subtitleKnowledge"`，沿用其提示词和模型覆盖；字幕技能仍关闭推理。独立机器人调用此入口；既有伴读/OCR/知识业务不调用此入口，深度模式原预算、租约和流程不变。内部可信调用方/测试可以传入已保存的 `config` 快照；不允许浏览器传入密钥或执行函数。
 
+机器人执行器与 OCR、伴读、字幕服务共用 `resolveAiModelSelection`：覆盖模型若只属于其他端点已知模型列表、当前启用端点已有模型列表且未列出它，则本次使用当前端点默认模型。保留保存的覆盖值，切回原端点可继续使用；当前端点明确列出的模型及未知手动模型保持覆盖优先。设置和 ready 状态使用同一选择规则。
+
 `context` 必须显式提供 nullable 当前图片/索引 ID 和范围。`selection` 使用精确 ID，不自动包含后代；全库读取须明确使用 `{ kind: "library" }`。前端模式不是授权凭证，接入方必须在服务端确定范围。选择、消息、工具描述和配置在开始时固定，之后切图不改变本次任务的对象。图片资料在实际读取时查询最新保存值，不读取旧聊天快照。
 
 返回 `runId/status/answer/error`、模型/工具/成功工具数量、估算与实际 Token、结构化 `records` 和 `warnings`。只有 completed 包含最终答案；cancelled、timed_out、limit_exceeded、failed 的 answer 为 null。上游不报告用量时保留 null，不能当作零费用。

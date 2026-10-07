@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/db";
 import type { AiRobotMessage } from "@/generated/prisma/client";
 import { readStoredAiConfig } from "@/lib/ai-settings";
-import { GLOBAL_ROBOT_SKILL_KEY, resolveAiEndpointUrls } from "@/lib/ai-config";
+import { GLOBAL_ROBOT_SKILL_KEY, resolveAiEndpointUrls, resolveAiModelSelection } from "@/lib/ai-config";
 import { acquireRobotRun, isRobotRunActive, releaseRobotRun, type RobotRunLease } from "@/lib/ai-robot-runs";
 import { robotSelectionSchema, type RobotRequest, type RobotSelection, type RobotMessage } from "@/lib/ai-robot-types";
 import type { AiModelMessage } from "@/lib/ai-model-types";
@@ -48,7 +48,7 @@ export async function startRobotMessage(conversationId: string, request: RobotRe
     signal.throwIfAborted();
     if (!config.skills.globalRobot.enabled) throw new RobotRequestError("disabled", 403);
     const endpoint = config.endpoints.find((item) => item.id === config.activeEndpointId);
-    if (!endpoint || !(config.skills.globalRobot.modelOverride || endpoint.defaultModel)) throw new RobotRequestError("configuration", 409);
+    if (!endpoint || !resolveAiModelSelection(config, config.skills.globalRobot.modelOverride).model) throw new RobotRequestError("configuration", 409);
     try { resolveAiEndpointUrls(endpoint); } catch { throw new RobotRequestError("configuration", 409); }
     const [conversation, image, index] = await Promise.all([
       prisma.aiRobotConversation.findUnique({ where: { id: conversationId } }),

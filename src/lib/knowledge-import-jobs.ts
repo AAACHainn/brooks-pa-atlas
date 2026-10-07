@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { readStoredAiConfig } from "@/lib/ai-settings";
+import { resolveAiModelSelection } from "@/lib/ai-config";
 import { acquireHeavyTaskOrThrow, releaseHeavyTask } from "@/lib/background-task-coordinator";
 import { knowledgeDb, getKnowledgeSourceRoot } from "@/lib/knowledge-db";
 import {
@@ -134,7 +135,7 @@ async function processingIdentity(mode: KnowledgeImportProcessingMode): Promise<
   const config = await readStoredAiConfig();
   const endpoint = config.endpoints.find((item) => item.id === config.activeEndpointId);
   const skill = config.skills.subtitleKnowledge;
-  const model = skill.modelOverride || endpoint?.defaultModel || "";
+  const { model } = resolveAiModelSelection(config, skill.modelOverride);
   if (!endpoint || !model) throw new Error("AI 深度整理尚未配置可用的聊天模型，请改用快速导入或先完成大模型配置。");
   return { mode, ruleVersion: KNOWLEDGE_PROCESSING_RULE_VERSION, endpointId: endpoint.id, model, promptHash: subtitlePromptHash(skill.prompt, skill) };
 }

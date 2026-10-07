@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import {
   SUBTITLE_KNOWLEDGE_SKILL_KEY,
+  resolveAiModelSelection,
   type StoredAiConfig,
 } from "@/lib/ai-config";
 import { createAiChatCompletion, type AiChatUsage } from "@/lib/ai-client";
@@ -370,7 +371,7 @@ export async function processSubtitleWindow(
 ) {
   const endpoint = config.endpoints.find((item) => item.id === config.activeEndpointId);
   const skill = config.skills[SUBTITLE_KNOWLEDGE_SKILL_KEY];
-  const primaryModel = skill.modelOverride || endpoint?.defaultModel || "";
+  const { model: primaryModel } = resolveAiModelSelection(config, skill.modelOverride);
   if (!endpoint || !primaryModel) throw new Error("字幕知识整理技能尚未配置可用的聊天模型。");
   const inputGroups = mergeShortCueInputs(cues);
   const input = JSON.stringify({
@@ -386,7 +387,8 @@ export async function processSubtitleWindow(
   let retryFeedback: string | null = null;
   const maxAttempts = 2;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const model = attempt === 1 && skill.retryModelOverride ? skill.retryModelOverride : primaryModel;
+    const retrySelection = resolveAiModelSelection(config, skill.retryModelOverride);
+    const model = attempt === 1 && skill.retryModelOverride && !retrySelection.ignoredOverride ? retrySelection.model : primaryModel;
     const attemptPrompt = retryFeedback ? `${systemPrompt}\n\n校验反馈：${retryFeedback}` : systemPrompt;
     const estimatedInputTokens = estimateTokens(`${attemptPrompt}\n${input}`);
     const maxOutputTokens = calculateSubtitleOutputTokenBudget(estimatedInputTokens, skill.maxOutputTokens);

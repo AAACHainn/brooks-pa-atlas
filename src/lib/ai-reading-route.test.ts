@@ -15,6 +15,7 @@ let prisma: PrismaClient;
 let messagesPost: typeof import("@/app/api/ai/reading-companion/conversations/[id]/messages/route").POST;
 let settingsPut: typeof import("@/app/api/settings/ai/route").PUT;
 let settingsGet: typeof import("@/app/api/settings/ai/route").GET;
+let ocrRefinePost: typeof import("@/app/api/ai/ocr-refine/route").POST;
 let directory: string;
 let knowledge: InstanceType<typeof Database>;
 const originalFetch = globalThis.fetch;
@@ -66,6 +67,7 @@ before(async () => {
     }
   }
   messagesPost = (await import("@/app/api/ai/reading-companion/conversations/[id]/messages/route")).POST;
+  ocrRefinePost = (await import("@/app/api/ai/ocr-refine/route")).POST;
   const settings = await import("@/app/api/settings/ai/route");
   settingsPut = settings.PUT; settingsGet = settings.GET;
   await saveConfig();
@@ -94,6 +96,39 @@ function request(mode?: "quick" | "deep", signal?: AbortSignal, content = "è§£é‡
 }
 function reply(text: string) { return Response.json({ choices: [{ message: { content: text } }] }); }
 function events(text: string) { return text.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)); }
+
+test("OCR refinement uses the active MiMo model when an old DeepSeek override remains", async () => {
+  const switched = defaultStoredAiConfig();
+  switched.endpoints = [
+    { ...config.endpoints[0], id: "deepseek", name: "DeepSeek", defaultModel: "deepseek-flash", models: ["deepseek-flash"] },
+    { ...config.endpoints[0], id: "mimo", name: "MiMo", provider: "custom", baseUrl: "https://api.xiaomimimo.com/v1", defaultModel: "mimo-v2.6-flash", models: ["mimo-v2.6-flash", "mimo-v2.6-pro"] },
+  ];
+  switched.activeEndpointId = "mimo";
+  switched.skills.ocrRefinement.modelOverride = "deepseek-flash";
+  const previousFetch = globalThis.fetch;
+  const before = await prisma.chartImage.findUniqueOrThrow({ where: { id: "image" } });
+  let calls = 0;
+  try {
+    const saved = await settingsPut(new Request("http://atlas.test/settings", { method: "PUT", body: JSON.stringify(switched) }));
+    assert.equal(saved.status, 200);
+    globalThis.fetch = async (url, init) => {
+      calls++;
+      assert.equal(String(url), "https://api.xiaomimimo.com/v1/chat/completions");
+      const body = JSON.parse(String(init?.body));
+      assert.equal(body.model, "mimo-v2.6-flash");
+      assert.ok(body.messages[1].content.some((part: { type: string }) => part.type === "image_url"));
+      assert.match(body.messages[1].content[0].text, /OCR draft/);
+      return reply("Corrected OCR");
+    };
+    const response = await ocrRefinePost(new Request("http://atlas.test/ocr-refine", { method: "POST", body: JSON.stringify({ imageId: "image", ocrText: "OCR draft" }) }));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { refinedText: "Corrected OCR" });
+    assert.equal(calls, 1);
+    assert.equal((await prisma.chartImage.findUniqueOrThrow({ where: { id: "image" } })).ocrText, before.ocrText);
+    const stored = JSON.parse((await prisma.appSetting.findUniqueOrThrow({ where: { key: AI_CONFIG_SETTING_KEY } })).value);
+    assert.equal(stored.skills.ocrRefinement.modelOverride, "deepseek-flash");
+  } finally { globalThis.fetch = previousFetch; await saveConfig(); }
+});
 
 test("legacy POST uses quick retrieval, eight sources, current priority and one answer call", async () => {
   const item = await conversation();

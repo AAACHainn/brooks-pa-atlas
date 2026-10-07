@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AiServiceError, streamAiModelTurn, type AiFetch } from "@/lib/ai-client";
-import type { StoredAiConfig, StoredAiEndpoint } from "@/lib/ai-config";
+import { resolveAiModelSelection, type StoredAiConfig, type StoredAiEndpoint } from "@/lib/ai-config";
 import type { AiChatUsage, AiFunctionDefinition, AiModelMessage, AiModelStreamEvent, AiModelTurn, AiToolChoice } from "@/lib/ai-model-types";
 import { AiToolError, type AiToolExecutionContext, type AiToolRegistry, type AiToolSummary } from "@/lib/ai-tool-registry";
 
@@ -169,7 +169,7 @@ export async function runAiToolTask(options: AiToolTaskOptions): Promise<AiToolR
     secrets = config.endpoints.map((endpoint) => endpoint.apiKey).filter(Boolean);
     const endpoint = config.endpoints.find((endpoint) => endpoint.id === config.activeEndpointId);
     const skill = skillKey ? config.skills[skillKey] : undefined;
-    const model = skill?.modelOverride || endpoint?.defaultModel || "";
+    const { model } = resolveAiModelSelection(config, skill?.modelOverride);
     if (!endpoint || !model.trim()) throw new RunFailure("configuration", "failed", "An active endpoint and model are required.");
     const messages: AiModelMessage[] = [
       { role: "system", content: referenceRule },

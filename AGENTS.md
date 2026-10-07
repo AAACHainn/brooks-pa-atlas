@@ -251,7 +251,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - `ChartImageTag`：图片与标签的多对多关联；图片删除时级联删除关联，无图片使用的标签会自动清理。
 - `ImportBatch`：一次批量导入任务，保存总数、成功数、失败数、重复数、OCR 进度、状态、开始和结束时间。
 - `ImportItem`：导入批次中的单张图片记录，保存原始文件名、相对路径、保存路径、分组、状态、错误和映射索引。
-- `AppSetting`：本地设置，用于 OCR 并发数及版本化 `ai.config.v4` AI 配置等键值；读取时兼容迁移 `ai.config.v1` / `ai.config.v2` / `ai.config.v3`。AI API Key 明文保存在本地 SQLite，但任何客户端 DTO 都不能返回完整密钥。
+- `AppSetting`：本地设置，用于 OCR 并发数及版本化 `ai.config.v5` AI 配置等键值；读取时兼容迁移 `ai.config.v1` / `ai.config.v2` / `ai.config.v3` / `ai.config.v4`。AI API Key 明文保存在本地 SQLite，但任何客户端 DTO 都不能返回完整密钥。
 - `OcrBatchJob` / `OcrBatchJobItem`：持久化索引子树批量 OCR 任务及启动时的图片清单，进度只统计该任务自己的图片。
 - `AiReadingConversation` / `AiReadingMessage`：全局 AI 阅读伴侣会话与消息；消息保存发送时的图片引用、资料快照、知识引用快照、兼容端点返回的可见思考内容和耗时，图片或字幕后来删除后仍保留文字历史。
 - `AiRobotConversation` / `AiRobotMessage`：独立全局机器人会话、文字历史、发送选择快照及完成运行的脱敏摘要，无图片外键，不进入备份。
@@ -315,7 +315,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - 右侧：管理模式下的图片详情编辑面板；浏览模式下是大图查看体验。
 - 工作台的纵向浏览统一使用浏览器最外侧的页面滚动条，中间内容区不能再建立独立的纵向滚动容器。大图查看器只在图片主动放大、需要查看局部时保留自身滚动。
 
-全局机器人：默认在全部模式的页面右侧显示可拖动按钮，点击打开独立聊天窗口；支持拖动/缩放/收起/关闭、持久化多会话、Markdown、思考和工具状态。管理设置“技能 → AI 机器人”可禁用或配置模型及提示词。首版只查询索引与图片文字资料，全面搜索、整理图库和日志分析尚未提供。
+全局机器人：默认在全部模式的页面右侧显示可拖动按钮，点击打开独立聊天窗口；支持拖动/缩放/收起/关闭、持久化多会话、Markdown、思考和工具状态。管理设置“技能 → AI 机器人”可禁用或配置模型及提示词。普通模式只查询索引与图片文字资料；任务模式可确认范围后分批分析索引、图片文字与知识资料。整理图库写操作和日志分析尚未提供。
 
 浏览模式特性：
 
@@ -528,7 +528,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - `list_index_nodes` 在同一读取事务返回符合关键词、父节点及授权范围的 `total` 和当前页；仅统计数量时可使用 total，避免逐页读取。`get_image_context` 支持 fields/offset/limit；机器人使用 `createSystemToolRegistry({ pagedImageContext: true })` 默认按 Unicode 字符返回最多 2000 字符的 OCR/备注页、列表最多 20 项，响应 pages 明确标出 total/returned/nextOffset。offset 对文本为 Unicode 字符位置，对列表为项目位置；后续页应指定对应字段。普通内部无参数调用仍可读取完整快照，32KiB 超限错误仍保留。
 - 执行器自身只在运行内返回记录，可通过 `AiToolTraceSink` 扩展存储；机器人调用方把完成运行的脱敏摘要保存到独立消息，不保存工具参数或结果正文。记录只包含运行/调用/资源 ID、端点/模型标识、状态、耗时、Token 和结果数量/大小摘要；不保存密钥、原始响应、参数正文、完整资料或思考正文。sink 失败记录警告，取消后的最终记录仍在返回结果中，可由调用方补存。
 - `probeAiToolSupport` 通过临时无副作用工具验证调用、回传和最终回答，返回 supported/unsupported/unconfirmed/failed；可能产生费用，必须显式触发，不在启动或既有连接测试时运行。不支持工具的模型仍可使用原有 AI 功能，不把普通文本或 JSON 当作工具指令执行。
-- AI 配置保存在 `AppSetting` 的 `ai.config.v4`，读取时兼容迁移 `ai.config.v1` / `ai.config.v2` / `ai.config.v3`；配置是当前实例本地设置，不进入备份 zip，恢复也不覆盖。
+- AI 配置保存在 `AppSetting` 的 `ai.config.v5`，读取时兼容迁移 `ai.config.v1` / `ai.config.v2` / `ai.config.v3` / `ai.config.v4`；配置是当前实例本地设置，不进入备份 zip，恢复也不覆盖。
 - 全局 AI 机器人使用 `skills.globalRobot` 的启用开关、提示词和模型覆盖，仍保存 v4；旧配置默认启用，旧 PUT 缺少机器人技能时保留现值。禁用会取消单进程全部活动机器人运行并拒绝新发送，不删除会话。仅用户发送时调用模型，不自动探测工具能力。
 - 机器人高级限制保存在同一技能：maxModelCalls=6（1–50）、maxToolCalls=12（1–200）、inputTokenBudget=16000（1–1000000）、totalInputTokenBudget=100000（1–10000000）、maxOutputTokens=4096（1–131072）、runTimeoutSeconds=300（30–1800）。累计输入不得低于单次。旧配置补默认，旧机器人 PUT 缺少新增字段时保留当前值；不修改配置版本或数据库结构。高级限制只用于机器人，并在发送时固定，发送请求不能覆盖 limits；单模型 120 秒、单工具 30 秒、单结果 32KiB 保持固定。
 - 执行器可由机器人显式启用 finishNearLimit：最后一次模型请求或接近工具/输入/时间限制时，发送受信的收束指令与 tool_choice=none，优先基于成功读取生成答案并指出未解决部分；模型仍请求工具时停止，不执行额外调用、不自动续跑。budget_warning 与 run_completed trace 附带脱敏 budget；失败区分 model_calls/tool_calls/input_tokens/total_input_tokens/run_time，显示真实成功读取与未完成调用数。成功历史保存 warnings/budget，旧历史缺失字段仍正常显示。
@@ -835,3 +835,16 @@ https://github.com/AAACHainn/brooks-pa-atlas.git
 - 图片详情支持单张编辑和删除，尚未支持已导入图片的批量编辑。
 - 导入表格支持逐文件索引选择，但尚未支持批量套用某一索引到当前页或全部选中项。
 - README 已更新为真实启动和基础使用说明，但更细的开发维护说明仍以本文件为准。
+
+
+## 19. 机器人统一聊天模式（2026-10-07）
+
+- 机器人底部“＋”提供普通、阅读伴侣、任务三种模式。首次和刷新默认普通，关闭重开保留本次模式；三种模式分别保存会话、草稿和阅读位置。
+- 阅读模式仅在浏览模式可发送，并要求当前图片；离开浏览模式取消嵌入伴读并回到普通。`ReadingCompanionSession` 被旧窗口和嵌入视图复用，继续使用原伴读配置、表和接口；原入口保留。两窗通过 BroadcastChannel/本页订阅同步历史，同会话发送互斥，关闭只取消本窗口请求。
+- 普通会话 `mode=normal`，任务会话 `mode=task`，缺省创建/查询仍为普通。任务只读图库文字及有效知识资料，不读取像素、不修改图库。计划有分批阅读分析、整理笔记、综合回答三步，须确认后执行；反馈重新规划保留原任务记录。
+- 主库 migration `20261007000000_robot_modes_tasks` 增加会话 mode、`AiRobotTask` 和 `AiRobotTaskCheckpoint`。仅通过 `db:migrate` 升级已有库；不会在聊天请求中建表。任务及聊天不进入备份。
+- 任务服务在单 Node.js 进程后台串行执行，并占用 `ai-robot-task` 重任务租约。关闭、刷新、切换模式继续运行；收起/隐藏停止轮询。暂停立即中断当前批次，继续跳过已提交检查点。启动钩子仅标记中断任务为暂停，不自动续跑。禁用机器人暂停任务；清空/删除先取消执行。
+- 每批事务保存资源游标、摘要、引用快照与预算；服务端 runId 和 revision/planVersion 防止重复控制与迟到写入。未完成批次不保存为成功。资源变更时暂停重新规划；调用、Token、实际运行时间跨暂停累计。
+- `ai.config.v5` 的 `robotTask` 独立保存提示词、模型和预算，v4 迁移复制机器人提示词和模型。默认 60 次模型、120 次工具、单次 16000 / 累计 1000000 输入 Token、4096 输出 Token、1800 秒实际运行时间。继续使用最新配置，当前执行固定配置快照；单模型请求 120 秒。
+- 新增 `ai-robot-task-{types,sources,service}.ts` 和任务 pane/mode menu。任务专用工具不加入普通机器人白名单。进度接口返回轻量快照，证据通过 `?evidence=true` 按需读取。
+- `npm run test:ai-robot` 包含隔离数据库的新任务测试；`npm run test:ai` 继续覆盖原伴读、工具和配置兼容。

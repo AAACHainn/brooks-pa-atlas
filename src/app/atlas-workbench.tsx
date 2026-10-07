@@ -2237,6 +2237,7 @@ export default function AtlasWorkbench() {
   const [readingCompanionReady, setReadingCompanionReady] = useState(false);
   const [robotEnabled, setRobotEnabled] = useState(false);
   const [robotReady, setRobotReady] = useState(false);
+  const [robotTaskReady, setRobotTaskReady] = useState(false);
   const [isReadingCompanionOpen, setIsReadingCompanionOpen] = useState(false);
   const [backupRecords, setBackupRecords] = useState<BackupRecord[]>([]);
   const [backupRecordsLoading, setBackupRecordsLoading] = useState(false);
@@ -2538,6 +2539,7 @@ export default function AtlasWorkbench() {
           );
           setRobotEnabled(Boolean(response.ok && result?.config?.skills.globalRobot.enabled));
           setRobotReady(Boolean(response.ok && result?.config?.skillReady.globalRobot));
+          setRobotTaskReady(Boolean(response.ok && result?.config?.skillReady.robotTask));
           setReadingCompanionReady(
             Boolean(response.ok && result?.config?.skillReady[READING_COMPANION_SKILL_KEY]),
           );
@@ -7063,6 +7065,7 @@ export default function AtlasWorkbench() {
             setReadingCompanionReady(config.skillReady[READING_COMPANION_SKILL_KEY]);
             setRobotEnabled(config.skills.globalRobot.enabled);
             setRobotReady(config.skillReady.globalRobot);
+            setRobotTaskReady(config.skillReady.robotTask);
           }}
         />
       ) : null}
@@ -7076,6 +7079,9 @@ export default function AtlasWorkbench() {
       <AiRobot
         enabled={robotEnabled}
         configured={robotReady}
+        browse={isBrowseMode}
+        readingConfigured={readingCompanionReady}
+        taskConfigured={robotTaskReady}
         locale={locale}
         selection={{
           image: !isExamMode && selectedImage ? { id: selectedImage.id, title: selectedImage.title, originalName: selectedImage.originalName } : null,

@@ -18,6 +18,8 @@ import type { RefObject } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { createBrowserId } from "@/lib/browser-id";
+import { notifyReadingChange, subscribeReadingChanges } from "@/lib/reading-companion-sync";
 import { useAppDialog } from "@/app/app-dialog";
 import type { DeepReadingPhase, DeepReadingResearch } from "@/lib/knowledge-types";
 import { createBufferedReadingText, createLatestValueScheduler, shouldSendReadingInput } from "@/lib/reading-companion-ui";
@@ -554,14 +556,18 @@ const ReadingComposer = memo(function ReadingComposer({
   );
 });
 
-export default function AiReadingCompanion({
+type ReadingCompanionProps = { open: boolean; locale: Locale; image: ReferenceImage | null; configured: boolean; onClose: () => void; onOpenSettings: () => void; embedded?: boolean; onSending?: (sending: boolean) => void };
+export default function AiReadingCompanion(props: ReadingCompanionProps) { return <ReadingCompanionSession {...props} />; }
+
+export function ReadingCompanionSession({
   open,
   locale,
   image,
   configured,
   onClose,
-  onOpenSettings,
+  onOpenSettings, embedded = false, onSending,
 }: {
+  embedded?: boolean; onSending?: (sending: boolean) => void;
   open: boolean;
   locale: Locale;
   image: ReferenceImage | null;
@@ -570,6 +576,9 @@ export default function AiReadingCompanion({
   onOpenSettings: () => void;
 }) {
   const t = labels[locale];
+  const preferencePrefix = embedded ? "brooks-pa-atlas.aiRobot.reading" : "brooks-pa-atlas.aiReading";
+  const origin = useRef("");
+  useEffect(() => { origin.current = createBrowserId(); }, []);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -604,6 +613,92 @@ export default function AiReadingCompanion({
     cancel: t.cancel,
   });
 
+  const createConversation = useCallback(async () => {
+    const response = await fetch("/api/ai/reading-companion/conversations", { method: "POST" });
+    const result = (await response.json().catch(() => null)) as
+      | { conversation?: Conversation; error?: string }
+      | null;
+    if (!response.ok || !result?.conversation) {
+      throw new Error(result?.error ?? t.operationFailed);
+    }
+    setConversations((current) => [result.conversation!, ...current]);
+    setActiveId(result.conversation.id);
+    setMessages([]);
+    setNextBefore(null);
+    notifyReadingChange(origin.current);
+    return result.conversation;
+  }, [t.operationFailed]);
+
+  const loadConversations = useCallback(async (preferredId?: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/ai/reading-companion/conversations", { cache: "no-store" });
+      const result = (await response.json().catch(() => null)) as
+        | { conversations?: Conversation[]; error?: string }
+        | null;
+      if (!response.ok || !result?.conversations) throw new Error(result?.error ?? t.loadFailed);
+      setConversations(result.conversations);
+      const candidate = preferredId ?? activeIdRef.current;
+      if (candidate && result.conversations.some((item) => item.id === candidate)) {
+        setActiveId(candidate);
+        return candidate;
+      } else if (result.conversations[0]) {
+        setActiveId(result.conversations[0].id);
+        return result.conversations[0].id;
+      } else {
+        return (await createConversation()).id;
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t.loadFailed);
+    } finally {
+      setLoading(false);
+    }
+  }, [createConversation, t.loadFailed]);
+
+  const loadMessages = useCallback(async (conversationId: string, before?: number, preserveHistory = false) => {
+    if (!before) setLoading(true);
+    setError(null);
+    try {
+      const suffix = before === undefined ? "" : `?before=${before}`;
+      const response = await fetch(
+        `/api/ai/reading-companion/conversations/${conversationId}${suffix}`,
+        { cache: "no-store" },
+      );
+      const result = (await response.json().catch(() => null)) as
+        | { messages?: Message[]; nextBefore?: number | null; error?: string }
+        | null;
+      if (!response.ok || !result?.messages) throw new Error(result?.error ?? t.loadFailed);
+      if (activeIdRef.current !== conversationId) return;
+      const pane = messagePaneRef.current, height = pane?.scrollHeight ?? 0, top = pane?.scrollTop ?? 0;
+      if (before !== undefined) savedMessageScrollRef.current = { scrollTop: top, stickToBottom: false };
+      setMessages((current) => {
+        if (before !== undefined) return [...result.messages!, ...current];
+        if (preserveHistory && result.nextBefore !== null && result.messages!.length) {
+          const first = result.messages![0].sequence;
+          return [...current.filter((message) => message.sequence < first), ...result.messages!];
+        }
+        return result.messages!;
+      });
+      if (before !== undefined) requestAnimationFrame(() => {
+        if (pane) { pane.scrollTop = top + pane.scrollHeight - height; savedMessageScrollRef.current = { scrollTop: pane.scrollTop, stickToBottom: false }; }
+      });
+      setNextBefore(result.nextBefore ?? null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t.loadFailed);
+    } finally {
+      setLoading(false);
+    }
+  }, [t.loadFailed]);
+
+  useEffect(() => { onSending?.(sending); }, [sending, onSending]);
+  useEffect(() => subscribeReadingChanges((sender) => {
+    if (sender === origin.current || !open || sending) return;
+    void loadConversations(activeIdRef.current ?? undefined).then((id) => { if (id && id === activeIdRef.current) void loadMessages(id, undefined, true); });
+    // Each surface keeps its selection, input and scroll independently.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [open, sending]);
+
   const rememberInput = useCallback((value: string) => { inputValueRef.current = value; }, []);
   const updateInput = useCallback((value: string) => {
     inputValueRef.current = value;
@@ -619,8 +714,8 @@ export default function AiReadingCompanion({
   useEffect(() => { if (!open) sendAbortRef.current?.abort(); }, [open]);
 
   useEffect(() => {
-    const storedPosition = window.localStorage.getItem("brooks-pa-atlas.aiReading.position");
-    const storedSize = window.localStorage.getItem("brooks-pa-atlas.aiReading.size");
+    const storedPosition = window.localStorage.getItem(`${preferencePrefix}.position`);
+    const storedSize = window.localStorage.getItem(`${preferencePrefix}.size`);
     let restoredPosition: { x: number; y: number } | null = null;
     let restoredSize: { width: number; height: number } | null = null;
     if (storedPosition) {
@@ -643,7 +738,7 @@ export default function AiReadingCompanion({
         // Ignore invalid local preferences.
       }
     }
-    const restoredMinimized = window.localStorage.getItem("brooks-pa-atlas.aiReading.minimized") === "true";
+    const restoredMinimized = window.localStorage.getItem(`${preferencePrefix}.minimized`) === "true";
     const timer = window.setTimeout(() => {
       if (restoredPosition || restoredSize) {
         const fallback = defaultFrame();
@@ -657,13 +752,13 @@ export default function AiReadingCompanion({
       setMinimized(restoredMinimized);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [preferencePrefix]);
 
   useEffect(() => {
     if (!open) return;
     const timer = window.setTimeout(() => {
       setFrame((current) => current ?? defaultFrame());
-      if (conversations.length === 0 && !loading) void loadConversations();
+      void loadConversations(window.localStorage.getItem(`${preferencePrefix}.conversation`) ?? undefined).then((id) => { if (id && id === activeIdRef.current) void loadMessages(id, undefined, true); });
     }, 0);
     return () => window.clearTimeout(timer);
     // Only initialize when the floating window is opened.
@@ -673,7 +768,9 @@ export default function AiReadingCompanion({
   useEffect(() => {
     activeIdRef.current = activeId;
     if (!activeId) return;
-    void loadMessages(activeId);
+    window.localStorage.setItem(`${preferencePrefix}.conversation`, activeId);
+    const timer = window.setTimeout(() => { void loadMessages(activeId); }, 0);
+    return () => window.clearTimeout(timer);
     // loadMessages deliberately reads the latest locale labels without making
     // an active conversation reload whenever the interface language changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -681,7 +778,9 @@ export default function AiReadingCompanion({
 
   useEffect(() => {
     const pane = messagePaneRef.current;
-    if (pane) pane.scrollTop = pane.scrollHeight;
+    if (!pane) return;
+    const saved = savedMessageScrollRef.current;
+    pane.scrollTop = !saved || saved.stickToBottom ? pane.scrollHeight : Math.min(saved.scrollTop, Math.max(0, pane.scrollHeight - pane.clientHeight));
   }, [assistantDraft, assistantReasoningDraft, messages.length]);
 
   useLayoutEffect(() => {
@@ -734,8 +833,8 @@ export default function AiReadingCompanion({
       updates.flush();
       setFrame(latestFrame);
       setInteraction(null);
-      window.localStorage.setItem("brooks-pa-atlas.aiReading.position", JSON.stringify({ x: latestFrame.x, y: latestFrame.y }));
-      window.localStorage.setItem("brooks-pa-atlas.aiReading.size", JSON.stringify({ width: latestFrame.width, height: latestFrame.height }));
+      window.localStorage.setItem(`${preferencePrefix}.position`, JSON.stringify({ x: latestFrame.x, y: latestFrame.y }));
+      window.localStorage.setItem(`${preferencePrefix}.size`, JSON.stringify({ width: latestFrame.width, height: latestFrame.height }));
     }
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp, { once: true });
@@ -747,70 +846,7 @@ export default function AiReadingCompanion({
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, [interaction, open]);
-
-  async function loadConversations(preferredId?: string) {
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch("/api/ai/reading-companion/conversations", { cache: "no-store" });
-      const result = (await response.json().catch(() => null)) as
-        | { conversations?: Conversation[]; error?: string }
-        | null;
-      if (!response.ok || !result?.conversations) throw new Error(result?.error ?? t.loadFailed);
-      setConversations(result.conversations);
-      const candidate = preferredId ?? activeId;
-      if (candidate && result.conversations.some((item) => item.id === candidate)) {
-        setActiveId(candidate);
-      } else if (result.conversations[0]) {
-        setActiveId(result.conversations[0].id);
-      } else {
-        await createConversation();
-      }
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t.loadFailed);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function createConversation() {
-    const response = await fetch("/api/ai/reading-companion/conversations", { method: "POST" });
-    const result = (await response.json().catch(() => null)) as
-      | { conversation?: Conversation; error?: string }
-      | null;
-    if (!response.ok || !result?.conversation) {
-      throw new Error(result?.error ?? t.operationFailed);
-    }
-    setConversations((current) => [result.conversation!, ...current]);
-    setActiveId(result.conversation.id);
-    setMessages([]);
-    setNextBefore(null);
-    return result.conversation;
-  }
-
-  async function loadMessages(conversationId: string, before?: number) {
-    if (!before) setLoading(true);
-    setError(null);
-    try {
-      const suffix = before === undefined ? "" : `?before=${before}`;
-      const response = await fetch(
-        `/api/ai/reading-companion/conversations/${conversationId}${suffix}`,
-        { cache: "no-store" },
-      );
-      const result = (await response.json().catch(() => null)) as
-        | { messages?: Message[]; nextBefore?: number | null; error?: string }
-        | null;
-      if (!response.ok || !result?.messages) throw new Error(result?.error ?? t.loadFailed);
-      if (activeIdRef.current !== conversationId) return;
-      setMessages((current) => (before === undefined ? result.messages! : [...result.messages!, ...current]));
-      setNextBefore(result.nextBefore ?? null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t.loadFailed);
-    } finally {
-      setLoading(false);
-    }
-  }
+  }, [interaction, open, preferencePrefix]);
 
   async function renameConversation() {
     const current = conversations.find((item) => item.id === activeId);
@@ -831,6 +867,7 @@ export default function AiReadingCompanion({
       await showAlert({ title: t.operationFailed, message: t.loadFailed, tone: "danger" });
       return;
     }
+    notifyReadingChange(origin.current);
     setConversations((items) => items.map((item) => item.id === current.id ? { ...item, title } : item));
   }
 
@@ -841,6 +878,7 @@ export default function AiReadingCompanion({
       method: "DELETE",
     });
     if (!response.ok) return void showAlert({ title: t.operationFailed, message: t.loadFailed, tone: "danger" });
+    notifyReadingChange(origin.current);
     setMessages([]);
     setNextBefore(null);
     setConversations((items) => items.map((item) => item.id === activeId ? { ...item, messageCount: 0, preview: null } : item));
@@ -854,6 +892,7 @@ export default function AiReadingCompanion({
       method: "DELETE",
     });
     if (!response.ok) return void showAlert({ title: t.operationFailed, message: t.loadFailed, tone: "danger" });
+    notifyReadingChange(origin.current);
     const remaining = conversations.filter((item) => item.id !== deletingId);
     setConversations(remaining);
     if (remaining[0]) setActiveId(remaining[0].id);
@@ -976,10 +1015,12 @@ export default function AiReadingCompanion({
       answerBuffer.dispose();
       reasoningBuffer.dispose();
       setSending(false);
+      notifyReadingChange(origin.current);
+      void loadConversations(conversationId).then((id) => { if (id && id === activeIdRef.current) void loadMessages(id, undefined, true); });
       setProgress(null);
       if (sendAbortRef.current === sendAbort) sendAbortRef.current = null;
     }
-  }, [activeId, image, configured, sending, onOpenSettings, answerMode, updateInput, t.operationFailed, t.retryHint, t.stopped]);
+  }, [activeId, image, configured, sending, onOpenSettings, answerMode, updateInput, loadConversations, loadMessages, t.operationFailed, t.retryHint, t.stopped]);
 
   function rememberMessageScrollPosition() {
     const pane = messagePaneRef.current;
@@ -995,7 +1036,7 @@ export default function AiReadingCompanion({
     if (!minimized) rememberMessageScrollPosition();
     setMinimized((current) => {
       const next = !current;
-      window.localStorage.setItem("brooks-pa-atlas.aiReading.minimized", String(next));
+      window.localStorage.setItem(`${preferencePrefix}.minimized`, String(next));
       if (!next) setFrame((currentFrame) => currentFrame ? clampedFrame(currentFrame) : defaultFrame());
       return next;
     });
@@ -1047,12 +1088,12 @@ export default function AiReadingCompanion({
         role="dialog"
         aria-modal="false"
         aria-label={t.title}
-        className={`fixed z-[60] flex flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-2xl shadow-zinc-950/20 ${interaction ? "select-none" : ""}`}
-        style={{ ...windowStyle, willChange: interaction === "drag" ? "transform" : undefined }}
+        className={`${embedded ? "relative min-h-0 flex-1 bg-white" : "fixed z-[60] rounded-xl border border-zinc-200 bg-white shadow-2xl shadow-zinc-950/20"} flex flex-col overflow-hidden ${interaction ? "select-none" : ""}`}
+        style={embedded ? undefined : { ...windowStyle, willChange: interaction === "drag" ? "transform" : undefined }}
       >
         <div
           onPointerDown={beginDrag}
-          className="flex h-[52px] shrink-0 cursor-move items-center gap-2 border-b border-zinc-200 bg-zinc-950 px-3 text-white"
+          className={`${embedded ? "hidden" : "flex"} h-[52px] shrink-0 cursor-move items-center gap-2 border-b border-zinc-200 bg-zinc-950 px-3 text-white`}
         >
           <Bot className="h-4 w-4 text-cyan-300" />
           <div className="min-w-0 flex-1">
@@ -1069,7 +1110,7 @@ export default function AiReadingCompanion({
           </button>
         </div>
 
-        <div className={`${minimized ? "hidden" : "flex"} min-h-0 flex-1 flex-col`}>
+        <div className={`${!embedded && minimized ? "hidden" : "flex"} min-h-0 flex-1 flex-col`}>
             <div className="flex shrink-0 items-center gap-1 border-b border-zinc-200 bg-zinc-50 p-2">
               <select
                 value={activeId ?? ""}
@@ -1098,7 +1139,7 @@ export default function AiReadingCompanion({
               </button>
             </div>
 
-            <div ref={messagePaneRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-zinc-50/70 p-3">
+            <div ref={messagePaneRef} onScroll={rememberMessageScrollPosition} className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-zinc-50/70 p-3">
               {nextBefore !== null ? (
                 <button type="button" onClick={() => activeId && void loadMessages(activeId, nextBefore)} disabled={loading} className="mx-auto block rounded-full border border-zinc-200 bg-white px-3 py-1 text-[11px] text-zinc-600 hover:bg-zinc-50 disabled:opacity-50">
                   {loading ? t.loading : t.loadOlder}
@@ -1143,7 +1184,7 @@ export default function AiReadingCompanion({
               onOpenSettings={onOpenSettings}
             />
         </div>
-        {!minimized ? (
+        {!embedded && !minimized ? (
           <>
             <div aria-hidden="true" onPointerDown={(event) => beginResize("n", event)} className="absolute inset-x-3 top-0 z-20 h-2 cursor-n-resize" />
             <div aria-hidden="true" onPointerDown={(event) => beginResize("e", event)} className="absolute bottom-3 right-0 top-3 z-20 w-2 cursor-e-resize" />

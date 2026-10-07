@@ -5,6 +5,7 @@ import {
   LEGACY_AI_CONFIG_SETTING_KEY,
   LEGACY_AI_CONFIG_V2_SETTING_KEY,
   LEGACY_AI_CONFIG_V3_SETTING_KEY,
+  LEGACY_AI_CONFIG_V4_SETTING_KEY,
   type AiConfigInput,
   mergeAiConfigSecrets,
   parseStoredAiConfig,
@@ -13,14 +14,15 @@ import {
 
 export async function readStoredAiConfig() {
   const settings = await prisma.appSetting.findMany({
-    where: { key: { in: [AI_CONFIG_SETTING_KEY, LEGACY_AI_CONFIG_V3_SETTING_KEY, LEGACY_AI_CONFIG_V2_SETTING_KEY, LEGACY_AI_CONFIG_SETTING_KEY] } },
+    where: { key: { in: [AI_CONFIG_SETTING_KEY, LEGACY_AI_CONFIG_V4_SETTING_KEY, LEGACY_AI_CONFIG_V3_SETTING_KEY, LEGACY_AI_CONFIG_V2_SETTING_KEY, LEGACY_AI_CONFIG_SETTING_KEY] } },
     select: { key: true, value: true },
   });
   const current = settings.find((setting) => setting.key === AI_CONFIG_SETTING_KEY);
+  const legacyV4 = settings.find((setting) => setting.key === LEGACY_AI_CONFIG_V4_SETTING_KEY);
   const legacyV3 = settings.find((setting) => setting.key === LEGACY_AI_CONFIG_V3_SETTING_KEY);
   const legacyV2 = settings.find((setting) => setting.key === LEGACY_AI_CONFIG_V2_SETTING_KEY);
   const legacy = settings.find((setting) => setting.key === LEGACY_AI_CONFIG_SETTING_KEY);
-  return parseStoredAiConfig(current?.value ?? legacyV3?.value ?? legacyV2?.value ?? legacy?.value);
+  return parseStoredAiConfig(current?.value ?? legacyV4?.value ?? legacyV3?.value ?? legacyV2?.value ?? legacy?.value);
 }
 
 export async function readAiConfigDto() {
@@ -35,7 +37,10 @@ export async function saveAiConfig(input: AiConfigInput) {
     create: { key: AI_CONFIG_SETTING_KEY, value: JSON.stringify(config) },
     update: { value: JSON.stringify(config) },
   });
-  if (!config.skills.globalRobot.enabled) cancelAllRobotRuns();
+  if (!config.skills.globalRobot.enabled) {
+    cancelAllRobotRuns();
+    await (await import("@/lib/ai-robot-task-service")).pauseAllRobotTasks();
+  }
   return sanitizeAiConfig(config);
 }
 

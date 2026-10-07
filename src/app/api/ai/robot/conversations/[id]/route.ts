@@ -30,6 +30,9 @@ export async function PATCH(request: Request, context: Context) {
 }
 export async function DELETE(_request: Request, context: Context) {
   const { id } = await context.params;
-  try { await mutateRobotConversation(id, () => prisma.aiRobotConversation.delete({ where: { id } })); return NextResponse.json({ ok: true }); }
+  try { await mutateRobotConversation(id, async () => {
+    await (await import("@/lib/ai-robot-task-service")).stopConversationTasks(id);
+    return prisma.aiRobotConversation.delete({ where: { id } });
+  }); return NextResponse.json({ ok: true }); }
   catch (error) { return robotApiErrorResponse(error); }
 }

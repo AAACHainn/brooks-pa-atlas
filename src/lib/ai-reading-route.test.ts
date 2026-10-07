@@ -382,3 +382,19 @@ test("a disconnected answer stream fails without persisting its partial text", a
   assert.equal(await prisma.aiReadingMessage.count({ where: { conversationId: item.id, role: "ASSISTANT" } }), 0);
   assert.equal(currentHeavyTask(), null);
 });
+
+
+test("reading windows share a send lease and clearing history blocks a late reply", async () => {
+  const item = await conversation();
+  let resolve!: (value: Response) => void, entered!: () => void;
+  const started = new Promise<void>((done) => { entered = done; });
+  globalThis.fetch = async () => { entered(); return new Promise<Response>((done) => { resolve = done; }); };
+  const response = await messagesPost(request("quick"), { params: Promise.resolve({ id: item.id }) }); await started;
+  const peer = await messagesPost(request("quick"), { params: Promise.resolve({ id: item.id }) }); assert.equal(peer.status, 409);
+  const clear = (await import("@/app/api/ai/reading-companion/conversations/[id]/messages/route")).DELETE;
+  assert.equal((await clear(new Request("http://atlas.test"), { params: Promise.resolve({ id: item.id }) })).status, 200);
+  resolve(reply("late response")); await response.text();
+  assert.equal(await prisma.aiReadingMessage.count({ where: { conversationId: item.id } }), 0);
+  globalThis.fetch = async () => reply("next response");
+  const next = await messagesPost(request("quick"), { params: Promise.resolve({ id: item.id }) }); assert.ok(events(await next.text()).some((event) => event.type === "done"));
+});

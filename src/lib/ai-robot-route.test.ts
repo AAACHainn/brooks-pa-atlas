@@ -17,6 +17,7 @@ let saveConfig: typeof import("@/lib/ai-settings").saveAiConfig;
 let directory: string;
 const originalFetch = globalThis.fetch, previousUrl = process.env.DATABASE_URL;
 const robotMigration = "20261006100000_ai_robot";
+const modesMigration = "20261007000000_robot_modes_tasks";
 const config = toolTestConfig();
 const context = (id: string) => ({ params: Promise.resolve({ id }) });
 function request(content = "查询当前图片", extra: Record<string, unknown> = {}, signal?: AbortSignal) {
@@ -30,7 +31,7 @@ before(async () => {
   process.env.DATABASE_URL = `file:${path.join(directory, "main.db")}`;
   const db = new Database(path.join(directory, "main.db"));
   const root = path.join(process.cwd(), "prisma/migrations");
-  for (const entry of (await readdir(root)).sort()) { if (entry !== "migration_lock.toml" && entry !== robotMigration) db.exec(await readFile(path.join(root, entry, "migration.sql"), "utf8")); }
+  for (const entry of (await readdir(root)).sort()) { if (entry !== "migration_lock.toml" && entry !== robotMigration && entry !== modesMigration) db.exec(await readFile(path.join(root, entry, "migration.sql"), "utf8")); }
   db.close();
   prisma = (await import("@/lib/db")).prisma;
   collection = await import("@/app/api/ai/robot/conversations/route");
@@ -72,7 +73,7 @@ test("an existing database without the robot migration reports an upgrade and re
     assert.equal(await prisma.indexNode.count(), 1);
   } finally {
     const db = new Database(path.join(directory, "main.db"));
-    try { db.exec(await readFile(path.join(process.cwd(), "prisma/migrations", robotMigration, "migration.sql"), "utf8")); }
+    try { for (const migration of [robotMigration, modesMigration]) db.exec(await readFile(path.join(process.cwd(), "prisma/migrations", migration, "migration.sql"), "utf8")); }
     finally { db.close(); }
   }
   const id = await create();

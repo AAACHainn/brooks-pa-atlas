@@ -79,7 +79,9 @@ export async function DELETE(_request: Request, context: Context) {
   try {
     return await mutateRobotConversation(id, async () => {
       if (!await prisma.aiRobotConversation.findUnique({ where: { id } })) throw new RobotRequestError("not_found", 404);
+      await (await import("@/lib/ai-robot-task-service")).stopConversationTasks(id);
       await prisma.$transaction([
+        prisma.aiRobotTask.deleteMany({ where: { conversationId: id } }),
         prisma.aiRobotMessage.deleteMany({ where: { conversationId: id } }),
         prisma.aiRobotConversation.update({ where: { id }, data: { nextTurn: 0, updatedAt: new Date() } }),
       ]);

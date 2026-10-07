@@ -2,10 +2,12 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { RobotRequestError } from "@/lib/ai-robot-service";
 import { robotErrorMessage, type RobotLocale } from "@/lib/ai-robot-types";
+import { HeavyTaskBusyError } from "@/lib/background-task-coordinator";
 
 /** Keep database and upstream diagnostics out of browser responses. */
 export function robotApiErrorDetails(error: unknown) {
   if (error instanceof RobotRequestError) return { code: error.code, status: error.status };
+  if (error instanceof HeavyTaskBusyError) return { code: "busy", status: 409 };
   const code = error && typeof error === "object" && "code" in error ? error.code : null;
   if (code === "P2021" || code === "P2022") return { code: "storage_upgrade_required", status: 503 };
   if (code === "P2025") return { code: "not_found", status: 404 };

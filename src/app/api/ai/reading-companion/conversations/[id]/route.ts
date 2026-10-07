@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { mutateReadingConversation } from "@/lib/reading-companion-runs";
 import { z } from "zod";
 
 import {
@@ -73,7 +74,7 @@ export async function DELETE(
 ) {
   const { id } = await context.params;
   try {
-    await prisma.aiReadingConversation.delete({ where: { id } });
+    await mutateReadingConversation(id, () => prisma.aiReadingConversation.delete({ where: { id } }));
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "Conversation not found." }, { status: 404 });

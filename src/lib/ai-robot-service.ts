@@ -62,6 +62,7 @@ export async function startRobotMessage(conversationId: string, request: RobotRe
     ]);
     signal.throwIfAborted();
     if (!conversation || (request.imageId && !image) || (request.indexNodeId && !index)) throw new RobotRequestError("not_found", 404);
+    if (conversation.mode !== "normal") throw new RobotRequestError("invalid_request", 400);
     const selection: RobotSelection = { image, index };
     const previousAnswers = await prisma.aiRobotMessage.findMany({ where: { conversationId, role: "ASSISTANT" }, orderBy: { sequence: "desc" }, take: 4 });
     const previousQuestions = previousAnswers.length ? await prisma.aiRobotMessage.findMany({

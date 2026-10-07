@@ -352,3 +352,12 @@ Slow filesystem detected
 处理：
 
 优先确认项目目录和 `.next/dev` 是否位于本机磁盘。当前项目仍可正常访问 `http://localhost:3000`。
+
+
+## 统一机器人模式升级（2026-10-07）
+
+新增主库 migration `20261007000000_robot_modes_tasks`，增量增加机器人会话 mode 和任务/检查点表，现有会话默认普通。AI 配置升级到 `ai.config.v5`，兼容 v1–v4，旧密钥、伴读配置与历史保留。
+
+升级前通过应用内备份并另保存一致性 SQLite 数据库备份（聊天与任务不在业务备份内）。按既有顺序执行 `npm run db:migrate`、`npm run prisma:generate`、`npm run test:ai`、`npm run test:knowledge`、`npm run lint`、`npm run build`，再重启一个 Node.js 进程。不要对已有库运行初始化覆盖，不要清空图库目录。
+
+验收：机器人“＋”三模式；浏览模式打开伴读并与旧窗口对照；普通模式工具白名单保持原样；任务确认计划后执行、暂停、继续、刷新页面恢复查看；重启后任务暂停且检查点仍在。生产继续单进程和本地 SSD/Docker volume，任务与已有重任务互斥。初期保留旧伴侣入口，待用户验证后另行退役。

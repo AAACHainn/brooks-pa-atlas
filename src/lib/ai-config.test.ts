@@ -7,7 +7,27 @@ import {
   parseStoredAiConfig, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls, resolveAiModelSelection, sanitizeAiConfig,
   type AiConfigInput, type StoredAiEndpoint, type StoredEmbeddingEndpoint, aiConfigInputSchema, readingCompanionSkillSchema,
   defaultAiRobotLimits, globalRobotSkillSchema,
+  defaultRobotTaskLimits,
 } from "@/lib/ai-config";
+
+test("v4 migrates task configuration independently without changing existing settings or secrets", () => {
+  const previous = defaultStoredAiConfig();
+  previous.endpoints = [chatEndpoint()]; previous.activeEndpointId = "chat-1";
+  previous.skills.globalRobot.prompt = "custom robot"; previous.skills.globalRobot.modelOverride = "special-model";
+  const { robotTask: ignored, ...skills } = previous.skills;
+  void ignored;
+  const current = parseStoredAiConfig(JSON.stringify({ ...previous, version: 4, skills }));
+  assert.equal(current.version, 5);
+  assert.equal(current.endpoints[0].apiKey, "chat-secret");
+  assert.deepEqual(current.skills.globalRobot, previous.skills.globalRobot);
+  assert.equal(current.skills.robotTask.prompt, "custom robot");
+  assert.equal(current.skills.robotTask.modelOverride, "special-model");
+  for (const [key, value] of Object.entries(defaultRobotTaskLimits)) assert.equal(current.skills.robotTask[key as keyof typeof defaultRobotTaskLimits], value);
+  const updated = mergeAiConfigSecrets(aiConfigInputSchema.parse({ ...current, skills: { ...current.skills, robotTask: { ...current.skills.robotTask, maxModelCalls: 90 } } }), current);
+  assert.equal(updated.skills.robotTask.maxModelCalls, 90);
+  assert.deepEqual(updated.skills.globalRobot, current.skills.globalRobot);
+  assert.deepEqual(updated.skills.readingCompanion, current.skills.readingCompanion);
+});
 
 function chatEndpoint(overrides: Partial<StoredAiEndpoint> = {}): StoredAiEndpoint {
   return { id: "chat-1", name: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com",
@@ -28,10 +48,10 @@ function input(overrides: Partial<AiConfigInput> = {}): AiConfigInput {
       subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "", retryModelOverride: "", disableReasoning: true, maxOutputTokens: 3000 } }, ...overrides };
 }
 
-test("missing or invalid persisted AI config falls back to v4 defaults", () => {
+test("missing or invalid persisted AI config falls back to v5 defaults", () => {
   assert.deepEqual(parseStoredAiConfig(null), defaultStoredAiConfig());
   assert.deepEqual(parseStoredAiConfig("not-json"), defaultStoredAiConfig());
-  assert.equal(parseStoredAiConfig("{}").version, 4);
+  assert.equal(parseStoredAiConfig("{}").version, AI_CONFIG_VERSION);
 });
 
 test("switching endpoints ignores a known foreign override without deleting the saved preference", () => {
@@ -146,7 +166,7 @@ test("v3 gains bounded metadata-only subtitle processing options", () => {
       subtitleKnowledge: { prompt: DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, modelOverride: "cheap-chat" },
     },
   }));
-  assert.equal(parsed.version, 4);
+  assert.equal(parsed.version, AI_CONFIG_VERSION);
   assert.equal(parsed.skills.subtitleKnowledge.modelOverride, "cheap-chat");
   assert.equal(parsed.skills.subtitleKnowledge.disableReasoning, true);
   assert.equal(parsed.skills.subtitleKnowledge.maxOutputTokens, 3000);
@@ -157,7 +177,7 @@ test("v2 migrates chat and embedding providers into separate collections without
     activeEndpointId: "shared", embeddingEndpointId: "shared",
     skills: { ocrRefinement: { prompt: "legacy", modelOverride: "" }, readingCompanion: { prompt: "read", modelOverride: "" }, subtitleKnowledge: { prompt: "subtitle", modelOverride: "" } } };
   const parsed = parseStoredAiConfig(JSON.stringify(legacy));
-  assert.equal(parsed.version, 4);
+  assert.equal(parsed.version, AI_CONFIG_VERSION);
   assert.equal(parsed.endpoints[0].id, "shared");
   assert.equal(parsed.embeddingEndpoints[0].id, "shared");
   assert.equal(parsed.embeddingEndpoints[0].embeddingModel, "embed-v2");

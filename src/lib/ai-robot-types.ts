@@ -67,6 +67,7 @@ export function robotErrorMessage(code: string, locale: RobotLocale) {
     configuration: ["请在管理模式的设置中配置启用端点和 AI 机器人模型。", "Configure an active endpoint and robot model in management settings."],
     "unsupported-tools": ["当前端点或模型不支持工具调用，请在设置中选择支持工具的模型。", "This endpoint or model does not support tools. Select a compatible model."],
     busy: ["此会话已有任务正在运行。", "This conversation already has a running task."],
+    stale_task: ["任务状态已更新，请刷新后重试。", "The task changed. Refresh and try again."],
     cancelled: ["已停止，未完成的回答不会保存。", "Stopped. Unfinished answers are not saved."],
     budget_exceeded: ["已达到调用或输入预算，请缩短问题或新建会话。", "The call or input budget was reached. Shorten the question or start a new conversation."],
     tool_call_limit: ["已达到工具调用次数上限，请缩小问题范围。", "The tool call limit was reached. Narrow the question."],

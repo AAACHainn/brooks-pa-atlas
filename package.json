@@ -20,7 +20,7 @@
     "prisma:generate": "prisma generate",
     "db:migrate": "node scripts/migrate-db.mjs",
     "db:init": "node scripts/init-db.mjs",
-    "test:ai-robot": "tsx --conditions=react-server --test src/lib/ai-robot-route.test.ts src/lib/ai-robot-ui.test.ts"
+    "test:ai-robot": "tsx --conditions=react-server --test src/lib/ai-robot-route.test.ts src/lib/ai-robot-ui.test.ts src/lib/ai-robot-task.test.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.100",

@@ -348,10 +348,47 @@ model AiRobotConversation {
   id        String   @id @default(cuid())
   title     String?
   nextTurn  Int      @default(0)
+  mode      String   @default("normal")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   messages AiRobotMessage[]
+  tasks AiRobotTask[]
   @@index([updatedAt])
+}
+
+model AiRobotTask {
+  id             String @id @default(cuid())
+  conversationId String
+  goal           String
+  locale         String @default("zh")
+  status         String @default("planning")
+  revision       Int @default(0)
+  planVersion    Int @default(0)
+  currentStep    Int @default(0)
+  selectionJson  String
+  planJson       String?
+  manifestJson   String?
+  budgetJson     String @default("{}")
+  result         String?
+  error          String?
+  runId          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  conversation AiRobotConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  checkpoints AiRobotTaskCheckpoint[]
+  @@index([conversationId, createdAt])
+}
+
+model AiRobotTaskCheckpoint {
+  id           String @id @default(cuid())
+  taskId       String
+  ordinal      Int
+  inputJson    String
+  resultJson   String
+  budgetJson   String
+  createdAt    DateTime @default(now())
+  task AiRobotTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  @@unique([taskId, ordinal])
 }
 
 model AiRobotMessage {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { acquireReadingRun, releaseReadingRun, mutateReadingConversation } from "@/lib/reading-companion-runs";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { AiServiceError, streamAiChatCompletionEvents } from "@/lib/ai-client";
@@ -52,11 +53,14 @@ export async function POST(
   try { resolveAiEndpointUrls(endpoint); }
   catch { return NextResponse.json({ error: "AI endpoint URL is invalid." }, { status: 409 }); }
   const leaseId = randomUUID();
+  const lease = acquireReadingRun(id);
+  if (!lease) return NextResponse.json({ error: "此伴读会话已有请求正在运行，请等待完成或停止后重试。" }, { status: 409 });
   const isDeep = answerMode === "deep";
   if (isDeep && !acquireHeavyTask("ai-deep-reading", leaseId)) {
+    releaseReadingRun(id, lease);
     return NextResponse.json({ error: "已有后台重任务正在运行，请等待完成后再使用深度思考。" }, { status: 409 });
   }
-  const abortController = new AbortController();
+  const abortController = lease.controller;
   const abortFromRequest = () => abortController.abort();
   request.signal.addEventListener("abort", abortFromRequest, { once: true });
   if (request.signal.aborted) abortController.abort();
@@ -64,6 +68,7 @@ export async function POST(
   const cleanup = () => {
     request.signal.removeEventListener("abort", abortFromRequest);
     if (isDeep) releaseHeavyTask("ai-deep-reading", leaseId);
+    releaseReadingRun(id, lease);
   };
   try {
     signal.throwIfAborted();
@@ -216,6 +221,7 @@ export async function DELETE(
   context: RouteContext<"/api/ai/reading-companion/conversations/[id]/messages">,
 ) {
   const { id } = await context.params;
+  return mutateReadingConversation(id, async () => {
   const conversation = await prisma.aiReadingConversation.findUnique({ where: { id } });
   if (!conversation) {
     return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
@@ -226,4 +232,5 @@ export async function DELETE(
     data: { nextTurn: 0 },
   });
   return NextResponse.json({ ok: true });
+  });
 }

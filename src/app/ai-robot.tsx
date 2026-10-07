@@ -4,6 +4,10 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAppDialog } from "@/app/app-dialog";
+import { ReadingCompanionSession } from "@/app/ai-reading-companion";
+import { RobotModeMenu } from "@/app/ai-robot-mode-menu";
+import { RobotTaskPane } from "@/app/ai-robot-task-pane";
+import type { RobotMode } from "@/lib/ai-robot-task-types";
 import { RobotLauncher, RobotWindow, robotPreference } from "@/app/ai-robot-floating";
 import { createLatestValueScheduler, shouldSendReadingInput } from "@/lib/reading-companion-ui";
 import { consumeRobotStream, fetchRobotJson, readRobotJson, updateRobotDraft, RobotStreamError, RobotTaskError, type RobotDraft } from "@/lib/ai-robot-ui";
@@ -65,11 +69,10 @@ const Composer = memo(function Composer({ sending, configured, ready, locale, on
     </div><p className="mt-1.5 text-[10px] text-zinc-400">{zh ? "首版仅支持只读工具；使用最近四组已完成问答，历史保存在本地系统。" : "Read-only tools; context uses the last four completed exchanges. History is stored locally."}</p>
   </footer>;
 });
-export default function AiRobot({ enabled, configured, locale, selection, onOpenSettings }: {
-  enabled: boolean; configured: boolean; locale: RobotLocale; selection: RobotSelection; onOpenSettings: () => void;
+function NormalRobotPane({ enabled, configured, locale, selection, onOpenSettings, open, minimized, onSending }: {
+  enabled: boolean; configured: boolean; locale: RobotLocale; selection: RobotSelection; onOpenSettings: () => void; open: boolean; minimized: boolean; onSending: (busy: boolean) => void;
 }) {
   const zh = locale === "zh";
-  const [open, setOpen] = useState(false), [minimized, setMinimized] = useState(false);
   const [conversations, setConversations] = useState<RobotConversation[]>([]), [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<RobotMessage[]>([]), [nextBefore, setNextBefore] = useState<number | null>(null);
   const [loading, setLoading] = useState(false), [sending, setSending] = useState(false), [error, setError] = useState<string | null>(null);
@@ -84,13 +87,15 @@ export default function AiRobot({ enabled, configured, locale, selection, onOpen
   useLayoutEffect(() => { context.current = selection; active.current = activeId; enabledRef.current = enabled; }, [selection, activeId, enabled]);
   const { showConfirm, showPrompt, dialogElement } = useAppDialog({ confirm: zh ? "确认" : "Confirm", cancel: zh ? "取消" : "Cancel" });
   const stop = useCallback(() => { sendAbort.current?.abort(); }, []);
-  const settings = useCallback(() => { stop(); setOpen(false); onOpenSettings(); }, [onOpenSettings, stop]);
+  useEffect(() => { onSending(sending); }, [sending, onSending]);
+  useEffect(() => { if (!open) stop(); }, [open, stop]);
+  const settings = useCallback(() => { stop(); onOpenSettings(); }, [onOpenSettings, stop]);
   const refreshList = useCallback(async () => {
     const result = await fetchRobotJson<{ conversations: RobotConversation[] }>(api, locale);
     setConversations(result.conversations); return result.conversations;
   }, [locale]);
   useEffect(() => () => { sendAbort.current?.abort(); loadAbort.current?.abort(); }, []);
-  useEffect(() => { if (!enabled) { stop(); loadAbort.current?.abort(); const timer = window.setTimeout(() => setOpen(false), 0); return () => window.clearTimeout(timer); } }, [enabled, stop]);
+  useEffect(() => { if (!enabled) { stop(); loadAbort.current?.abort();  } }, [enabled, stop]);
   useEffect(() => {
     if (!open || !enabled) return;
     const controller = new AbortController(); loadAbort.current?.abort(); loadAbort.current = controller;
@@ -192,14 +197,10 @@ export default function AiRobot({ enabled, configured, locale, selection, onOpen
     finally { setLoading(false); }
   }
   function rememberScroll() { if (pane.current) { const node = pane.current; scroll.current = { top: node.scrollTop, stick: node.scrollHeight - node.scrollTop - node.clientHeight < 32 }; robotPreference("scroll." + activeId, JSON.stringify(scroll.current)); } }
-  function toggleMinimize() { rememberScroll(); setMinimized((value) => !value); }
   if (!enabled) return null;
-  const subtitle = selection.image?.title ?? selection.image?.originalName ?? selection.index?.path ?? (zh ? "全局助手 · 只读工具" : "Global assistant · read-only tools");
   const btn = "grid h-8 w-8 shrink-0 place-items-center rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100 disabled:opacity-50";
   const failure = failedAttempt?.conversationId === activeId ? failedAttempt : null;
   return <>
-    {!open ? <RobotLauncher locale={locale} busy={sending} onOpen={() => { setMinimized(false); setOpen(true); }} /> : <RobotWindow locale={locale} minimized={minimized} onMinimize={toggleMinimize} subtitle={subtitle}
-      onClose={() => { rememberScroll(); stop(); setOpen(false); }}>
       <div className="flex shrink-0 items-center gap-1 border-b border-zinc-200 bg-zinc-50 p-2">
         <select aria-label={zh ? "机器人会话" : "Robot conversation"} value={activeId ?? ""} disabled={sending || loading} onChange={(event) => { scroll.current.stick = true; setMessages([]); setError(null); setActiveId(event.target.value); }} className="h-8 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-2 text-xs outline-none focus:border-cyan-600">
           {conversations.map((row) => <option key={row.id} value={row.id}>{row.title ?? (zh ? "新会话" : "New conversation")} ({row.messageCount})</option>)}
@@ -226,7 +227,39 @@ export default function AiRobot({ enabled, configured, locale, selection, onOpen
         </div> : null}
       </div>
       <Composer sending={sending} configured={configured} ready={Boolean(activeId) && !loading} locale={locale} onSend={send} onStop={stop} onSettings={settings} />
-    </RobotWindow>}
     {dialogElement}
+  </>;
+}
+
+
+export default function AiRobot({ enabled, configured, readingConfigured, taskConfigured, browse, locale, selection, onOpenSettings }: {
+  enabled: boolean; configured: boolean; readingConfigured: boolean; taskConfigured: boolean; browse: boolean;
+  locale: RobotLocale; selection: RobotSelection; onOpenSettings: () => void;
+}) {
+  const [open, setOpen] = useState(false), [minimized, setMinimized] = useState(false), [mode, setMode] = useState<RobotMode>("normal");
+  const [normalBusy, setNormalBusy] = useState(false), [readingBusy, setReadingBusy] = useState(false), [taskRunning, setTaskRunning] = useState(false);
+  const effectiveMode = mode === "reading" && !browse ? "normal" : mode;
+  useEffect(() => { if (!browse && mode === "reading") { const timer = window.setTimeout(() => setMode("normal"), 0); return () => window.clearTimeout(timer); } }, [browse, mode]);
+  useEffect(() => { if (!enabled) { const timer = window.setTimeout(() => setOpen(false), 0); return () => window.clearTimeout(timer); } }, [enabled]);
+  const settings = useCallback(() => { setOpen(false); onOpenSettings(); }, [onOpenSettings]);
+  const names = locale === "zh" ? { normal: "普通模式", reading: "阅读伴侣", task: "任务模式" } : { normal: "Normal", reading: "Reading companion", task: "Task mode" };
+  const subtitle = `${names[effectiveMode]} · ${selection.image?.title ?? selection.image?.originalName ?? selection.index?.path ?? (locale === "zh" ? "全局助手" : "Global assistant")}`;
+  if (!enabled) return null;
+  return <>
+    {!open ? <RobotLauncher locale={locale} busy={normalBusy || readingBusy || taskRunning} onOpen={() => { setMinimized(false); setOpen(true); }} /> : null}
+    <div className={open ? "contents" : "hidden"}>
+      <RobotWindow locale={locale} minimized={minimized} onMinimize={() => setMinimized((value) => !value)} onClose={() => setOpen(false)} subtitle={subtitle}>
+        <div className={`${effectiveMode === "normal" ? "flex" : "hidden"} min-h-0 flex-1 flex-col`}>
+          <NormalRobotPane enabled={enabled} configured={configured} locale={locale} selection={selection} onOpenSettings={settings} open={open && effectiveMode === "normal"} minimized={minimized} onSending={setNormalBusy} />
+        </div>
+        <div className={`${effectiveMode === "reading" ? "flex" : "hidden"} min-h-0 flex-1 flex-col`}>
+          <ReadingCompanionSession embedded open={open && effectiveMode === "reading" && browse} locale={locale} image={selection.image} configured={readingConfigured} onClose={() => setOpen(false)} onOpenSettings={settings} onSending={setReadingBusy} />
+        </div>
+        <div className={`${effectiveMode === "task" ? "flex" : "hidden"} min-h-0 flex-1 flex-col`}>
+          <RobotTaskPane active={open && !minimized && effectiveMode === "task"} enabled={enabled} configured={taskConfigured} locale={locale} selection={selection} onSettings={settings} onRunning={setTaskRunning} />
+        </div>
+        <RobotModeMenu mode={effectiveMode} browse={browse} disabled={normalBusy || readingBusy} locale={locale} onChange={setMode} />
+      </RobotWindow>
+    </div>
   </>;
 }

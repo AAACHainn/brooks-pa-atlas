@@ -103,4 +103,17 @@ const result = await runAiToolTask({
 
 新增工具时先注册服务端定义与业务服务，再显式更新 `robotAllowedTools`、资源授权策略和 `robotToolLabel` 展示映射，补充隔离测试；不要自动开放注册表中的全部工具。写操作和日志访问仍需后续功能设计，本版不预设其授权或确认流程。
 
-配置仍为 v4：`skills.globalRobot` 默认启用、独立提示词、模型覆盖为空；旧 JSON 自动补齐，旧保存请求缺失该技能时保留现值。工具能力不支持时明确失败，不自动能力探测或解析文本指令。专项命令 `npm run test:ai-robot`。
+配置升级为 v5（兼容 v1–v4）：`skills.globalRobot` 默认启用、独立提示词、模型覆盖为空；旧 JSON 自动补齐，旧保存请求缺失该技能时保留现值。工具能力不支持时明确失败，不自动能力探测或解析文本指令。专项命令 `npm run test:ai-robot`。
+
+
+## 统一窗口与持久任务
+
+普通、伴读、任务分别维护会话，伴读嵌入复用原请求链，不经过工具执行器。普通白名单仍只有 `get_image_context` 与 `list_index_nodes`。
+
+任务规划使用 `list_index_nodes`、`list_images`、`list_knowledge_documents`、`search_knowledge` 的只读工具；执行以确认后的不可变 manifest 为范围，按资源指纹和分页游标读取索引文字、图片文字资料和知识片段，范围同时显示资源数量与资料页覆盖。继续以及综合结果提交前重新校验已完成资源，资料变化时保留检查点并暂停。`read_task_source` 只接受 manifest 内的引用标识，不能读取任意文件。原始资料和工具结果始终属于不可信参考。
+
+`AiRobotTask` 保存目标、计划版本、runId、revision、范围、预算和终态；`AiRobotTaskCheckpoint` 每批事务提交摘要和证据快照。模型及工具使用量在调用前持久计费，失败/取消也计入预算。运行时间每秒持久化，重启保留最近计时快照，不计服务停机或暂停时间。减少笔记上下文的分层汇总同样保存检查点，不截断成“全量已覆盖”。未知 T 引用被标记为未验证。
+
+任务创建：`POST /api/ai/robot/conversations/[id]/tasks`；列表支持 `before`；轻量进度：`GET /api/ai/robot/tasks/[id]`，展开证据使用 `?evidence=true`。控制：`POST /api/ai/robot/tasks/[id]/actions`，body 为 action、revision、planVersion，重新规划另带 feedback。action 支持 start/pause/resume/cancel/replan；旧状态返回 409。
+
+执行不依赖浏览器连接。全局重任务租约确保单任务，暂停取消当前上游、使 runId 失效，恢复前等待旧 worker 退出。迟到结果不会写入。服务启动仅标记无 worker 的运行任务为暂停。设置关闭机器人、清空和删除会话均先停止后台任务。检查点与会话不导入导出备份。

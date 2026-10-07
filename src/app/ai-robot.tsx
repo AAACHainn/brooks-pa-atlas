@@ -6,8 +6,9 @@ import remarkGfm from "remark-gfm";
 import { useAppDialog } from "@/app/app-dialog";
 import { RobotLauncher, RobotWindow, robotPreference } from "@/app/ai-robot-floating";
 import { createLatestValueScheduler, shouldSendReadingInput } from "@/lib/reading-companion-ui";
-import { consumeRobotStream, fetchRobotJson, readRobotJson, updateRobotDraft, RobotStreamError, type RobotDraft } from "@/lib/ai-robot-ui";
-import { robotErrorMessage, robotToolLabel, type RobotConversation, type RobotLocale, type RobotMessage, type RobotSelection } from "@/lib/ai-robot-types";
+import { consumeRobotStream, fetchRobotJson, readRobotJson, updateRobotDraft, RobotStreamError, RobotTaskError, type RobotDraft } from "@/lib/ai-robot-ui";
+import { robotErrorMessage, robotToolLabel, robotBudgetFeedback, robotBudgetReason, type RobotConversation, type RobotLocale, type RobotMessage, type RobotSelection } from "@/lib/ai-robot-types";
+import type { AiToolBudgetSnapshot } from "@/lib/ai-tool-limits";
 
 const api = "/api/ai/robot/conversations";
 const plugins = [remarkGfm];
@@ -29,13 +30,18 @@ const Text = memo(function Text({ content }: { content: string }) { return <Reac
 const Thought = memo(function Thought({ content, duration, locale }: { content: string; duration?: number | null; locale: RobotLocale }) {
   return content ? <details className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-zinc-600"><summary className="cursor-pointer text-amber-800"><BrainCircuit className="mr-1 inline h-3 w-3" />{locale === "zh" ? "思考过程" : "Reasoning"}{duration ? ` · ${(duration / 1000).toFixed(1)}s` : ""}</summary><div className="mt-2 whitespace-pre-wrap leading-5">{content}</div></details> : null;
 });
+const BudgetFeedback = memo(function BudgetFeedback({ budget, locale }: { budget: AiToolBudgetSnapshot; locale: RobotLocale }) {
+  return <div className="mt-2 space-y-1 text-[11px] leading-5">{robotBudgetFeedback(budget, locale).map((line, index) => <p key={index}>{line}</p>)}</div>;
+});
 const MessageList = memo(function MessageList({ messages, locale }: { messages: RobotMessage[]; locale: RobotLocale }) {
   return messages.map((message) => <div key={message.id} className={`flex ${message.role === "USER" ? "justify-end" : "justify-start"}`}>
     <div className={`max-w-[90%] break-words rounded-xl border px-3 py-2 text-sm leading-6 shadow-sm ${message.role === "USER" ? "border-zinc-800 bg-zinc-950 text-white" : "border-zinc-200 bg-white text-zinc-800"}`}>
       {message.role === "USER" ? <><p className="whitespace-pre-wrap">{message.content}</p>{message.selection?.image || message.selection?.index ? <p className="mt-1 border-t border-zinc-700 pt-1 text-[10px] text-cyan-200">{message.selection.image?.title ?? message.selection.image?.originalName ?? message.selection.index?.path}</p> : null}</>
         : <><Thought content={message.reasoningContent ?? ""} duration={message.reasoningDurationMs} locale={locale} /><Text content={message.content} />
+          {message.execution?.warnings?.includes("approaching_limit") ? <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">{locale === "zh" ? "本次已临近运行上限，优先生成了当前回答。需要更多资料时，可缩小范围继续提问。" : "The task approached its limit and prioritized the current answer. Ask a narrower follow-up if more evidence is needed."}</p> : null}
           {message.execution ? <details className="mt-2 border-t border-zinc-100 pt-1 text-[11px] text-zinc-500"><summary className="cursor-pointer">{locale === "zh" ? "工具执行" : "Tool activity"} · {message.execution.toolCalls}</summary>
             {message.execution.records.filter((record) => record.type === "tool_completed").map((record) => <p key={record.callId}>{robotToolLabel(record.toolName, locale)} · {record.status === "succeeded" ? (locale === "zh" ? "完成" : "Done") : (locale === "zh" ? "失败" : "Failed")}{record.itemCount !== undefined ? ` · ${record.itemCount}` : ""}</p>)}
+            {message.execution.budget ? <BudgetFeedback budget={message.execution.budget} locale={locale} /> : null}
           </details> : null}</>}
     </div>
   </div>);
@@ -69,6 +75,7 @@ export default function AiRobot({ enabled, configured, locale, selection, onOpen
   const [loading, setLoading] = useState(false), [sending, setSending] = useState(false), [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<RobotDraft | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
+  const [failedAttempt, setFailedAttempt] = useState<{ conversationId: string; question: string; selection: RobotSelection; code: string; budget: AiToolBudgetSnapshot } | null>(null);
   const sendAbort = useRef<AbortController | null>(null), loadAbort = useRef<AbortController | null>(null);
   const pane = useRef<HTMLDivElement | null>(null), scroll = useRef({ top: 0, stick: true });
   const context = useRef(selection);
@@ -128,12 +135,12 @@ export default function AiRobot({ enabled, configured, locale, selection, onOpen
     const node = pane.current;
     if (scroll.current.stick) node.scrollTop = node.scrollHeight;
   }, [messages, draft, open, minimized]);
-  const send = useCallback(async (text: string) => {
+  const send = useCallback(async (text: string, reference?: RobotSelection) => {
     const id = active.current;
     if (!id || sendAbort.current || !enabledRef.current) return false;
     const controller = new AbortController(); sendAbort.current = controller;
-    const selected = context.current;
-    setSending(true); setError(null); setDraft(null); scroll.current.stick = true;
+    const selected = reference ?? context.current;
+    setSending(true); setError(null); setFailedAttempt(null); setDraft(null); scroll.current.stick = true;
     let localDraft: RobotDraft | null = null, accepted = false;
     const buffer = createLatestValueScheduler<RobotDraft | null>(setDraft, (callback) => window.setTimeout(callback, 50), window.clearTimeout);
     try {
@@ -143,10 +150,13 @@ export default function AiRobot({ enabled, configured, locale, selection, onOpen
       await consumeRobotStream(response, (event) => {
         if (event.type === "user_message") { accepted = true; setMessages((rows) => [...rows, event.message]); }
         else if (event.type === "done") { buffer.cancel(); setDraft(null); setMessages((rows) => [...rows, event.message]); }
-        else if (event.type === "error") throw new Error(event.error);
+        else if (event.type === "error") throw new RobotTaskError(event.error, event.code, event.budget);
         else { localDraft = updateRobotDraft(localDraft, event); buffer.queue(localDraft); }
       }, controller.signal);
-    } catch (caught) { setError(controller.signal.aborted ? robotErrorMessage("cancelled", locale) : caught instanceof RobotStreamError ? robotErrorMessage("invalid_response", locale) : caught instanceof Error ? caught.message : robotErrorMessage("execution_failed", locale)); }
+    } catch (caught) {
+      setError(controller.signal.aborted ? robotErrorMessage("cancelled", locale) : caught instanceof RobotStreamError ? robotErrorMessage("invalid_response", locale) : caught instanceof Error ? caught.message : robotErrorMessage("execution_failed", locale));
+      if (!controller.signal.aborted && caught instanceof RobotTaskError && caught.budget?.limitKind) setFailedAttempt({ conversationId: id, question: text, selection: selected, code: caught.code, budget: caught.budget });
+    }
     finally {
       buffer.cancel(); setDraft(null); sendAbort.current = null; setSending(false);
       if (enabledRef.current) await refreshList().catch(() => {});
@@ -165,7 +175,7 @@ export default function AiRobot({ enabled, configured, locale, selection, onOpen
       } else if ((kind === "clear" || kind === "delete") && id) {
         if (!await showConfirm({ title: zh ? (kind === "clear" ? "清空此会话？" : "删除此会话？") : (kind === "clear" ? "Clear this conversation?" : "Delete this conversation?"), message: zh ? "此操作无法撤销。" : "This cannot be undone.", tone: "danger" })) return;
         await fetchRobotJson(`${api}/${id}${kind === "clear" ? "/messages" : ""}`, locale, { method: "DELETE" });
-        setMessages([]); setNextBefore(null); setError(null);
+        setMessages([]); setNextBefore(null); setError(null); setFailedAttempt(null);
       } else if (kind === "older" && id && nextBefore !== null) {
         setLoading(true);
         const result = await fetchRobotJson<{ messages: RobotMessage[]; nextBefore: number | null }>(`${api}/${id}?before=${nextBefore}`, locale);
@@ -186,6 +196,7 @@ export default function AiRobot({ enabled, configured, locale, selection, onOpen
   if (!enabled) return null;
   const subtitle = selection.image?.title ?? selection.image?.originalName ?? selection.index?.path ?? (zh ? "全局助手 · 只读工具" : "Global assistant · read-only tools");
   const btn = "grid h-8 w-8 shrink-0 place-items-center rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100 disabled:opacity-50";
+  const failure = failedAttempt?.conversationId === activeId ? failedAttempt : null;
   return <>
     {!open ? <RobotLauncher locale={locale} busy={sending} onOpen={() => { setMinimized(false); setOpen(true); }} /> : <RobotWindow locale={locale} minimized={minimized} onMinimize={toggleMinimize} subtitle={subtitle}
       onClose={() => { rememberScroll(); stop(); setOpen(false); }}>
@@ -204,9 +215,14 @@ export default function AiRobot({ enabled, configured, locale, selection, onOpen
         {sending ? <div className="max-w-[90%] rounded-xl border border-cyan-200 bg-white px-3 py-2 text-sm leading-6 text-zinc-800"><p className="mb-1 text-xs text-cyan-700"><Loader2 className="mr-1 inline h-3 w-3 animate-spin" />{zh ? "正在处理" : "Working"}{draft?.round ? ` · ${draft.round}` : ""}</p>
           <Thought content={draft?.reasoning ?? ""} locale={locale} />{draft?.text ? <Text content={draft.text} /> : null}
           {draft?.tools.map((tool) => <p key={tool.id} className="text-[11px] text-zinc-500">{robotToolLabel(tool.name, locale)} · {tool.status === "running" ? (zh ? "读取中" : "Reading") : tool.status === "succeeded" ? (zh ? "完成" : "Done") : (zh ? "失败" : "Failed")}</p>)}
+          {draft?.warning ? <p role="status" className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">{zh ? "接近" : "Approaching "}{robotBudgetReason(draft.warning.limitKind, locale)}{zh ? "，正在收束已完成的读取并生成回答。" : "; wrapping up successful reads and preparing an answer."}</p> : null}
         </div> : null}
-        {error ? <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700"><p role="alert" className="whitespace-pre-wrap">{error}</p>
-          {!sending && !loading ? <button type="button" onClick={() => setReloadVersion((value) => value + 1)} className="mt-2 rounded-md border border-rose-200 bg-white px-2 py-1 hover:bg-rose-100">{zh ? "重新加载会话" : "Reload conversations"}</button> : null}
+        {error || failure ? <div className="rounded-md border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700"><p role="alert" className="whitespace-pre-wrap">{failure ? `${robotErrorMessage(failure.code, locale)} ${zh ? "对应限制：" : "Relevant limit: "}${robotBudgetReason(failure.budget.limitKind, locale)}。` : error}</p>
+          {failure ? <><BudgetFeedback budget={failure.budget} locale={locale} /><p className="mt-2">{zh ? "尚未生成最终答案。可调整对应限制或缩小问题范围；重试会按当前设置重新执行原问题，不会自动续跑。" : "No final answer was produced. Adjust the relevant limit or narrow the question. Retrying starts the original question again with current settings; it does not resume automatically."}</p></> : null}
+          {!sending && !loading ? <div className="mt-2 flex flex-wrap gap-2">{failure ? <>
+            <button type="button" onClick={settings} className="rounded-md border border-cyan-200 bg-white px-2 py-1 text-cyan-800 hover:bg-cyan-50">{zh ? "调整运行限制" : "Adjust limits"}</button>
+            <button type="button" title={zh ? "使用原问题和原参考对象，按当前设置重新执行" : "Rerun the original question and reference selection with current settings"} onClick={() => void send(failure.question, failure.selection)} className="rounded-md border border-rose-200 bg-white px-2 py-1 hover:bg-rose-100">{zh ? "重试此问题" : "Retry question"}</button>
+          </> : null}<button type="button" onClick={() => { setFailedAttempt(null); setReloadVersion((value) => value + 1); }} className="rounded-md border border-rose-200 bg-white px-2 py-1 hover:bg-rose-100">{zh ? "重新加载会话" : "Reload conversations"}</button></div> : null}
         </div> : null}
       </div>
       <Composer sending={sending} configured={configured} ready={Boolean(activeId) && !loading} locale={locale} onSend={send} onStop={stop} onSettings={settings} />

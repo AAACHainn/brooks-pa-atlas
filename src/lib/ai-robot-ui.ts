@@ -1,4 +1,8 @@
 import { robotErrorMessage, type RobotLocale, type RobotStreamEvent } from "@/lib/ai-robot-types";
+import type { AiToolBudgetSnapshot } from "@/lib/ai-tool-limits";
+export class RobotTaskError extends Error {
+  constructor(message: string, readonly code: string, readonly budget?: AiToolBudgetSnapshot) { super(message); }
+}
 
 export async function readRobotJson<T>(response: Response, locale: RobotLocale): Promise<T> {
   const value = await response.json().catch(() => null);
@@ -42,7 +46,7 @@ export function parseRobotFrame(value: unknown): RobotFrame | null {
 }
 export function robotWasDragged(dx: number, dy: number) { return Math.hypot(dx, dy) >= 6; }
 
-export type RobotDraft = { runId: string; round: number; text: string; reasoning: string; tools: Array<{ id: string; name: string; status: string }> };
+export type RobotDraft = { runId: string; round: number; text: string; reasoning: string; tools: Array<{ id: string; name: string; status: string }>; warning?: AiToolBudgetSnapshot };
 export function updateRobotDraft(current: RobotDraft | null, event: RobotStreamEvent): RobotDraft | null {
   if (event.type === "done" || event.type === "error") return null;
   if (event.type !== "trace" && event.type !== "delta") return current;
@@ -52,6 +56,7 @@ export function updateRobotDraft(current: RobotDraft | null, event: RobotStreamE
     text: event.channel === "content" ? (draft.round === event.round ? draft.text : "") + event.text : draft.text,
     reasoning: event.channel === "reasoning" ? draft.reasoning + event.text : draft.reasoning };
   const record = event.record;
+  if (record.type === "budget_warning") return { ...draft, warning: record.budget };
   if (record.type === "model_started") return { ...draft, round: record.round ?? 0, text: "", reasoning: draft.reasoning ? draft.reasoning + "\n\n" : "" };
   if ((record.type === "tool_started" || record.type === "tool_completed") && record.callId) {
     const item = { id: record.callId, name: record.toolName ?? "", status: record.status ?? "running" };

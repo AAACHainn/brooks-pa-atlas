@@ -241,7 +241,80 @@ test("oversized current question fails budget validation without an upstream req
   const question = "汉".repeat(19_000);
   const output = await events(await messages.POST(request(question), context(id)));
   assert.equal(calls, 0); assert.ok(output.some((event) => event.type === "error" && event.code === "budget_exceeded"));
+  const failure = output.find((event) => event.type === "error");
+  assert.equal(failure?.type === "error" && failure.budget?.limitKind, "input_tokens");
+  assert.ok(failure?.type === "error" && failure.budget!.nextInputTokens > failure.budget!.limits.inputTokenBudget);
   assert.equal((await prisma.aiRobotMessage.findFirstOrThrow({ where: { conversationId: id } })).content, question);
   const setting = await prisma.appSetting.findUniqueOrThrow({ where: { key: AI_CONFIG_SETTING_KEY } });
   assert.ok(setting.value.includes("private-test-key"));
+});
+
+test("robot saved limits allow more calls, fix the run snapshot, and cannot be overridden by the send body", async () => {
+  const previous = { ...config.skills.globalRobot };
+  const id = await create(); let calls = 0;
+  try {
+    Object.assign(config.skills.globalRobot, { maxModelCalls: 12, maxToolCalls: 24, maxOutputTokens: 1_234, runTimeoutSeconds: 420 });
+    await resetConfig();
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      assert.equal(body.max_tokens ?? body.max_completion_tokens, 1_234);
+      if (++calls === 1) {
+        config.skills.globalRobot.maxModelCalls = 1; config.skills.globalRobot.maxToolCalls = 1;
+        await resetConfig();
+      }
+      if (calls <= 7) return turnResponse(null, [0, 1].map((index) => ({ id: `read-${calls}-${index}`, name: "list_index_nodes", arguments: '{"query":"图表","limit":1}' })));
+      return turnResponse("根据实际读取生成最终答案");
+    };
+    assert.equal((await messages.POST(request("forged", { limits: { maxModelCalls: 50 } }), context(id))).status, 400);
+    assert.equal(calls, 0);
+    const output = await events(await messages.POST(request("多次查询"), context(id)));
+    const done = output.find((event) => event.type === "done");
+    assert.equal(done?.type, "done", JSON.stringify(output));
+    if (done?.type === "done") {
+      assert.equal(done.message.execution?.modelCalls, 8); assert.equal(done.message.execution?.toolCalls, 14);
+      assert.equal(done.message.execution?.budget?.limits.maxModelCalls, 12);
+      assert.equal(done.message.execution?.budget?.limits.maxToolCalls, 24);
+      assert.equal(done.message.execution?.budget?.limits.runTimeoutMs, 420_000);
+      assert.doesNotMatch(JSON.stringify(done.message.execution), /private-test-key|"query"|"arguments"/);
+    }
+  } finally { config.skills.globalRobot = previous; await resetConfig(); }
+});
+
+test("near-limit answers warn users and retain the completed read statistics in history", async () => {
+  const previous = { ...config.skills.globalRobot };
+  const id = await create(); let calls = 0;
+  try {
+    config.skills.globalRobot.maxModelCalls = 2; await resetConfig();
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (++calls === 1) return turnResponse(null, [{ id: "read", name: "get_image_context", arguments: '{"imageId":"image","fields":["ocr"]}' }]);
+      assert.equal(body.tool_choice, "none");
+      assert.equal(JSON.parse(body.messages.find((message: { role: string }) => message.role === "tool").content).data.snapshot.ocr.text, "最新OCR");
+      return turnResponse("已读取当前 OCR。其余资料尚未查询，可继续询问具体范围。");
+    };
+    const output = await events(await messages.POST(request(), context(id)));
+    assert.ok(output.some((event) => event.type === "trace" && event.record.type === "budget_warning"));
+    const done = output.find((event) => event.type === "done");
+    assert.ok(done?.type === "done" && done.message.execution?.warnings?.includes("approaching_limit"));
+    const saved = await prisma.aiRobotMessage.findFirstOrThrow({ where: { conversationId: id, role: "ASSISTANT" } });
+    assert.ok(JSON.parse(saved.executionJson!).warnings.includes("approaching_limit"));
+    assert.equal(JSON.parse(saved.executionJson!).budget.successfulToolCalls, 1);
+  } finally { config.skills.globalRobot = previous; await resetConfig(); }
+});
+
+test("raising the input budget accepts an intact question that failed the default budget", async () => {
+  const previous = { ...config.skills.globalRobot };
+  const id = await create(), question = "汉".repeat(19_000);
+  try {
+    Object.assign(config.skills.globalRobot, { inputTokenBudget: 64_000, totalInputTokenBudget: 200_000 }); await resetConfig();
+    let calls = 0;
+    globalThis.fetch = async (_url, init) => {
+      calls++; const body = JSON.parse(String(init?.body));
+      assert.equal(body.messages.at(-1).content, question);
+      return turnResponse("完整问题已收到");
+    };
+    const output = await events(await messages.POST(request(question), context(id)));
+    assert.equal(calls, 1); assert.ok(output.some((event) => event.type === "done"));
+    assert.equal((await prisma.aiRobotMessage.findFirstOrThrow({ where: { conversationId: id, role: "USER" } })).content, question);
+  } finally { config.skills.globalRobot = previous; await resetConfig(); }
 });

@@ -6,6 +6,7 @@ import {
   DEFAULT_SUBTITLE_KNOWLEDGE_PROMPT, defaultStoredAiConfig, mergeAiConfigSecrets,
   parseStoredAiConfig, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls, resolveAiModelSelection, sanitizeAiConfig,
   type AiConfigInput, type StoredAiEndpoint, type StoredEmbeddingEndpoint, aiConfigInputSchema, readingCompanionSkillSchema,
+  defaultAiRobotLimits, globalRobotSkillSchema,
 } from "@/lib/ai-config";
 
 function chatEndpoint(overrides: Partial<StoredAiEndpoint> = {}): StoredAiEndpoint {
@@ -71,7 +72,7 @@ test("a foreign override cannot make a missing active default model ready", () =
 
 test("robot defaults extend v4 while old saves preserve its custom configuration", () => {
   const current = defaultStoredAiConfig();
-  current.skills.globalRobot = { enabled: false, modelOverride: "tool-model", prompt: "custom robot" };
+  current.skills.globalRobot = { ...current.skills.globalRobot, enabled: false, modelOverride: "tool-model", prompt: "custom robot" };
   const old = input();
   assert.equal(parseStoredAiConfig(JSON.stringify(old)).skills.globalRobot.enabled, true);
   const saved = mergeAiConfigSecrets(aiConfigInputSchema.parse(old), current);
@@ -90,6 +91,34 @@ test("legacy reading skills gain deep budgets without losing endpoints or prompt
   assert.equal(parsed.skills.readingCompanion.deepTotalInputTokenBudget, 100_000);
   assert.equal(parsed.skills.readingCompanion.deepMaxOutputTokens, 4_096);
   assert.equal(parsed.activeEndpointId, "chat-1");
+});
+
+test("robot limits default for old v4 settings and survive legacy saves", () => {
+  const current = defaultStoredAiConfig();
+  const oldRobot = { enabled: true, prompt: "robot", modelOverride: "tool-model" };
+  const old = { ...current, skills: { ...current.skills, globalRobot: oldRobot } };
+  const loaded = parseStoredAiConfig(JSON.stringify(old));
+  for (const [key, value] of Object.entries(defaultAiRobotLimits)) assert.equal(loaded.skills.globalRobot[key as keyof typeof defaultAiRobotLimits], value);
+  Object.assign(current.skills.globalRobot, { maxModelCalls: 12, maxToolCalls: 24, inputTokenBudget: 32_000, totalInputTokenBudget: 250_000, maxOutputTokens: 8_000, runTimeoutSeconds: 600 });
+  const saved = mergeAiConfigSecrets(aiConfigInputSchema.parse(old), current);
+  assert.equal(saved.skills.globalRobot.maxModelCalls, 12);
+  assert.equal(saved.skills.globalRobot.inputTokenBudget, 32_000);
+  assert.equal(saved.skills.globalRobot.runTimeoutSeconds, 600);
+  assert.deepEqual(sanitizeAiConfig(saved).skills.globalRobot, saved.skills.globalRobot);
+  assert.deepEqual(saved.skills.readingCompanion, current.skills.readingCompanion);
+});
+
+test("robot limits enforce integer ranges and cross-field input budgets", () => {
+  const skill = defaultStoredAiConfig().skills.globalRobot;
+  for (const key of Object.keys(defaultAiRobotLimits) as Array<keyof typeof defaultAiRobotLimits>) {
+    for (const value of [0, -1, 1.5, Infinity]) assert.equal(globalRobotSkillSchema.safeParse({ ...skill, [key]: value }).success, false);
+  }
+  for (const [key, value] of Object.entries({ maxModelCalls: 51, maxToolCalls: 201, inputTokenBudget: 1_000_001, totalInputTokenBudget: 10_000_001, maxOutputTokens: 131_073, runTimeoutSeconds: 1_801 })) {
+    assert.equal(globalRobotSkillSchema.safeParse({ ...skill, [key]: value }).success, false);
+  }
+  assert.equal(globalRobotSkillSchema.safeParse({ ...skill, inputTokenBudget: 200_000 }).success, false);
+  const draft = input({ skills: { ...input().skills, globalRobot: { ...skill, inputTokenBudget: 200_000 } } });
+  assert.throws(() => mergeAiConfigSecrets(aiConfigInputSchema.parse(draft), defaultStoredAiConfig()), /累计输入/);
 });
 
 test("deep skill budgets round trip through secret merging and sanitized DTOs", () => {

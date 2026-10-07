@@ -196,6 +196,7 @@ docker compose down
 - `src/lib/ai-config.ts`：版本化 AI 配置 schema、默认技能、密钥合并/脱敏和端点 URL 解析。
 - `src/lib/ai-client.ts`：OpenAI-compatible 模型发现、非流式与 SSE 流式 Chat Completions 客户端。
 - `src/lib/ai-model-types.ts`：与供应商协议分离的结构化消息、调用、单轮结果与流式事件类型；`ai-client.ts` 负责协议序列化和解析，原文本接口保持兼容。
+- `src/lib/ai-tool-limits.ts`：可供客户端安全导入的执行器默认限制、预算类型和脱敏统计；不包含服务端执行能力。
 - `src/lib/ai-tool-registry.ts` / `src/lib/ai-tool-runtime.ts`：仅服务端的 Zod 工具注册、白名单/资源范围、串行多轮执行、预算/取消/超时及结构化记录；不提供公开执行 API。
 - `src/lib/ai-system-tools.ts` / `src/lib/ai-tool-probe.ts`：正式内部图片资料/索引只读工具及仅显式调用的无副作用能力探测，已通过独立 AI 机器人显式接入；伴读、OCR 和资料流程不启用工具。
 - `docs/AI_TOOL_ARCHITECTURE.md`：工具基础设施接口、注册、资源授权、运行限制、记录扩展及兼容约束。
@@ -524,10 +525,14 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 工具响应允许正文为空；SSE 按调用 index 组装交错参数，完整结束后才执行。截断、取消、无效/重复 ID 不执行半成品。完整 assistant 调用消息与供应商思考字段先进入上下文，工具串行执行，通过匹配的 `tool_call_id` 回传结果；结果是不可信参考数据。
 - 新执行器默认最多 6 次模型请求、12 次工具调用；模型/工具/运行超时为 120 秒/30 秒/5 分钟。单次输入 16000 Token（保留 10% 余量）、累计输入 100000 Token、输出 4096 Token，估算包括工具定义、参数与结果；单工具结果最多 32KiB，超限明确报错，不静默裁剪。未知工具、无效参数、越权和读取失败可回传给模型修正；请求错误、取消、超时及预算耗尽返回失败终态和空最终答案。
 - 首批正式只读工具 `get_image_context` 复用现有服务读取最新资料，不返回路径或图片字节；`list_index_nodes` 对授权索引做字面量搜索和分页，默认 20 项、最多 50 项，不隐式授权后代。
+- `list_index_nodes` 在同一读取事务返回符合关键词、父节点及授权范围的 `total` 和当前页；仅统计数量时可使用 total，避免逐页读取。`get_image_context` 支持 fields/offset/limit；机器人使用 `createSystemToolRegistry({ pagedImageContext: true })` 默认按 Unicode 字符返回最多 2000 字符的 OCR/备注页、列表最多 20 项，响应 pages 明确标出 total/returned/nextOffset。offset 对文本为 Unicode 字符位置，对列表为项目位置；后续页应指定对应字段。普通内部无参数调用仍可读取完整快照，32KiB 超限错误仍保留。
 - 执行器自身只在运行内返回记录，可通过 `AiToolTraceSink` 扩展存储；机器人调用方把完成运行的脱敏摘要保存到独立消息，不保存工具参数或结果正文。记录只包含运行/调用/资源 ID、端点/模型标识、状态、耗时、Token 和结果数量/大小摘要；不保存密钥、原始响应、参数正文、完整资料或思考正文。sink 失败记录警告，取消后的最终记录仍在返回结果中，可由调用方补存。
 - `probeAiToolSupport` 通过临时无副作用工具验证调用、回传和最终回答，返回 supported/unsupported/unconfirmed/failed；可能产生费用，必须显式触发，不在启动或既有连接测试时运行。不支持工具的模型仍可使用原有 AI 功能，不把普通文本或 JSON 当作工具指令执行。
 - AI 配置保存在 `AppSetting` 的 `ai.config.v4`，读取时兼容迁移 `ai.config.v1` / `ai.config.v2` / `ai.config.v3`；配置是当前实例本地设置，不进入备份 zip，恢复也不覆盖。
 - 全局 AI 机器人使用 `skills.globalRobot` 的启用开关、提示词和模型覆盖，仍保存 v4；旧配置默认启用，旧 PUT 缺少机器人技能时保留现值。禁用会取消单进程全部活动机器人运行并拒绝新发送，不删除会话。仅用户发送时调用模型，不自动探测工具能力。
+- 机器人高级限制保存在同一技能：maxModelCalls=6（1–50）、maxToolCalls=12（1–200）、inputTokenBudget=16000（1–1000000）、totalInputTokenBudget=100000（1–10000000）、maxOutputTokens=4096（1–131072）、runTimeoutSeconds=300（30–1800）。累计输入不得低于单次。旧配置补默认，旧机器人 PUT 缺少新增字段时保留当前值；不修改配置版本或数据库结构。高级限制只用于机器人，并在发送时固定，发送请求不能覆盖 limits；单模型 120 秒、单工具 30 秒、单结果 32KiB 保持固定。
+- 执行器可由机器人显式启用 finishNearLimit：最后一次模型请求或接近工具/输入/时间限制时，发送受信的收束指令与 tool_choice=none，优先基于成功读取生成答案并指出未解决部分；模型仍请求工具时停止，不执行额外调用、不自动续跑。budget_warning 与 run_completed trace 附带脱敏 budget；失败区分 model_calls/tool_calls/input_tokens/total_input_tokens/run_time，显示真实成功读取与未完成调用数。成功历史保存 warnings/budget，旧历史缺失字段仍正常显示。
+- 超限后用户可打开高级设置或手动重试原问题及原参考对象；重试重新执行并读取当前配置，不能视作检查点恢复。失败反馈只在当前窗口内保留，不保存工具正文或未完成助手草稿。继续更小范围的问题可使用已完成答案作为历史；本阶段不增加任务模式、自动续跑或后台检查点。
 - 机器人使用独立 `AiRobotConversation` / `AiRobotMessage` 表，migration 为 `20261006100000_ai_robot`；历史不进入备份 zip。每会话只允许一个运行，清空/删除期间也持有互斥；取消/超时/失败只保留用户消息，不保存助手草稿。当前图片和目录在发送时校验并保存参考快照，图片删除后仍显示历史参考；考试模式不传浏览模式遗留图片。
 - 已有本地数据库使用机器人前必须应用 `20261006100000_ai_robot` 并生成 Prisma Client、重启服务。机器人专用接口通过 `ai-robot-api.ts` 返回脱敏 JSON 错误；缺表/字段返回 HTTP 503 与 `storage_upgrade_required`，前端按界面语言提示并允许重新加载会话，不在请求中自动迁移数据库。
 - 机器人最多装载最近四组成功问答，当前问题完整保留，预算超限明确失败；显示分页每次 40 条。轮次正文和思考、工具状态独立展示，仅执行器最终答案作为成功回复。拖动按帧变换，输入框和历史消息分离；收起继续，停止/关闭取消。

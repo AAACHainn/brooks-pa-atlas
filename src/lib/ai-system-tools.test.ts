@@ -9,6 +9,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { AI_CONFIG_SETTING_KEY } from "@/lib/ai-config";
 import { runAiToolTask } from "@/lib/ai-tool-runtime";
 import type { AiToolRegistry, AiToolExecutionContext } from "@/lib/ai-tool-registry";
+import { AiToolError } from "@/lib/ai-tool-registry";
 import { toolTestConfig, turnResponse } from "@/lib/ai-tool-test-helpers";
 
 let prisma: PrismaClient;
@@ -115,8 +116,9 @@ test("system read tools enforce exact image/index authorization without scope ex
 
 test("index reads paginate within bounded pages and match percent signs literally", async () => {
   const tool = registry.get("list_index_nodes")!;
-  const first = await tool.execute(tool.validate({ query: "Pages", parentId: "root" }), context) as { nodes: Array<{ id: string }>; nextOffset: number };
+  const first = await tool.execute(tool.validate({ query: "Pages", parentId: "root" }), context) as { nodes: Array<{ id: string }>; nextOffset: number; total: number };
   assert.equal(first.nodes.length, 20);
+  assert.equal(first.total, 24);
   assert.equal(first.nextOffset, 20);
   const second = await tool.execute(tool.validate({ query: "Pages", parentId: "root", offset: first.nextOffset }), context) as { nodes: Array<{ id: string }>; nextOffset: number | null };
   assert.equal(second.nodes.length, 4); assert.equal(second.nextOffset, null);
@@ -132,4 +134,20 @@ test("server-only boundary rejects default client imports", () => {
   assert.throws(() => execFileSync(process.execPath, ["--input-type=module", "-e", "import 'server-only'"], {
     cwd: process.cwd(), stdio: "pipe", timeout: 5_000,
   }), /Command failed/);
+});
+
+test("robot image reads select fields and page Unicode text without losing source content", async () => {
+  const text = "汉😀".repeat(3_000);
+  await prisma.chartImage.create({ data: { id: "long-image", originalName: "long.png", libraryPath: "images/long.png", hash: "c".repeat(64), mimeType: "image/png", sizeBytes: 10, ocrText: text, notes: "notes should be omitted" } });
+  const paged = (await import("@/lib/ai-system-tools")).createSystemToolRegistry({ pagedImageContext: true }).get("get_image_context")!;
+  const read = async (offset: number) => paged.execute(paged.validate({ imageId: "long-image", fields: ["ocr"], offset, limit: 4_000 }), context) as Promise<{ snapshot: { ocr: { text: string }; notes?: string }; pages: { ocr: { total: number; returned: number; nextOffset: number | null } } }>;
+  const first = await read(0);
+  assert.equal(first.pages.ocr.total, 6_000); assert.equal(first.pages.ocr.nextOffset, 4_000);
+  assert.equal(first.snapshot.notes, undefined);
+  const second = await read(first.pages.ocr.nextOffset!);
+  assert.equal(second.pages.ocr.returned, 2_000); assert.equal(second.pages.ocr.nextOffset, null);
+  assert.equal(first.snapshot.ocr.text + second.snapshot.ocr.text, text);
+  assert.equal((await prisma.chartImage.findUniqueOrThrow({ where: { id: "long-image" } })).ocrText, text);
+  assert.doesNotMatch(JSON.stringify(first), /libraryPath|base64|notes should be omitted/);
+  assert.throws(() => paged.validate({ imageId: "long-image", fields: ["secret"] }), AiToolError);
 });

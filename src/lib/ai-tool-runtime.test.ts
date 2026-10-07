@@ -210,6 +210,9 @@ test("call-count and input limits stop automatically without partial final answe
     assert.equal(result.status, "limit_exceeded"); assert.equal(result.answer, null);
     assert.deepEqual(calls, kind === "models" ? ["a"] : []);
     assert.equal(fetched, kind === "input" ? 0 : 1);
+    assert.equal(result.error?.limitKind, kind === "models" ? "model_calls" : kind === "tools" ? "tool_calls" : "input_tokens");
+    assert.equal(result.budget?.pendingToolCalls, kind === "tools" ? 2 : 0);
+    assert.equal(result.budget?.completedTools.length, kind === "models" ? 1 : 0);
   }
 });
 
@@ -223,6 +226,35 @@ test("cumulative budget includes tool schemas, arguments and result messages", a
   assert.equal(estimates.length, 2); assert.ok(estimates[1] > estimates[0]);
   const result = await runAiToolTask({ ...make(), limits: { inputTokenBudget: Math.ceil(Math.max(...estimates) / 0.9), totalInputTokenBudget: pilot.estimatedInputTokens - 1 } });
   assert.equal(result.status, "limit_exceeded"); assert.equal(result.modelCalls, 1);
+  assert.equal(result.error?.limitKind, "total_input_tokens");
+  assert.ok(result.budget!.estimatedInputTokens + result.budget!.nextInputTokens > result.budget!.limits.totalInputTokenBudget);
+});
+
+test("robot callers reserve the last request for a final answer and report a safe warning", async () => {
+  const { options, calls } = fixture(); let requests = 0;
+  const result = await runAiToolTask({ ...options, limits: { maxModelCalls: 2 }, finishNearLimit: true,
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (++requests === 1) return turnResponse(null, [call("1")]);
+      assert.equal(body.tool_choice, "none");
+      assert.ok(body.messages.some((message: { role: string; content: string }) => message.role === "system" && message.content.includes("what remains unanswered")));
+      assert.equal(JSON.parse(body.messages.find((message: { role: string }) => message.role === "tool").content).data.value, "saved text");
+      return turnResponse("The successful read establishes part of the answer. More evidence is needed.");
+    } });
+  assert.equal(result.status, "completed"); assert.deepEqual(calls, ["a"]);
+  assert.equal(result.modelCalls, 2); assert.ok(result.warnings.includes("approaching_limit"));
+  assert.equal(result.records.find((record) => record.type === "budget_warning")?.budget?.limitKind, "model_calls");
+  assert.deepEqual(result.budget?.completedTools, [{ name: "read_value", calls: 1, items: 1 }]);
+  assert.doesNotMatch(JSON.stringify(result.records), /saved text|private-test-key/);
+});
+
+test("a model ignoring the final-answer instruction cannot execute another tool or auto-continue", async () => {
+  const { options, calls } = fixture(); let requests = 0;
+  const result = await runAiToolTask({ ...options, limits: { maxModelCalls: 2 }, finishNearLimit: true,
+    fetchImpl: async () => turnResponse(null, [call(String(++requests), requests === 1 ? "a" : "b")]) });
+  assert.equal(result.status, "limit_exceeded"); assert.equal(result.error?.code, "final_answer_required");
+  assert.equal(result.budget?.pendingToolCalls, 1); assert.equal(result.modelCalls, 2);
+  assert.deepEqual(calls, ["a"]); assert.equal(result.answer, null);
 });
 
 test("storage hooks receive independent metadata snapshots and their failures do not change execution", async () => {

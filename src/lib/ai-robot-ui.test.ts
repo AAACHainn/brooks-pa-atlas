@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { clampRobotFrame, resizeRobotFrame, parseRobotFrame, robotWasDragged, consumeRobotStream, updateRobotDraft, readRobotJson, fetchRobotJson } from "@/lib/ai-robot-ui";
 import { robotErrorMessage } from "@/lib/ai-robot-types";
+import { robotBudgetFeedback } from "@/lib/ai-robot-types";
+import { defaultAiToolLimits, type AiToolBudgetSnapshot } from "@/lib/ai-tool-limits";
 import type { RobotStreamEvent } from "@/lib/ai-robot-types";
 
 test("robot geometry clamps restored frames, supports resize, and distinguishes drag from click", () => {
@@ -53,4 +55,16 @@ test("conversation network errors are actionable while cancellation is preserved
     globalThis.fetch = async () => { signal.throwIfAborted(); return Response.json({}); };
     await assert.rejects(fetchRobotJson("http://localhost", "en", { signal }), { name: "AbortError" });
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test("budget warnings survive round changes and feedback identifies input size independently of call counts", () => {
+  const budget: AiToolBudgetSnapshot = { limits: { ...defaultAiToolLimits }, modelCalls: 1, toolCalls: 1, successfulToolCalls: 1,
+    estimatedInputTokens: 1_000, nextInputTokens: 20_000, elapsedMs: 100, pendingToolCalls: 2,
+    completedTools: [{ name: "list_index_nodes", calls: 1, items: 20 }], limitKind: "input_tokens" };
+  let draft = updateRobotDraft(null, { type: "trace", record: { runId: "run", at: "now", type: "budget_warning", budget } });
+  draft = updateRobotDraft(draft, { type: "trace", record: { runId: "run", at: "now", type: "model_started", round: 2 } });
+  assert.equal(draft?.warning?.limitKind, "input_tokens");
+  const feedback = robotBudgetFeedback(budget, "zh").join("\n");
+  assert.match(feedback, /模型请求 1\/6/); assert.match(feedback, /20,000/); assert.match(feedback, /14,400/);
+  assert.match(feedback, /查询索引 × 1/); assert.match(feedback, /2 个工具调用未完成/);
 });

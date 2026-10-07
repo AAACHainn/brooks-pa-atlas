@@ -33,8 +33,9 @@ export async function POST(request: Request, context: Context) {
       try {
         send({ type: "user_message", message: serializeRobotMessage(task.userMessage) });
         const result = await runAiToolTask({
-          messages: task.messages, registry: createSystemToolRegistry(), allowedTools: robotAllowedTools,
+          messages: task.messages, registry: createSystemToolRegistry({ pagedImageContext: true }), allowedTools: robotAllowedTools,
           context: task.context, config: task.config, skill: task.skill, signal: task.signal,
+          limits: task.limits, finishNearLimit: true,
           onEvent(event) {
             if (event.type === "trace") {
               if (event.record.type === "model_started") reasoningStarted = 0;
@@ -50,7 +51,7 @@ export async function POST(request: Request, context: Context) {
           },
         });
         task.signal.throwIfAborted();
-        if (result.status !== "completed") { const code = result.error?.code ?? "execution_failed"; send({ type: "error", code, error: robotErrorMessage(code, locale) }); }
+        if (result.status !== "completed") { const code = result.error?.code ?? "execution_failed"; send({ type: "error", code, error: robotErrorMessage(code, locale), budget: result.budget }); }
         else {
           const saved = await saveRobotAnswer(task, result, reasoning, reasoningDuration);
           send({ type: "done", message: serializeRobotMessage(saved) });

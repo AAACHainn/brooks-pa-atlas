@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import type { AiRobotMessage } from "@/generated/prisma/client";
 import { readStoredAiConfig } from "@/lib/ai-settings";
 import { GLOBAL_ROBOT_SKILL_KEY, resolveAiEndpointUrls, resolveAiModelSelection } from "@/lib/ai-config";
+import { defaultAiToolLimits } from "@/lib/ai-tool-limits";
 import { acquireRobotRun, isRobotRunActive, releaseRobotRun, type RobotRunLease } from "@/lib/ai-robot-runs";
 import { robotSelectionSchema, type RobotRequest, type RobotSelection, type RobotMessage } from "@/lib/ai-robot-types";
 import type { AiModelMessage } from "@/lib/ai-model-types";
@@ -45,6 +46,10 @@ export async function startRobotMessage(conversationId: string, request: RobotRe
   try {
     signal.throwIfAborted();
     const config = await readStoredAiConfig();
+    const robot = config.skills.globalRobot;
+    const limits = { ...defaultAiToolLimits, maxModelCalls: robot.maxModelCalls, maxToolCalls: robot.maxToolCalls,
+      inputTokenBudget: robot.inputTokenBudget, totalInputTokenBudget: robot.totalInputTokenBudget, maxOutputTokens: robot.maxOutputTokens,
+      runTimeoutMs: robot.runTimeoutSeconds * 1_000 };
     signal.throwIfAborted();
     if (!config.skills.globalRobot.enabled) throw new RobotRequestError("disabled", 403);
     const endpoint = config.endpoints.find((item) => item.id === config.activeEndpointId);
@@ -73,11 +78,11 @@ export async function startRobotMessage(conversationId: string, request: RobotRe
       return row;
     });
     const messages: AiModelMessage[] = [
-      { role: "system", content: `Answer in ${request.locale === "zh" ? "Chinese" : "English"}, unless the user requests another language. The supplied tools read text only, not image pixels. At most four completed historical question/answer pairs are included.` },
+      { role: "system", content: `Answer in ${request.locale === "zh" ? "Chinese" : "English"}, unless the user requests another language. The supplied tools read text only, not image pixels. At most four completed historical question/answer pairs are included. Prefer narrow keywords or parent IDs, specific image fields and bounded pages. Reuse evidence already read in this run. Follow nextOffset only when the question needs more data; do not claim complete coverage until all relevant pages are read.` },
       ...buildRobotHistory([...previousQuestions, ...previousAnswers]),
       { role: "user", content: request.content },
     ];
-    return { lease, cleanup, signal, config, selection, userMessage, messages, skill: GLOBAL_ROBOT_SKILL_KEY,
+    return { lease, cleanup, signal, config, limits, selection, userMessage, messages, skill: GLOBAL_ROBOT_SKILL_KEY,
       context: { scope: { kind: "library" as const }, currentImageId: image?.id ?? null, currentIndexNodeId: index?.id ?? null } };
   } catch (error) { cleanup(); throw error; }
 }
@@ -85,7 +90,8 @@ export async function startRobotMessage(conversationId: string, request: RobotRe
 export async function saveRobotAnswer(task: { lease: RobotRunLease; userMessage: AiRobotMessage }, result: AiToolRunResult, reasoningContent: string, reasoningDurationMs: number) {
   if (result.status !== "completed" || !result.answer || !isRobotRunActive(task.lease)) throw new RobotRequestError("cancelled", 409);
   const execution = { runId: result.runId, modelCalls: result.modelCalls, toolCalls: result.toolCalls,
-    successfulToolCalls: result.successfulToolCalls, estimatedInputTokens: result.estimatedInputTokens, records: result.records };
+    successfulToolCalls: result.successfulToolCalls, estimatedInputTokens: result.estimatedInputTokens, records: result.records,
+    budget: result.budget, warnings: result.warnings };
   return prisma.$transaction(async (tx) => {
     task.lease.controller.signal.throwIfAborted();
     if (!isRobotRunActive(task.lease) || !await tx.aiRobotMessage.findUnique({ where: { id: task.userMessage.id } })) throw new RobotRequestError("cancelled", 409);

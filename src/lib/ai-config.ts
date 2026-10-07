@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { defaultAiToolLimits } from "@/lib/ai-tool-limits";
 
 export const AI_CONFIG_SETTING_KEY = "ai.config.v4";
 export const LEGACY_AI_CONFIG_V3_SETTING_KEY = "ai.config.v3";
@@ -56,9 +57,35 @@ export type EmbeddingEndpointInput = z.infer<typeof embeddingEndpointInputSchema
 
 export const aiSkillSchema = z.object({ prompt: z.string().trim().min(1).max(20_000), modelOverride: z.string().trim().max(200).default("") });
 export type AiSkillConfig = z.infer<typeof aiSkillSchema>;
-export const globalRobotSkillSchema = aiSkillSchema.extend({ enabled: z.boolean().default(true) });
+export const defaultAiRobotLimits = Object.freeze({
+  maxModelCalls: defaultAiToolLimits.maxModelCalls, maxToolCalls: defaultAiToolLimits.maxToolCalls,
+  inputTokenBudget: defaultAiToolLimits.inputTokenBudget, totalInputTokenBudget: defaultAiToolLimits.totalInputTokenBudget,
+  maxOutputTokens: defaultAiToolLimits.maxOutputTokens, runTimeoutSeconds: defaultAiToolLimits.runTimeoutMs / 1_000,
+});
+const robotLimitFields = {
+  maxModelCalls: z.number().int().min(1).max(50), maxToolCalls: z.number().int().min(1).max(200),
+  inputTokenBudget: z.number().int().min(1).max(1_000_000), totalInputTokenBudget: z.number().int().min(1).max(10_000_000),
+  maxOutputTokens: z.number().int().min(1).max(131_072), runTimeoutSeconds: z.number().int().min(30).max(1_800),
+};
+export const globalRobotSkillSchema = aiSkillSchema.extend({
+  enabled: z.boolean().default(true),
+  maxModelCalls: robotLimitFields.maxModelCalls.default(defaultAiRobotLimits.maxModelCalls),
+  maxToolCalls: robotLimitFields.maxToolCalls.default(defaultAiRobotLimits.maxToolCalls),
+  inputTokenBudget: robotLimitFields.inputTokenBudget.default(defaultAiRobotLimits.inputTokenBudget),
+  totalInputTokenBudget: robotLimitFields.totalInputTokenBudget.default(defaultAiRobotLimits.totalInputTokenBudget),
+  maxOutputTokens: robotLimitFields.maxOutputTokens.default(defaultAiRobotLimits.maxOutputTokens),
+  runTimeoutSeconds: robotLimitFields.runTimeoutSeconds.default(defaultAiRobotLimits.runTimeoutSeconds),
+}).refine((skill) => skill.totalInputTokenBudget >= skill.inputTokenBudget, {
+  message: "机器人累计输入 Token 预算不得小于单次输入预算。", path: ["totalInputTokenBudget"],
+});
+const globalRobotSkillInputSchema = aiSkillSchema.extend({
+  enabled: z.boolean().default(true),
+  maxModelCalls: robotLimitFields.maxModelCalls.optional(), maxToolCalls: robotLimitFields.maxToolCalls.optional(),
+  inputTokenBudget: robotLimitFields.inputTokenBudget.optional(), totalInputTokenBudget: robotLimitFields.totalInputTokenBudget.optional(),
+  maxOutputTokens: robotLimitFields.maxOutputTokens.optional(), runTimeoutSeconds: robotLimitFields.runTimeoutSeconds.optional(),
+});
 export type GlobalRobotSkillConfig = z.infer<typeof globalRobotSkillSchema>;
-const defaultRobotSkill = (): GlobalRobotSkillConfig => ({ prompt: DEFAULT_GLOBAL_ROBOT_PROMPT, modelOverride: "", enabled: true });
+const defaultRobotSkill = (): GlobalRobotSkillConfig => ({ prompt: DEFAULT_GLOBAL_ROBOT_PROMPT, modelOverride: "", enabled: true, ...defaultAiRobotLimits });
 export const readingCompanionSkillSchema = aiSkillSchema.extend({
   deepInputTokenBudget: z.number().int().positive().max(1_000_000).default(16_000),
   deepTotalInputTokenBudget: z.number().int().positive().max(10_000_000).default(100_000),
@@ -92,7 +119,7 @@ const aiSkillsSchema = z.object({
   [SUBTITLE_KNOWLEDGE_SKILL_KEY]: subtitleKnowledgeSkillSchema.default(defaultSubtitleSkill),
   [GLOBAL_ROBOT_SKILL_KEY]: globalRobotSkillSchema.default(defaultRobotSkill),
 });
-const aiSkillsInputSchema = aiSkillsSchema.extend({ [GLOBAL_ROBOT_SKILL_KEY]: globalRobotSkillSchema.optional() });
+const aiSkillsInputSchema = aiSkillsSchema.extend({ [GLOBAL_ROBOT_SKILL_KEY]: globalRobotSkillInputSchema.optional() });
 
 export const storedAiConfigSchema = z.object({
   version: z.literal(AI_CONFIG_VERSION), endpoints: z.array(storedAiEndpointSchema).max(50),
@@ -231,7 +258,7 @@ export function mergeAiConfigSecrets(input: AiConfigInput, current: StoredAiConf
     embeddingEndpoints,
     skills: {
       ...input.skills,
-      globalRobot: input.skills.globalRobot ?? current.skills.globalRobot,
+      globalRobot: { ...current.skills.globalRobot, ...input.skills.globalRobot },
       subtitleKnowledge: {
         ...input.skills.subtitleKnowledge,
         disableReasoning: true,

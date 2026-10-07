@@ -62,3 +62,6 @@ next-env.d.ts
 /knowledge.db-*
 /data/library
 /data/tessdata
+
+# local deployment notes
+/docs/ALIYUN_DEPLOYMENT.md

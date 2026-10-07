@@ -8,7 +8,7 @@ import { createBrowserId } from "@/lib/browser-id";
 import {
   AI_CONFIG_VERSION, type AiConfigDto, type AiEndpointDto, type AiProvider,
   type EmbeddingEndpointDto, OCR_REFINEMENT_SKILL_KEY, READING_COMPANION_SKILL_KEY,
-  SUBTITLE_KNOWLEDGE_SKILL_KEY, defaultStoredAiConfig, readingCompanionSkillSchema, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls,
+  SUBTITLE_KNOWLEDGE_SKILL_KEY, GLOBAL_ROBOT_SKILL_KEY, defaultStoredAiConfig, readingCompanionSkillSchema, resolveAiEndpointUrls, resolveEmbeddingEndpointUrls,
 } from "@/lib/ai-config";
 
 type Locale = "zh" | "en";
@@ -39,6 +39,7 @@ const labels = {
     testChatSuccess: "大模型端点已成功返回 Chat Completions 响应。", testEmbeddingSuccess: "Embedding 端点已返回有效向量。",
     noModel: "请选择模型", addModelPlaceholder: "输入模型 ID", add: "添加", noModels: "暂无模型，可拉取或手动添加。",
     skillTitle: "AI 精校 OCR", skillDescription: "结合原图校对当前 OCR 草稿。模型返回结果后只更新未保存草稿。",
+    robotTitle: "AI 机器人", robotDescription: "全局聊天助手，可查询索引、读取图片文字资料；需要支持工具调用的模型。", robotEnabled: "启用全局 AI 机器人", robotPrivacy: "发送问题时会把近期会话、参考对象及工具读取的文字资料发送到启用端点，首版不发送原图。",
     readingSkillTitle: "AI 阅读伴侣", readingSkillDescription: "结合当前图片及全部学习资料进行翻译、讲解、比较和讨论。",
     deepBudget: "深度思考预算", deepInput: "单次上下文输入 Token 预算", deepTotal: "整个问题累计输入 Token 预算", deepOutput: "最终回答输出 Token 上限",
     deepBudgetHint: "输入包含提示词、问题、历史、图片和证据，按保守估算保留安全余量。累计预算不得小于单次预算；配置不能提高模型自身的上下文容量。最多 10 次模型调用、6 个阅读批次。",
@@ -73,6 +74,7 @@ const labels = {
     testEmbeddingSuccess: "The embedding endpoint returned a valid vector.", noModel: "Select a model",
     addModelPlaceholder: "Enter model ID", add: "Add", noModels: "No models yet. Fetch or add one manually.",
     skillTitle: "AI OCR refinement", skillDescription: "Proofread the OCR draft against the image.",
+    robotTitle: "AI robot", robotDescription: "Global assistant for index queries and image text context. Requires a model that supports tools.", robotEnabled: "Enable global AI robot", robotPrivacy: "Questions send recent conversation, reference identifiers and tool results to the active endpoint. Image pixels are not sent.",
     readingSkillTitle: "AI reading companion", readingSkillDescription: "Explain and discuss the current image with its study context.",
     deepBudget: "Deep reading budget", deepInput: "Input-token budget per call", deepTotal: "Total input-token budget per question", deepOutput: "Final answer output-token limit",
     deepBudgetHint: "Input includes prompts, the question, history, images and evidence with conservative estimates and headroom. Total input must cover the per-call budget. These settings cannot increase the model's context capacity. Up to 10 model calls and 6 reading batches.",
@@ -182,7 +184,7 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
       if (!response.ok || !result?.config) throw new Error(result?.error ?? t.loadFailed); setConfig(toDraft(result.config));
     }).catch((error) => { setConfig(toDraft({ version: AI_CONFIG_VERSION, endpoints: [], embeddingEndpoints: [], activeEndpointId: null, activeEmbeddingEndpointId: null,
       skills: defaultStoredAiConfig().skills,
-      skillReady: { ocrRefinement: false, readingCompanion: false, subtitleKnowledge: false }, embeddingReady: false, ready: false }));
+      skillReady: { ocrRefinement: false, readingCompanion: false, subtitleKnowledge: false, globalRobot: false }, embeddingReady: false, ready: false }));
       void showAlert({ title: t.operationFailed, message: error instanceof Error ? error.message : t.loadFailed, tone: "danger" });
     }).finally(() => setLoading(false)); return () => window.clearTimeout(timer);
   }, [initialTab, open, showAlert, t.loadFailed, t.operationFailed]);
@@ -205,6 +207,7 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
   const renderSkills = () => {
     if (!config) return null;
     const definitions = [
+      { key: GLOBAL_ROBOT_SKILL_KEY, title: t.robotTitle, description: t.robotDescription, privacy: t.robotPrivacy },
       { key: OCR_REFINEMENT_SKILL_KEY, title: t.skillTitle, description: t.skillDescription, privacy: t.privacy },
       { key: READING_COMPANION_SKILL_KEY, title: t.readingSkillTitle, description: t.readingSkillDescription, privacy: t.readingPrivacy },
       { key: SUBTITLE_KNOWLEDGE_SKILL_KEY, title: t.subtitleSkillTitle, description: t.subtitleSkillDescription, privacy: t.subtitlePrivacy },
@@ -219,6 +222,7 @@ export default function AppSettingsDialog({ open, locale, onClose, onSaved, init
       return <section key={definition.key} className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
         <h3 className="text-sm font-semibold">{definition.title}</h3>
         <p className="mt-1 text-xs text-zinc-500">{definition.description}</p>
+        {definition.key === GLOBAL_ROBOT_SKILL_KEY ? <label className="mt-4 flex items-center gap-2 text-sm text-zinc-700"><input type="checkbox" checked={config.skills.globalRobot.enabled} onChange={(event) => setConfig((current) => current ? { ...current, skills: { ...current.skills, globalRobot: { ...current.skills.globalRobot, enabled: event.target.checked } } } : current)} className="h-4 w-4 accent-cyan-700" />{t.robotEnabled}</label> : null}
         <label className="mt-5 block text-xs font-medium text-zinc-600">{t.modelOverride}<select value={skill.modelOverride} onChange={(e) => setConfig((current) => current ? { ...current, skills: { ...current.skills, [definition.key]: { ...skill, modelOverride: e.target.value } } } : current)} className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"><option value="">{t.inheritModel}</option>{skill.modelOverride && !modelOptions.includes(skill.modelOverride) ? <option>{skill.modelOverride}</option> : null}{modelOptions.map((model) => <option key={model}>{model}</option>)}</select></label>
         {readingSkill ? <div className="mt-4 rounded-lg border border-cyan-200 bg-cyan-50/40 p-4">
           <h4 className="text-sm font-semibold text-cyan-900">{t.deepBudget}</h4>

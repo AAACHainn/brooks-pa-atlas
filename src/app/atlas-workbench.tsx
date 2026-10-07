@@ -48,6 +48,7 @@ import {
 } from "react";
 import AnnotationColorPicker from "@/app/annotation-color-picker";
 import AiReadingCompanion from "@/app/ai-reading-companion";
+import AiRobot from "@/app/ai-robot";
 import AppSettingsDialog from "@/app/app-settings-dialog";
 import ExamMode from "@/app/exam-mode";
 import { useAppDialog } from "@/app/app-dialog";
@@ -2234,6 +2235,8 @@ export default function AtlasWorkbench() {
   const [settingsInitialTab, setSettingsInitialTab] = useState<"endpoints" | "skills">("endpoints");
   const [aiConfigReady, setAiConfigReady] = useState(false);
   const [readingCompanionReady, setReadingCompanionReady] = useState(false);
+  const [robotEnabled, setRobotEnabled] = useState(false);
+  const [robotReady, setRobotReady] = useState(false);
   const [isReadingCompanionOpen, setIsReadingCompanionOpen] = useState(false);
   const [backupRecords, setBackupRecords] = useState<BackupRecord[]>([]);
   const [backupRecordsLoading, setBackupRecordsLoading] = useState(false);
@@ -2533,6 +2536,8 @@ export default function AtlasWorkbench() {
           setAiConfigReady(
             Boolean(response.ok && result?.config?.skillReady[OCR_REFINEMENT_SKILL_KEY]),
           );
+          setRobotEnabled(Boolean(response.ok && result?.config?.skills.globalRobot.enabled));
+          setRobotReady(Boolean(response.ok && result?.config?.skillReady.globalRobot));
           setReadingCompanionReady(
             Boolean(response.ok && result?.config?.skillReady[READING_COMPANION_SKILL_KEY]),
           );
@@ -7056,6 +7061,8 @@ export default function AtlasWorkbench() {
           onSaved={(config) => {
             setAiConfigReady(config.skillReady[OCR_REFINEMENT_SKILL_KEY]);
             setReadingCompanionReady(config.skillReady[READING_COMPANION_SKILL_KEY]);
+            setRobotEnabled(config.skills.globalRobot.enabled);
+            setRobotReady(config.skillReady.globalRobot);
           }}
         />
       ) : null}
@@ -7065,6 +7072,20 @@ export default function AtlasWorkbench() {
         indexTree={data?.tree ?? []}
         initialIndexNodeId={knowledgeInitialIndexId}
         onClose={() => setIsKnowledgeManagerOpen(false)}
+      />
+      <AiRobot
+        enabled={robotEnabled}
+        configured={robotReady}
+        locale={locale}
+        selection={{
+          image: !isExamMode && selectedImage ? { id: selectedImage.id, title: selectedImage.title, originalName: selectedImage.originalName } : null,
+          index: selectedIndexId ? { id: selectedIndexId, name: flatIndexes.find((node) => node.id === selectedIndexId)?.name ?? "", path: selectedIndexPath } : null,
+        }}
+        onOpenSettings={() => {
+          if (!isManageMode) setPersistedViewModeWithPagination("manage");
+          setSettingsInitialTab("skills");
+          setIsSettingsOpen(true);
+        }}
       />
       <AiReadingCompanion
         open={isBrowseMode && isReadingCompanionOpen}

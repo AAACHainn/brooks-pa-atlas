@@ -1,8 +1,8 @@
 # AI 工具调用基础设施
 
-本基础设施让设置中的 API 模型通过 Function Calling 请求系统操作，由服务端验证并执行。当前只支持 Chat Completions，不增加 MCP、Responses API、公开执行路由、Server Action 或数据库迁移。
+本基础设施让设置中的 API 模型通过 Function Calling 请求系统操作，由服务端验证并执行。当前只支持 Chat Completions，不增加 MCP、Responses API、通用工具执行路由或 Server Action；执行器自身不依赖持久化表，机器人会话使用独立 migration。
 
-两个只读工具是正式内部能力；本阶段通过隔离测试验收，未接入聊天、OCR、快速/深度伴读、字幕整理或知识库界面。原有能力、设置和 HTTP 返回格式不变。
+两个只读工具是正式内部能力，已经通过独立全局机器人接入；OCR、快速/深度伴读、字幕整理和知识库继续原流程。机器人拥有独立技能设置、会话与专用接口，原有业务能力和 HTTP 返回格式不变。
 
 ## 分层
 
@@ -39,7 +39,7 @@ const result = await runAiToolTask({
 });
 ```
 
-默认读取已有设置的启用端点和默认模型。可指定 `skill: "readingCompanion" | "ocrRefinement" | "subtitleKnowledge"`，沿用其提示词和模型覆盖；字幕技能仍关闭推理。既有业务不调用此入口，深度模式原预算、租约和流程不变。内部可信调用方/测试可以传入已保存的 `config` 快照；不允许浏览器传入密钥或执行函数。
+默认读取已有设置的启用端点和默认模型。可指定 `skill: "readingCompanion" | "ocrRefinement" | "subtitleKnowledge"`，沿用其提示词和模型覆盖；字幕技能仍关闭推理。独立机器人调用此入口；既有伴读/OCR/知识业务不调用此入口，深度模式原预算、租约和流程不变。内部可信调用方/测试可以传入已保存的 `config` 快照；不允许浏览器传入密钥或执行函数。
 
 `context` 必须显式提供 nullable 当前图片/索引 ID 和范围。`selection` 使用精确 ID，不自动包含后代；全库读取须明确使用 `{ kind: "library" }`。前端模式不是授权凭证，接入方必须在服务端确定范围。选择、消息、工具描述和配置在开始时固定，之后切图不改变本次任务的对象。图片资料在实际读取时查询最新保存值，不读取旧聊天快照。
 
@@ -71,10 +71,26 @@ const result = await runAiToolTask({
 
 ## 记录与能力探测
 
-`AiToolTraceSink.write(record)` 是未来存储扩展口；当前返回运行内记录，不写会话或数据库。记录包含运行、轮次、调用、资源 ID，端点/模型标识，状态、耗时、数量/大小和 Token 摘要；不包含密钥、原始响应、参数正文、资料正文或思考正文。sink 收到独立副本，异常产生 trace_sink_failed 警告，不改变业务读取结果。取消后的最终记录在返回结果中，调用方可补存。
+`AiToolTraceSink.write(record)` 是未来存储扩展口；执行器自身返回运行内记录，不直接写会话或数据库；机器人调用方保存成功运行的脱敏摘要。记录包含运行、轮次、调用、资源 ID，端点/模型标识，状态、耗时、数量/大小和 Token 摘要；不包含密钥、原始响应、参数正文、资料正文或思考正文。sink 收到独立副本，异常产生 trace_sink_failed 警告，不改变业务读取结果。取消后的最终记录在返回结果中，调用方可补存。
 
 `probeAiToolSupport` 使用临时无副作用工具，验证参数、结果回传，以及模型是否返回工具生成的新 receipt。返回 supported/unsupported/unconfirmed/failed；连接或协议故障不能当作已支持。探测可能产生 API 费用，只由可信调用方显式触发，不随启动、保存设置或既有连接测试自动执行。
 
 ## 验证
 
 `npm run test:ai-tools` 使用模拟端点与隔离数据库，覆盖协议、真实读取、授权、多轮、预算、取消、超时和脱敏，使用 react-server 条件加载服务端模块。`npm run test:ai` 包含此专项；`npm run test:knowledge` 验证已有知识与字幕兼容性。测试不发起真实付费调用，不读取/修改用户图库；清理只删除单个明确文件路径。
+
+## 全局机器人接入
+
+机器人专用接口 `/api/ai/robot/conversations/**` 调用 `runAiToolTask`；它不是通用工具执行 HTTP API。请求只接收问题、语言及可选当前图片/索引 ID，服务端验证并固定选择、保存配置快照，使用 `globalRobot` 技能及全库只读范围。白名单目前仅含 `get_image_context` 与 `list_index_nodes`，普通问题可直接回答。
+
+`ai-robot-service.ts` 编排最近四组完整问答与当前问题、独立选择快照和最终答案保存；`ai-robot-runs.ts` 提供每会话互斥及跨 Route Handler 的取消控制（单进程全局状态）。清空/删除持有互斥并取消旧运行；禁用设置取消所有活动机器人运行。服务端在保存前和事务内检查租约及取消信号，防止迟到草稿写入。运行中间正文和 tool 结果不作为持久化聊天消息回放。
+
+`AiRobotConversation` / `AiRobotMessage` 由 migration `20261006100000_ai_robot` 创建，与伴读分表。成功回复保存可见思考及 `runId`、调用统计、Token 估算和脱敏 trace；不保存密钥、原始上游响应、参数或资料正文。失败只保留用户问题。两类会话都不进入备份。
+
+已有实例未迁移时，会话初始化不能成功，因此尚未进入模型调用。专用接口统一返回脱敏 JSON 错误；缺表/字段为 HTTP 503、`code: "storage_upgrade_required"`。前端显示当前语言的升级提示，并提供重新加载会话；不会在普通请求中自动执行数据库迁移。
+
+前端 NDJSON 区分 `user_message`、带运行/轮次的 `delta`、`trace`、`done`、`error` 和 `ping`；新轮次替换中间正文，最终消息以 `done` 为准。客户端不执行模型指令。工具名称通过产品文字映射展示，不显示原始参数。
+
+新增工具时先注册服务端定义与业务服务，再显式更新 `robotAllowedTools`、资源授权策略和 `robotToolLabel` 展示映射，补充隔离测试；不要自动开放注册表中的全部工具。写操作和日志访问仍需后续功能设计，本版不预设其授权或确认流程。
+
+配置仍为 v4：`skills.globalRobot` 默认启用、独立提示词、模型覆盖为空；旧 JSON 自动补齐，旧保存请求缺失该技能时保留现值。工具能力不支持时明确失败，不自动能力探测或解析文本指令。专项命令 `npm run test:ai-robot`。

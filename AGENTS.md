@@ -83,6 +83,7 @@ npm run test:search
 npm run test:thumbnails
 npm run test:ocr
 npm run test:ai
+npm run test:ai-robot
 npm run prisma:generate
 npm run db:migrate
 npm run db:init
@@ -103,8 +104,9 @@ docker compose down
 - `npm run test:search` 运行图片关键词搜索的字面量匹配测试，确保 `%`、`_` 和反斜杠不会被当作通配符。
 - `npm run test:thumbnails` 运行缩略图路径、缓存、尺寸、并发合并和图片查询键测试。
 - `npm run test:ocr` 运行索引子树批量 OCR 的文本判断、终态和进度计算测试。
-- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、多模态 Chat Completions，以及伴读快速/深度模式、预算装载、接口保存和取消测试；也覆盖窗口按帧合并、流式草稿合并/清理和输入法回车保护；接口测试使用隔离数据库、图库和模拟端点。此命令还包含 `test:ai-tools`。
-- `npm run test:ai-tools` 单独运行结构化模型响应、工具流式参数组装、只读注册/授权、多轮执行、取消/预算/超时、能力探测及真实系统工具的隔离测试；使用 `react-server` 条件加载 `server-only` 模块，不代表向界面开放工具。
+- `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、多模态 Chat Completions，以及伴读快速/深度模式、预算装载、接口保存和取消测试；也覆盖窗口按帧合并、流式草稿合并/清理和输入法回车保护；接口测试使用隔离数据库、图库和模拟端点。此命令还包含 `test:ai-tools` 和 `test:ai-robot`。
+- `npm run test:ai-robot` 运行独立机器人会话、真实只读工具、历史分页、配置兼容、取消/禁用/清空/删除保护和流式窗口 helper 测试；使用隔离数据库、模拟模型及 `react-server` 条件。
+- `npm run test:ai-tools` 单独运行结构化模型响应、工具流式参数组装、只读注册/授权、多轮执行、取消/预算/超时、能力探测及真实系统工具的隔离测试；使用 `react-server` 条件加载 `server-only` 模块，仅机器人专用入口显式开放白名单工具。
 - `npm run test:knowledge` 运行字幕格式/时间码解析、AI cue 覆盖、顺序、长度比例、窗口、片段时间范围、深度候选召回与章节分页读取测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
 - `npm run db:migrate` 使用 `scripts/migrate-db.mjs` 对已有 SQLite 数据库应用项目内 SQL migrations。
@@ -132,6 +134,9 @@ docker compose down
 - `src/app/index-navigator-panel.tsx`：统一索引节点导航器和管理设置弹窗。
 - `src/app/app-dialog.tsx`：全局统一的应用内提示、确认和文本输入弹窗，提供危险级别样式、焦点管理和键盘操作。
 - `src/app/app-settings-dialog.tsx`：可扩展的全局设置弹窗，当前提供 AI 端点和内置技能配置。
+- `src/app/ai-robot.tsx` / `src/app/ai-robot-floating.tsx`：工作台全部模式共用的独立 AI 机器人、可拖动入口与窗口、多会话和工具状态展示。
+- `src/app/ai-robot-icon.tsx`：机器人入口与窗口共用的圆润机器人 SVG 标识；悬浮入口采用青蓝半透明渐变背景，图标保持实色。
+- `src/lib/ai-robot-service.ts` / `src/lib/ai-robot-runs.ts` / `src/lib/ai-robot-types.ts` / `src/lib/ai-robot-ui.ts`：机器人专用服务、运行互斥/取消、DTO、NDJSON 和窗口 helper。
 - `src/app/ai-reading-companion.tsx`：浏览模式 AI 阅读伴侣悬浮窗，负责全局多会话、流式消息、拖动和收起交互。
 - `src/lib/reading-companion-ui.ts`：伴侣窗口按帧合并、流式文字合并和输入法回车保护 helper。
 - `src/app/knowledge-manager-dialog.tsx`：资料知识库导入、类型确认、节点映射、人工审核、版本管理、维护和检索测试弹窗。
@@ -192,7 +197,7 @@ docker compose down
 - `src/lib/ai-client.ts`：OpenAI-compatible 模型发现、非流式与 SSE 流式 Chat Completions 客户端。
 - `src/lib/ai-model-types.ts`：与供应商协议分离的结构化消息、调用、单轮结果与流式事件类型；`ai-client.ts` 负责协议序列化和解析，原文本接口保持兼容。
 - `src/lib/ai-tool-registry.ts` / `src/lib/ai-tool-runtime.ts`：仅服务端的 Zod 工具注册、白名单/资源范围、串行多轮执行、预算/取消/超时及结构化记录；不提供公开执行 API。
-- `src/lib/ai-system-tools.ts` / `src/lib/ai-tool-probe.ts`：正式内部图片资料/索引只读工具及仅显式调用的无副作用能力探测，暂未接入现有 AI 业务或界面。
+- `src/lib/ai-system-tools.ts` / `src/lib/ai-tool-probe.ts`：正式内部图片资料/索引只读工具及仅显式调用的无副作用能力探测，已通过独立 AI 机器人显式接入；伴读、OCR 和资料流程不启用工具。
 - `docs/AI_TOOL_ARCHITECTURE.md`：工具基础设施接口、注册、资源授权、运行限制、记录扩展及兼容约束。
 - `src/lib/ai-ocr-refinement.ts`：精校图片压缩、多模态消息构造和 OCR 精校调用。
 - `src/lib/ai-reading-companion.ts` / `src/lib/ai-reading-context.ts`：阅读伴侣上下文窗口、图片资料快照、多模态消息和服务端图片上下文查询。
@@ -248,6 +253,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - `AppSetting`：本地设置，用于 OCR 并发数及版本化 `ai.config.v4` AI 配置等键值；读取时兼容迁移 `ai.config.v1` / `ai.config.v2` / `ai.config.v3`。AI API Key 明文保存在本地 SQLite，但任何客户端 DTO 都不能返回完整密钥。
 - `OcrBatchJob` / `OcrBatchJobItem`：持久化索引子树批量 OCR 任务及启动时的图片清单，进度只统计该任务自己的图片。
 - `AiReadingConversation` / `AiReadingMessage`：全局 AI 阅读伴侣会话与消息；消息保存发送时的图片引用、资料快照、知识引用快照、兼容端点返回的可见思考内容和耗时，图片或字幕后来删除后仍保留文字历史。
+- `AiRobotConversation` / `AiRobotMessage`：独立全局机器人会话、文字历史、发送选择快照及完成运行的脱敏摘要，无图片外键，不进入备份。
 - `ExamPaper`：试卷，支持草稿和发布状态，保存标题、描述、默认选项模板和发布时间。
 - `ExamQuestion`：试题，关联已有 `ChartImage`，保存题型、题干、选项、正确答案、解析和遮罩坐标 JSON。
 - `ExamAttempt`：一次考试记录，保存开始/提交时间、耗时、正确数、总题数和正确率。
@@ -307,6 +313,8 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - 中间：搜索栏、可折叠索引导航器、导入表格或图库浏览区域、概览、图片网格。
 - 右侧：管理模式下的图片详情编辑面板；浏览模式下是大图查看体验。
 - 工作台的纵向浏览统一使用浏览器最外侧的页面滚动条，中间内容区不能再建立独立的纵向滚动容器。大图查看器只在图片主动放大、需要查看局部时保留自身滚动。
+
+全局机器人：默认在全部模式的页面右侧显示可拖动按钮，点击打开独立聊天窗口；支持拖动/缩放/收起/关闭、持久化多会话、Markdown、思考和工具状态。管理设置“技能 → AI 机器人”可禁用或配置模型及提示词。首版只查询索引与图片文字资料，全面搜索、整理图库和日志分析尚未提供。
 
 浏览模式特性：
 
@@ -511,17 +519,21 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 
 ### AI 与资料知识库规则
 
-- AI 工具基础设施通过服务端 `runAiToolTask` 显式启用，固定已有设置的启用端点、默认模型或既有技能的模型覆盖及提示词。当前聊天、快速/深度伴读、OCR 精校、字幕整理和知识检索不启用工具，界面、HTTP 接口及原流式事件保持不变。
-- 工具模块使用 `server-only` 边界，不创建 Server Action、通用 HTTP 执行接口或 MCP。注册工具使用同一 strict Zod schema 导出 JSON Schema 并校验参数；运行要求显式工具白名单和全库/精确图片与索引 ID 集合授权，首版只允许 read 工具，模型不能扩大范围。当前图片/索引 ID 在提交时固定，并提供给模型。
+- AI 工具基础设施通过服务端 `runAiToolTask` 显式启用，固定已有设置的启用端点、默认模型或既有技能的模型覆盖及提示词。独立全局机器人显式启用工具；现有快速/深度伴读、OCR 精校、字幕整理和知识检索不启用工具，界面、HTTP 接口及原流式事件保持不变。
+- 工具模块使用 `server-only` 边界，不创建 Server Action、通用 HTTP 执行接口或 MCP。注册工具使用同一 strict Zod schema 导出 JSON Schema 并校验参数；运行要求显式工具白名单和全库/精确图片与索引 ID 集合授权，首版只允许 read 工具，模型不能扩大范围。机器人专用接口固定白名单为 `get_image_context`、`list_index_nodes` 和全库只读范围，不接受浏览器工具定义、权限或密钥；没有通用执行 API。当前图片/索引 ID 在提交时固定，并提供给模型。
 - 工具响应允许正文为空；SSE 按调用 index 组装交错参数，完整结束后才执行。截断、取消、无效/重复 ID 不执行半成品。完整 assistant 调用消息与供应商思考字段先进入上下文，工具串行执行，通过匹配的 `tool_call_id` 回传结果；结果是不可信参考数据。
 - 新执行器默认最多 6 次模型请求、12 次工具调用；模型/工具/运行超时为 120 秒/30 秒/5 分钟。单次输入 16000 Token（保留 10% 余量）、累计输入 100000 Token、输出 4096 Token，估算包括工具定义、参数与结果；单工具结果最多 32KiB，超限明确报错，不静默裁剪。未知工具、无效参数、越权和读取失败可回传给模型修正；请求错误、取消、超时及预算耗尽返回失败终态和空最终答案。
 - 首批正式只读工具 `get_image_context` 复用现有服务读取最新资料，不返回路径或图片字节；`list_index_nodes` 对授权索引做字面量搜索和分页，默认 20 项、最多 50 项，不隐式授权后代。
-- 执行记录仅在运行内返回，可通过 `AiToolTraceSink` 接入未来存储，不写会话或数据库。记录只包含运行/调用/资源 ID、端点/模型标识、状态、耗时、Token 和结果数量/大小摘要；不保存密钥、原始响应、参数正文、完整资料或思考正文。sink 失败记录警告，取消后的最终记录仍在返回结果中，可由调用方补存。
+- 执行器自身只在运行内返回记录，可通过 `AiToolTraceSink` 扩展存储；机器人调用方把完成运行的脱敏摘要保存到独立消息，不保存工具参数或结果正文。记录只包含运行/调用/资源 ID、端点/模型标识、状态、耗时、Token 和结果数量/大小摘要；不保存密钥、原始响应、参数正文、完整资料或思考正文。sink 失败记录警告，取消后的最终记录仍在返回结果中，可由调用方补存。
 - `probeAiToolSupport` 通过临时无副作用工具验证调用、回传和最终回答，返回 supported/unsupported/unconfirmed/failed；可能产生费用，必须显式触发，不在启动或既有连接测试时运行。不支持工具的模型仍可使用原有 AI 功能，不把普通文本或 JSON 当作工具指令执行。
 - AI 配置保存在 `AppSetting` 的 `ai.config.v4`，读取时兼容迁移 `ai.config.v1` / `ai.config.v2` / `ai.config.v3`；配置是当前实例本地设置，不进入备份 zip，恢复也不覆盖。
+- 全局 AI 机器人使用 `skills.globalRobot` 的启用开关、提示词和模型覆盖，仍保存 v4；旧配置默认启用，旧 PUT 缺少机器人技能时保留现值。禁用会取消单进程全部活动机器人运行并拒绝新发送，不删除会话。仅用户发送时调用模型，不自动探测工具能力。
+- 机器人使用独立 `AiRobotConversation` / `AiRobotMessage` 表，migration 为 `20261006100000_ai_robot`；历史不进入备份 zip。每会话只允许一个运行，清空/删除期间也持有互斥；取消/超时/失败只保留用户消息，不保存助手草稿。当前图片和目录在发送时校验并保存参考快照，图片删除后仍显示历史参考；考试模式不传浏览模式遗留图片。
+- 已有本地数据库使用机器人前必须应用 `20261006100000_ai_robot` 并生成 Prisma Client、重启服务。机器人专用接口通过 `ai-robot-api.ts` 返回脱敏 JSON 错误；缺表/字段返回 HTTP 503 与 `storage_upgrade_required`，前端按界面语言提示并允许重新加载会话，不在请求中自动迁移数据库。
+- 机器人最多装载最近四组成功问答，当前问题完整保留，预算超限明确失败；显示分页每次 40 条。轮次正文和思考、工具状态独立展示，仅执行器最终答案作为成功回复。拖动按帧变换，输入框和历史消息分离；收起继续，停止/关闭取消。
 - 大模型与 Embedding 使用两个独立页签和两组端点，各自保存供应商、Base URL、API Key、模型列表与唯一启用端点。大模型 Base URL 追加 `/chat/completions`、`/models`；Embedding Base URL 追加 `/embeddings`、`/models`；高级模式可分别指定完整 URL，只接受 HTTP/HTTPS。
 - API Key 可为空；非空时只在服务端以 Bearer header 发送。设置 GET 仅返回 `hasApiKey`，空白保存保留旧密钥，只有显式清除才删除；日志和外部错误不能包含密钥或原始响应正文。
-- 内置技能 `ocrRefinement`、`readingCompanion`、`subtitleKnowledge` 保存可编辑提示词和可选模型覆盖；字幕知识技能还保存可选失败重试模型和单窗口输出 Token 配置上限，未覆盖时使用启用聊天端点的默认模型。字幕 AI 导入必须固定关闭 thinking/reasoning，配置读取和保存都要强制为关闭，界面不得提供重新开启入口。
+- 内置技能 `ocrRefinement`、`readingCompanion`、`subtitleKnowledge`、`globalRobot` 保存可编辑提示词和可选模型覆盖；字幕知识技能还保存可选失败重试模型和单窗口输出 Token 配置上限，未覆盖时使用启用聊天端点的默认模型。字幕 AI 导入必须固定关闭 thinking/reasoning，配置读取和保存都要强制为关闭，界面不得提供重新开启入口。
 - 伴读两种回答模式共用 `readingCompanion` 的模型和提示词，不增加独立模型配置。技能增加 `deepInputTokenBudget=16000`、`deepTotalInputTokenBudget=100000`、`deepMaxOutputTokens=4096`；旧 JSON 缺失字段补默认值，仍使用 v4，无数据库 migration。三个字段为正整数，累计输入预算不得低于单次预算；设置分别限制为单次 1,000,000、累计 10,000,000、输出 131,072，不能提高上游模型容量。
 - 每个深度问题启动时固定已保存配置快照。输入按 UTF-8 字节/2 保守估算，包含提示词、问题、历史、图片和证据，图片额外预留 4096 Token，并保留单次输入预算的 10% 安全余量；累计预算统计全部聊天调用的估算输入，失败尝试同样计入。最终输出上限按供应商兼容格式传给上游。
 - 深度最多 10 次聊天模型调用、6 个阅读批次是固定常量；非最终调用必须同时为最终综合保留调用和输入预算。预算不够时停止扩展证据，不能静默截断当前问题；若当前问题、图片与提示词本身超过单次输入预算，直接提示调整预算或问题。
@@ -651,6 +663,8 @@ AI 设置与调用 API：
 - `GET /api/exam/attempts/[id]`：读取考试或结果。
 - `POST /api/exam/attempts/[id]/submit`：提交答案并保存评分；多选答案可传字符串数组，后端会按选项顺序规范化后比较。
 
+机器人 API：`GET/POST /api/ai/robot/conversations` 列表/新建；`GET/PATCH/DELETE /api/ai/robot/conversations/[id]` 分页/重命名/删除；`POST/DELETE /api/ai/robot/conversations/[id]/messages` NDJSON 流式发送/清空。发送请求 strict 校验 `content`、`locale` 和可选 `imageId/indexNodeId`，只接受服务端白名单与权限策略；运行期间固定配置和当前选择。
+
 `POST /api/import`
 
 - 创建或复用 `ImportBatch`。
@@ -756,6 +770,8 @@ AI 设置与调用 API：
 ## 15. 本地偏好键
 
 工作台使用以下 `localStorage` key：
+
+- `brooks-pa-atlas.aiRobot.launcher` / `.window` / `.conversation` / `.scroll.<会话ID>`：独立机器人入口和窗口位置/尺寸、最近会话及阅读位置；不保存密钥或聊天正文。
 
 - `brooks-pa-atlas.locale`：语言，`zh` 或 `en`。
 - `brooks-pa-atlas.sidebar`：侧栏折叠状态。

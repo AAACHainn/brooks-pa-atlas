@@ -33,6 +33,18 @@ test("missing or invalid persisted AI config falls back to v4 defaults", () => {
   assert.equal(parseStoredAiConfig("{}").version, 4);
 });
 
+test("robot defaults extend v4 while old saves preserve its custom configuration", () => {
+  const current = defaultStoredAiConfig();
+  current.skills.globalRobot = { enabled: false, modelOverride: "tool-model", prompt: "custom robot" };
+  const old = input();
+  assert.equal(parseStoredAiConfig(JSON.stringify(old)).skills.globalRobot.enabled, true);
+  const saved = mergeAiConfigSecrets(aiConfigInputSchema.parse(old), current);
+  assert.deepEqual(saved.skills.globalRobot, current.skills.globalRobot);
+  const updated = mergeAiConfigSecrets(aiConfigInputSchema.parse({ ...old, skills: { ...old.skills, globalRobot: { enabled: true, prompt: "new robot", modelOverride: "" } } }), current);
+  assert.equal(updated.skills.globalRobot.enabled, true);
+  assert.equal(updated.skills.globalRobot.prompt, "new robot");
+});
+
 test("legacy reading skills gain deep budgets without losing endpoints or prompts", () => {
   const config = input();
   const old = { ...config, skills: { ...config.skills, readingCompanion: { prompt: "custom reading", modelOverride: "vision" } } };

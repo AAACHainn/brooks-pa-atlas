@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { cancelAllRobotRuns } from "@/lib/ai-robot-runs";
 import {
   AI_CONFIG_SETTING_KEY,
   LEGACY_AI_CONFIG_SETTING_KEY,
@@ -34,6 +35,7 @@ export async function saveAiConfig(input: AiConfigInput) {
     create: { key: AI_CONFIG_SETTING_KEY, value: JSON.stringify(config) },
     update: { value: JSON.stringify(config) },
   });
+  if (!config.skills.globalRobot.enabled) cancelAllRobotRuns();
   return sanitizeAiConfig(config);
 }
 

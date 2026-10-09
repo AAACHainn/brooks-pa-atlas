@@ -23,7 +23,7 @@ export type AiToolDefinition = {
 };
 
 export class AiToolError extends Error {
-  constructor(readonly code: "forbidden_resource" | "not_found" | "invalid_arguments", message: string) {
+  constructor(readonly code: "forbidden_resource" | "not_found" | "invalid_arguments" | "source_changed", message: string) {
     super(message);
     this.name = "AiToolError";
   }

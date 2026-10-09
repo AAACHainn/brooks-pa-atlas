@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AiToolTraceRecord } from "@/lib/ai-tool-runtime";
 import type { AiToolBudgetSnapshot, AiToolLimitKind } from "@/lib/ai-tool-limits";
+import type { RobotKnowledgeSnapshot } from "@/lib/robot-knowledge-types";
 
 export type RobotLocale = "zh" | "en";
 const id = z.string().trim().min(1).max(200);
@@ -20,6 +21,7 @@ export type RobotMessage = {
   id: string; role: "USER" | "ASSISTANT"; sequence: number; content: string; createdAt: string;
   selection: RobotSelection | null; reasoningContent: string | null; reasoningDurationMs: number | null;
   execution: RobotExecution | null;
+  knowledge?: RobotKnowledgeSnapshot | null;
 };
 export type RobotStreamEvent =
   | { type: "ping" }
@@ -56,6 +58,9 @@ export function robotBudgetFeedback(budget: AiToolBudgetSnapshot, locale: RobotL
 export function robotToolLabel(name: string | undefined, locale: RobotLocale) {
   if (name === "get_image_context") return locale === "zh" ? "读取图片资料" : "Read image context";
   if (name === "list_index_nodes") return locale === "zh" ? "查询索引" : "Search indexes";
+  if (name === "list_knowledge_documents") return locale === "zh" ? "查询知识资料目录" : "List knowledge documents";
+  if (name === "search_knowledge") return locale === "zh" ? "检索知识库" : "Search knowledge";
+  if (name === "read_knowledge") return locale === "zh" ? "读取知识正文" : "Read knowledge text";
   return locale === "zh" ? "执行工具" : "Run tool";
 }
 export function robotErrorMessage(code: string, locale: RobotLocale) {

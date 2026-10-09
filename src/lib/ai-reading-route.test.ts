@@ -43,6 +43,7 @@ before(async () => {
   (globalThis as typeof globalThis & { brooksKnowledgeDb?: typeof knowledge }).brooksKnowledgeDb = knowledge;
   prisma = (await import("@/lib/db")).prisma;
   await prisma.indexNode.create({ data: { id: "node", name: "19A", path: "19A" } });
+  await prisma.indexNode.create({ data: { id: "other-node", name: "20A", path: "20A" } });
   await prisma.indexNode.create({ data: { id: "unbound-node", name: "01", path: "01" } });
   await sharp({ create: { width: 32, height: 32, channels: 3, background: "white" } }).png().toFile(path.join(directory, "chart.png"));
   const libraryPath = path.relative(process.cwd(), path.join(directory, "chart.png"));

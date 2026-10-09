@@ -315,7 +315,7 @@ Docker Compose 运行数据位于命名卷 `brooks-pa-atlas-data`，容器内统
 - 右侧：管理模式下的图片详情编辑面板；浏览模式下是大图查看体验。
 - 工作台的纵向浏览统一使用浏览器最外侧的页面滚动条，中间内容区不能再建立独立的纵向滚动容器。大图查看器只在图片主动放大、需要查看局部时保留自身滚动。
 
-全局机器人：默认在全部模式的页面右侧显示可拖动按钮，点击打开独立聊天窗口；支持拖动/缩放/收起/关闭、持久化多会话、Markdown、思考和工具状态。管理设置“技能 → AI 机器人”可禁用或配置模型及提示词。普通模式只查询索引与图片文字资料；任务模式可确认范围后分批分析索引、图片文字与知识资料。整理图库写操作和日志分析尚未提供。
+全局机器人：默认在全部模式的页面右侧显示可拖动按钮，点击打开独立聊天窗口；支持拖动/缩放/收起/关闭、持久化多会话、Markdown、思考和工具状态。管理设置“技能 → AI 机器人”可禁用或配置模型及提示词。普通模式可查询索引、图片文字和知识库，并分页读取知识正文；任务模式用共享混合检索定位资料，确认范围后分批分析索引、图片文字与知识资料。整理图库写操作和日志分析尚未提供。
 
 浏览模式特性：
 
@@ -846,5 +846,18 @@ https://github.com/AAACHainn/brooks-pa-atlas.git
 - 任务服务在单 Node.js 进程后台串行执行，并占用 `ai-robot-task` 重任务租约。关闭、刷新、切换模式继续运行；收起/隐藏停止轮询。暂停立即中断当前批次，继续跳过已提交检查点。启动钩子仅标记中断任务为暂停，不自动续跑。禁用机器人暂停任务；清空/删除先取消执行。
 - 每批事务保存资源游标、摘要、引用快照与预算；服务端 runId 和 revision/planVersion 防止重复控制与迟到写入。未完成批次不保存为成功。资源变更时暂停重新规划；调用、Token、实际运行时间跨暂停累计。
 - `ai.config.v5` 的 `robotTask` 独立保存提示词、模型和预算，v4 迁移复制机器人提示词和模型。默认 60 次模型、120 次工具、单次 16000 / 累计 1000000 输入 Token、4096 输出 Token、1800 秒实际运行时间。继续使用最新配置，当前执行固定配置快照；单模型请求 120 秒。
-- 新增 `ai-robot-task-{types,sources,service}.ts` 和任务 pane/mode menu。任务专用工具不加入普通机器人白名单。进度接口返回轻量快照，证据通过 `?evidence=true` 按需读取。
+- 新增 `ai-robot-task-{types,sources,service}.ts` 和任务 pane/mode menu。list_images/read_task_source 不加入普通白名单；知识目录和混合搜索与普通模式共享服务，确认后的任务读取仍限 manifest。进度接口返回轻量快照，证据通过 `?evidence=true` 按需读取。
 - `npm run test:ai-robot` 包含隔离数据库的新任务测试；`npm run test:ai` 继续覆盖原伴读、工具和配置兼容。
+
+
+## 20. 机器人知识库工具（2026-10-09）
+
+- `knowledge-retrieval.ts` 是共享 FTS、关键词、向量、RRF、相关性与来源投影服务；机器人、快速和深度伴读复用通道，伴读原预算和快速8来源策略保持。
+- `ai-knowledge-tools.ts` 为每次运行创建知识工具会话：list_knowledge_documents、search_knowledge、read_knowledge。普通白名单显式加入这三项，缺省系统注册表不自动开放。任务规划共用目录和混合搜索，确认后的 manifest、T 引用和检查点不变。
+- scope 默认 library 并优先当前与可继承祖先；current 严格限当前关联，无选择为空；documents 必须指定真实有效文档。各通道在召回前过滤启用状态、ACTIVE 版本、有效绑定及节点实际存在，不能先召回再过滤。
+- 搜索默认5项、最多10项，每项最多500 Unicode字符；候选池最多100，totalCandidates 不是全库精确匹配数。正文默认2000、最多4000字符，片段或章节按原顺序游标续读。结果装载遵守32KiB和真实分页位置；版本或范围变化报告 source_changed。
+- `onToolSucceeded` 只向可信服务端回调通知已接受的独立结果副本；trace/summarize 不包含正文。K 引用按实际页去重，未知编号显示未验证。取消、失败、超限或过大的结果不保存为成功答案或引用。
+- 主库 migration `20261009000000_robot_knowledge_sources` 添加 AiRobotMessage.knowledgeContextJson 可空字段；RobotMessage.knowledge 保存正文、版本、locator、字符范围和检索状态快照。executionJson 仍仅脱敏统计，历史上下文只放引用身份，旧正文不自动回放。聊天与任务仍不在业务备份内。
+- Embedding 固定本次配置，同查询分页缓存结果；缺配置或失败时降级，取消/超时终止。请求次数及保守输入估算独立报告，任务规划请求前持久累计，不能当作供应商实际用量。
+- `robot-knowledge-types.ts` 和 `knowledge-locator-schema.ts` 可安全在客户端引用；不要从客户端引入带 node:path 的 knowledge-source.ts。`robot-knowledge-sources.tsx` 提供中英文折叠快照展示。
+- `test:ai-tools` 包含知识工具隔离测试，`test:ai-robot` 覆盖任务混合检索；旧库新字段缺失须在模型请求前返回 storage_upgrade_required。不要为测试升级用户数据库或调用真实付费端点。

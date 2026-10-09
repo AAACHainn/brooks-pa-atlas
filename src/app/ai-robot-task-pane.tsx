@@ -28,6 +28,7 @@ function TaskCard({ task, locale, busy, onAction, onEvidence }: { task: TaskSnap
     </details> : null}
     {task.totalBatches ? <progress aria-label={zh ? "资料读取进度" : "Source reading progress"} value={task.completedBatches} max={task.totalBatches} className="mb-2 h-1.5 w-full accent-cyan-700" /> : null}
     <p className="text-[11px] text-zinc-500">{zh ? "模型" : "Model"} {task.budget.modelCalls} · {zh ? "工具" : "Tools"} {task.budget.toolCalls} · Token {task.budget.inputTokens.toLocaleString()} · {(task.budget.elapsedMs / 1000).toFixed(1)}s</p>
+    {task.budget.embeddingRequests ? <p className="text-[11px] text-zinc-500">Embedding {task.budget.embeddingRequests} · {zh ? "输入估算" : "Estimated input"} {task.budget.estimatedEmbeddingInputTokens.toLocaleString()} Token</p> : null}
     {task.checkpointCount ? <details onToggle={(event) => setEvidenceOpen(event.currentTarget.open)} className="mt-2 text-xs text-zinc-600"><summary className="cursor-pointer">{zh ? "检查点与证据" : "Checkpoints and evidence"} ({task.checkpointCount})</summary>
       {task.checkpoints.map((checkpoint) => <details key={checkpoint.ordinal} className="mt-2 rounded-md border border-zinc-100 bg-zinc-50 p-2"><summary className="cursor-pointer">{checkpoint.kind === "read" ? (zh ? "资料批次" : "Source batch") : (zh ? "汇总检查点" : "Reduction checkpoint")} {checkpoint.ordinal + 1}</summary>
         <div className="mt-2 whitespace-pre-wrap leading-5">{checkpoint.summary}</div>

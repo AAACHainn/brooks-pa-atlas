@@ -7,6 +7,7 @@ import { useAppDialog } from "@/app/app-dialog";
 import { ReadingCompanionSession } from "@/app/ai-reading-companion";
 import { RobotModeMenu } from "@/app/ai-robot-mode-menu";
 import { RobotTaskPane } from "@/app/ai-robot-task-pane";
+import { RobotKnowledgeSources } from "@/app/robot-knowledge-sources";
 import type { RobotMode } from "@/lib/ai-robot-task-types";
 import { RobotLauncher, RobotWindow, robotPreference } from "@/app/ai-robot-floating";
 import { createLatestValueScheduler, shouldSendReadingInput } from "@/lib/reading-companion-ui";
@@ -42,6 +43,7 @@ const MessageList = memo(function MessageList({ messages, locale }: { messages: 
     <div className={`max-w-[90%] break-words rounded-xl border px-3 py-2 text-sm leading-6 shadow-sm ${message.role === "USER" ? "border-zinc-800 bg-zinc-950 text-white" : "border-zinc-200 bg-white text-zinc-800"}`}>
       {message.role === "USER" ? <><p className="whitespace-pre-wrap">{message.content}</p>{message.selection?.image || message.selection?.index ? <p className="mt-1 border-t border-zinc-700 pt-1 text-[10px] text-cyan-200">{message.selection.image?.title ?? message.selection.image?.originalName ?? message.selection.index?.path}</p> : null}</>
         : <><Thought content={message.reasoningContent ?? ""} duration={message.reasoningDurationMs} locale={locale} /><Text content={message.content} />
+          <RobotKnowledgeSources knowledge={message.knowledge} locale={locale} />
           {message.execution?.warnings?.includes("approaching_limit") ? <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">{locale === "zh" ? "本次已临近运行上限，优先生成了当前回答。需要更多资料时，可缩小范围继续提问。" : "The task approached its limit and prioritized the current answer. Ask a narrower follow-up if more evidence is needed."}</p> : null}
           {message.execution ? <details className="mt-2 border-t border-zinc-100 pt-1 text-[11px] text-zinc-500"><summary className="cursor-pointer">{locale === "zh" ? "工具执行" : "Tool activity"} · {message.execution.toolCalls}</summary>
             {message.execution.records.filter((record) => record.type === "tool_completed").map((record) => <p key={record.callId}>{robotToolLabel(record.toolName, locale)} · {record.status === "succeeded" ? (locale === "zh" ? "完成" : "Done") : (locale === "zh" ? "失败" : "Failed")}{record.itemCount !== undefined ? ` · ${record.itemCount}` : ""}</p>)}
@@ -62,7 +64,7 @@ const Composer = memo(function Composer({ sending, configured, ready, locale, on
     <div className="flex items-end gap-2"><textarea aria-label={zh ? "机器人消息" : "Robot message"} value={value} onChange={(event) => setValue(event.target.value)}
       onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
       onKeyDown={(event) => { if (shouldSendReadingInput({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.nativeEvent.keyCode }, composing.current)) { event.preventDefault(); void submit(); } }}
-      disabled={sending} maxLength={20_000} rows={2} placeholder={zh ? "可以查询索引，或询问当前图片的文字资料…" : "Search indexes or ask about the selected image's text…"}
+      disabled={sending} maxLength={20_000} rows={2} placeholder={zh ? "可以查询索引、图片文字资料或知识库…" : "Ask about indexes, saved image text or knowledge materials…"}
       className="min-h-16 min-w-0 flex-1 resize-none rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100 disabled:bg-zinc-50" />
       <button type="button" onClick={() => sending ? onStop() : void submit()} disabled={!sending && (!configured || !ready || !value.trim())}
         aria-label={zh ? (sending ? "停止" : "发送") : (sending ? "Stop" : "Send")} className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-cyan-800 text-white hover:bg-cyan-900 disabled:bg-zinc-200 disabled:text-zinc-400">{sending ? <X className="h-4 w-4" /> : <Send className="h-4 w-4" />}</button>
@@ -211,7 +213,7 @@ function NormalRobotPane({ enabled, configured, locale, selection, onOpenSetting
       <div ref={(node) => { pane.current = node; if (node && scroll.current.top && !scroll.current.stick) node.scrollTop = scroll.current.top; }} onScroll={rememberScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-zinc-50/70 p-3">
         {nextBefore !== null ? <button type="button" disabled={loading} onClick={() => void action("older")} className="mx-auto block rounded-full border border-zinc-200 bg-white px-3 py-1 text-xs text-zinc-500">{zh ? "加载更早消息" : "Load older messages"}</button> : null}
         {loading && !messages.length ? <Loader2 className="mx-auto mt-8 h-5 w-5 animate-spin text-zinc-400" /> : null}
-        {!loading && !messages.length && !sending ? <div className="grid h-full place-items-center px-5 text-center text-sm leading-6 text-zinc-500">{zh ? "你好，我可以查询索引，读取当前图片保存的文字资料。其他能力将逐步加入。" : "I can query indexes and read saved text for the selected image. More tools will be added later."}</div> : null}
+        {!loading && !messages.length && !sending ? <div className="grid h-full place-items-center px-5 text-center text-sm leading-6 text-zinc-500">{zh ? "你好，我可以查询索引、读取图片文字资料，或检索知识库并引用课程与章节证据。" : "I can query indexes, read saved image text, and search knowledge with references to courses and chapters."}</div> : null}
         <MessageList messages={messages} locale={locale} />
         {sending ? <div className="max-w-[90%] rounded-xl border border-cyan-200 bg-white px-3 py-2 text-sm leading-6 text-zinc-800"><p className="mb-1 text-xs text-cyan-700"><Loader2 className="mr-1 inline h-3 w-3 animate-spin" />{zh ? "正在处理" : "Working"}{draft?.round ? ` · ${draft.round}` : ""}</p>
           <Thought content={draft?.reasoning ?? ""} locale={locale} />{draft?.text ? <Text content={draft.text} /> : null}

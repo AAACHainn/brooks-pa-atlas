@@ -11,6 +11,7 @@ import { toolTestConfig, sseResponse, turnResponse } from "@/lib/ai-tool-test-he
 import { acquireHeavyTask, releaseHeavyTask } from "@/lib/background-task-coordinator";
 import type { TaskSnapshot } from "@/lib/ai-robot-task-types";
 import type { PrismaClient } from "@/generated/prisma/client";
+import { vectorBuffer } from "@/lib/knowledge-db";
 let prisma: PrismaClient, service: typeof import("@/lib/ai-robot-task-service"), sources: typeof import("@/lib/ai-robot-task-sources");
 let collection: typeof import("@/app/api/ai/robot/conversations/route"), actions: typeof import("@/app/api/ai/robot/tasks/[id]/actions/route"), tasksRoute: typeof import("@/app/api/ai/robot/conversations/[id]/tasks/route"), messages: typeof import("@/app/api/ai/robot/conversations/[id]/messages/route");
 let saveConfig: typeof import("@/lib/ai-settings").saveAiConfig;
@@ -151,7 +152,7 @@ test("knowledge scopes include valid descendant bindings and freeze versioned te
   const unit = scoped.units.find((unit) => unit.id === "text-doc-chunk")!;
   const saved = await sources.readTaskUnit(unit, signal); assert.equal(saved.version, "text-doc-v1"); assert.match(saved.location!, /支撑/);
   const toolContext = { scope: { kind: "library" as const }, runId: "scope", signal, currentImageId: null, currentIndexNodeId: null };
-  const search = await sources.createRobotTaskRegistry(scoped).get("search_knowledge")!.execute({ query: "支撑", offset: 0, limit: 1 }, toolContext) as { chunks: unknown[]; total: number; nextOffset: number }; assert.equal(search.total, 2); assert.equal(search.chunks.length, 1); assert.equal(search.nextOffset, 1);
+  const search = await sources.createRobotTaskRegistry(scoped).get("search_knowledge")!.execute({ query: "支撑", offset: 0, limit: 1 }, toolContext) as { sources: unknown[]; totalCandidates: number; nextOffset: number }; assert.equal(search.totalCandidates, 2); assert.equal(search.sources.length, 1); assert.equal(search.nextOffset, 1);
   knowledge.prepare("UPDATE KnowledgeDocumentVersion SET status='ARCHIVED' WHERE id='text-doc-v1'").run();
   await assert.rejects(sources.validateTaskManifest(scoped, signal), /source_changed/); assert.equal(saved.text, "支撑阻力");
   knowledge.prepare("UPDATE KnowledgeDocumentVersion SET status='ACTIVE' WHERE id='text-doc-v1'").run();
@@ -210,4 +211,42 @@ test("active time is checkpointed during pending model calls and stops accumulat
   const paused = await control(running, "pause"); await new Promise((done) => setTimeout(done, 100));
   assert.equal((await service.getRobotTask(task.id)).budget.elapsedMs, paused.budget.elapsedMs);
   resolve(turnResponse("late")); await service.stopRobotTask(task.id, "cancelled");
+});
+
+
+test("task planning shares semantic search, reserves Embedding usage before requests, and requires confirmation", async () => {
+  const previous = structuredClone(config);
+  config.embeddingEndpoints = [{ id: "embed", name: "Embed", provider: "custom", baseUrl: "https://embedding.test/v1", apiKey: "secret", useCustomUrls: false, embeddingsUrl: "", modelsUrl: "", models: [], embeddingModel: "semantic" }];
+  config.activeEmbeddingEndpointId = "embed";
+  await saveConfig(aiConfigInputSchema.parse(config));
+  knowledge.prepare("INSERT INTO KnowledgeEmbeddingProfile(id,endpointId,model,dimensions,status) VALUES('semantic-profile','embed','semantic',3,'ACTIVE')").run();
+  knowledge.prepare("INSERT INTO KnowledgeChunkEmbedding(chunkId,profileId,embedding) VALUES('text-doc-chunk','semantic-profile',?)").run(vectorBuffer([1, 0, 0]));
+  let modelCalls = 0, embeddingCalls = 0;
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (body.input) {
+      embeddingCalls++;
+      const row = await prisma.aiRobotTask.findFirstOrThrow({ where: { status: "planning" }, orderBy: { createdAt: "desc" } });
+      const saved = JSON.parse(row.budgetJson);
+      assert.equal(saved.embeddingRequests, 1); assert.ok(saved.estimatedEmbeddingInputTokens > 0);
+      return Response.json({ data: [{ index: 0, embedding: [1, 0, 0] }] });
+    }
+    if (++modelCalls === 1) return turnResponse(null, [{ id: "semantic-discovery", name: "search_knowledge", arguments: '{"query":"support","scope":"documents","documentIds":["text-doc"]}' }]);
+    if (modelCalls === 2) {
+      const result = JSON.parse(body.messages.find((message: { role: string }) => message.role === "tool").content).data;
+      assert.equal(result.semanticSearchUsed, true); assert.equal(result.sources[0].id, "text-doc-chunk"); assert.equal(result.sources[0].citation, "");
+      return turnResponse(JSON.stringify({ ...plan, scope: { kind: "documents", ids: ["text-doc"] } }));
+    }
+    return turnResponse(body.messages[0].content.includes("现在所有") ? "最终课程总结 [T1]" : "课程笔记 [T1]");
+  };
+  try {
+    const task = await create(); assert.equal(task.status, "awaiting_confirmation", task.error ?? ""); assert.equal(task.checkpointCount, 0);
+    assert.equal(task.budget.embeddingRequests, 1); assert.equal(embeddingCalls, 1); assert.equal(task.budget.modelCalls, 2);
+    await control(task, "start"); const done = await ready(task.id, ["completed", "failed", "paused"]);
+    assert.equal(done.status, "completed", done.error ?? ""); assert.equal(done.budget.embeddingRequests, 1); assert.match(done.result!, /\[T1\]/);
+  } finally {
+    knowledge.prepare("DELETE FROM KnowledgeChunkEmbedding WHERE profileId='semantic-profile'").run();
+    knowledge.prepare("DELETE FROM KnowledgeEmbeddingProfile WHERE id='semantic-profile'").run();
+    Object.assign(config, previous); await saveConfig(aiConfigInputSchema.parse(config)); mock();
+  }
 });

@@ -64,6 +64,8 @@ export type AiToolTaskOptions = {
   limits?: Partial<AiToolLimits>;
   onEvent?: (event: AiToolRunEvent) => void | Promise<void>;
   traceSink?: AiToolTraceSink;
+  /** Trusted server-only evidence consumer. Never forwarded to trace or browser events. */
+  onToolSucceeded?: (toolName: string, output: unknown) => void;
   /** Inject an already saved configuration snapshot for trusted internal callers/tests. */
   config?: StoredAiConfig;
   fetchImpl?: AiFetch;
@@ -317,6 +319,9 @@ export async function runAiToolTask(options: AiToolTaskOptions): Promise<AiToolR
               response = { ok: false, error: { code: "result_too_large", message: "The tool result exceeds the size limit; request a smaller scope or page." } };
             } else {
               summary = safeSummary(tool.summarize(input, output));
+              controller.signal.throwIfAborted();
+              options.onToolSucceeded?.(call.name, structuredClone(output));
+              controller.signal.throwIfAborted();
               result.successfulToolCalls++;
             }
           }

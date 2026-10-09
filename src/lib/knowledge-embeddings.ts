@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createAiEmbeddings } from "@/lib/ai-client";
 import { readStoredAiConfig } from "@/lib/ai-settings";
 import { knowledgeDb, vectorBuffer } from "@/lib/knowledge-db";
+import type { StoredAiConfig } from "@/lib/ai-config";
 
 type ProfileRow = { id: string; endpointId: string; model: string; dimensions: number; status: string };
 
@@ -19,14 +20,17 @@ export function splitEmbeddingBatches(texts: string[], batchSize = EMBEDDING_BAT
 
 export async function embedTexts(
   texts: string[],
-  options: { onBatchCompleted?: (completed: number, total: number) => void | Promise<void>; signal?: AbortSignal } = {},
+  options: { onBatchCompleted?: (completed: number, total: number) => void | Promise<void>; signal?: AbortSignal;
+    config?: StoredAiConfig; beforeRequest?: (texts: string[]) => void | Promise<void> } = {},
 ) {
-  const config = await readStoredAiConfig();
+  const config = options.config ?? await readStoredAiConfig();
   const endpoint = config.embeddingEndpoints.find((item) => item.id === config.activeEmbeddingEndpointId);
   if (!endpoint?.embeddingModel) throw new Error("尚未配置 Embedding 端点和模型。");
   const vectors: number[][] = [];
   const batches = splitEmbeddingBatches(texts);
   for (let index = 0; index < batches.length; index += 1) {
+    options.signal?.throwIfAborted();
+    await options.beforeRequest?.(batches[index]);
     options.signal?.throwIfAborted();
     vectors.push(...await createAiEmbeddings(endpoint, endpoint.embeddingModel, batches[index], { signal: options.signal }));
     await options.onBatchCompleted?.(index + 1, batches.length);

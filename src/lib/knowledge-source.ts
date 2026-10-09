@@ -1,6 +1,5 @@
 import path from "node:path";
 
-import { z } from "zod";
 
 import type {
   KnowledgeLocator,
@@ -8,24 +7,8 @@ import type {
   SubtitleKnowledgeLocator,
 } from "@/lib/knowledge-types";
 
-const subtitleLocatorSchema = z.object({
-  v: z.literal(1),
-  kind: z.literal("subtitle"),
-  cueStart: z.number().int().positive(),
-  cueEnd: z.number().int().positive(),
-  startMs: z.number().int().nonnegative().nullable(),
-  endMs: z.number().int().nonnegative().nullable(),
-});
-
-const textLocatorSchema = z.object({
-  v: z.literal(1),
-  kind: z.literal("text"),
-  lineStart: z.number().int().positive(),
-  lineEnd: z.number().int().positive(),
-  headingPath: z.array(z.string()),
-});
-
-const locatorSchema = z.discriminatedUnion("kind", [subtitleLocatorSchema, textLocatorSchema]);
+import { knowledgeLocatorSchema } from "@/lib/knowledge-locator-schema";
+export { knowledgeLocatorSchema } from "@/lib/knowledge-locator-schema";
 
 export function sourceFormatForFileName(fileName: string): KnowledgeSourceFormat {
   switch (path.extname(fileName).toLocaleLowerCase()) {
@@ -54,7 +37,7 @@ export function subtitleLocator(input: {
 }
 
 export function serializeKnowledgeLocator(locator: KnowledgeLocator) {
-  return JSON.stringify(locatorSchema.parse(locator));
+  return JSON.stringify(knowledgeLocatorSchema.parse(locator));
 }
 
 export function parseKnowledgeLocator(
@@ -62,7 +45,7 @@ export function parseKnowledgeLocator(
   fallback?: Omit<SubtitleKnowledgeLocator, "v" | "kind">,
 ): KnowledgeLocator {
   try {
-    return locatorSchema.parse(JSON.parse(value ?? ""));
+    return knowledgeLocatorSchema.parse(JSON.parse(value ?? ""));
   } catch {
     if (!fallback) throw new Error("Knowledge chunk locator is invalid.");
     return subtitleLocator(fallback);

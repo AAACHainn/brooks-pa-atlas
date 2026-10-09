@@ -1,3 +1,4 @@
+import { validKnowledgeDocumentIds } from "@/lib/knowledge-retrieval";
 import { z } from "zod";
 import { createAiChatCompletion, type ChatMessage } from "@/lib/ai-client";
 import type { ReadingCompanionSkillConfig, StoredAiEndpoint } from "@/lib/ai-config";
@@ -139,10 +140,10 @@ export function validateDeepCitations(content: string, sources: KnowledgeSource[
 }
 
 export type DeepReadingDependencies = {
-  catalog: typeof listDeepKnowledgeDocuments;
+  catalog: () => KnowledgeDocumentDescriptor[] | Promise<KnowledgeDocumentDescriptor[]>;
   currentIds: typeof currentDocumentIds;
   retrieve: typeof retrieveDeepKnowledgeCandidates;
-  countScope: typeof countKnowledgeScope;
+  countScope: (targets: KnowledgeScopeTarget[]) => ReturnType<typeof countKnowledgeScope> | Promise<ReturnType<typeof countKnowledgeScope>>;
   readScope: typeof readKnowledgeScope;
   complete: (messages: ChatMessage[], outputTokens: number) => Promise<string>;
 };
@@ -206,8 +207,8 @@ export async function prepareDeepReading(options: DeepReadingOptions) {
   if (estimateDeepMessageTokens(baseline) > inputLimit) throw new Error("当前问题、图片与提示词超过深度模式单次输入预算，请提高技能预算或缩短问题。");
   const budget = new DeepReadingBudget(budgetSnapshot, Math.max(estimateDeepMessageTokens(baseline), inputLimit));
   const deps: DeepReadingDependencies = {
-    catalog: listDeepKnowledgeDocuments, currentIds: currentDocumentIds, retrieve: retrieveDeepKnowledgeCandidates,
-    countScope: countKnowledgeScope, readScope: readKnowledgeScope,
+    catalog: async () => listDeepKnowledgeDocuments(undefined, await validKnowledgeDocumentIds()), currentIds: currentDocumentIds, retrieve: retrieveDeepKnowledgeCandidates,
+    countScope: async (targets) => { const valid = await validKnowledgeDocumentIds(); return countKnowledgeScope(targets.filter((target) => valid.includes(target.documentId))); }, readScope: readKnowledgeScope,
     complete: (messages, maxOutputTokens) => createAiChatCompletion(options.endpoint, options.model, messages, {
       signal, jsonMode: true, maxOutputTokens,
     }),
@@ -238,7 +239,7 @@ export async function prepareDeepReading(options: DeepReadingOptions) {
   let catalog: KnowledgeDocumentDescriptor[];
   let currentIds: string[];
   try {
-    catalog = deps.catalog();
+    catalog = await deps.catalog();
     currentIds = await deps.currentIds(options.indexNodeId);
     signal.throwIfAborted();
   } catch {
@@ -316,7 +317,7 @@ export async function prepareDeepReading(options: DeepReadingOptions) {
       selected = balanceDeepCandidates(selected, plan.targets);
     } catch { signal.throwIfAborted(); warn("二次排序失败，已使用融合排序和资料覆盖规则。"); }
   } else if (selected.length) warn("预算不足以二次排序，已使用融合排序。" );
-  const scopeDocuments = plan.intent === "summary" ? deps.countScope(plan.targets) : [];
+  const scopeDocuments = plan.intent === "summary" ? await deps.countScope(plan.targets) : [];
   research.coverage.availableChunks = plan.intent === "summary"
     ? scopeDocuments.reduce((sum, doc) => sum + doc.availableChunks, 0) : candidates.length;
   research.coverage.documents = scopeDocuments.map((doc) => ({ ...doc, readChunks: 0 }));

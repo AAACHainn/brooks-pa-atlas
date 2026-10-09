@@ -361,3 +361,14 @@ Slow filesystem detected
 升级前通过应用内备份并另保存一致性 SQLite 数据库备份（聊天与任务不在业务备份内）。按既有顺序执行 `npm run db:migrate`、`npm run prisma:generate`、`npm run test:ai`、`npm run test:knowledge`、`npm run lint`、`npm run build`，再重启一个 Node.js 进程。不要对已有库运行初始化覆盖，不要清空图库目录。
 
 验收：机器人“＋”三模式；浏览模式打开伴读并与旧窗口对照；普通模式工具白名单保持原样；任务确认计划后执行、暂停、继续、刷新页面恢复查看；重启后任务暂停且检查点仍在。生产继续单进程和本地 SSD/Docker volume，任务与已有重任务互斥。初期保留旧伴侣入口，待用户验证后另行退役。
+
+
+## 机器人知识引用升级（2026-10-09）
+
+本次新增主库 migration `20261009000000_robot_knowledge_sources`，只为 AiRobotMessage 增加可空 knowledgeContextJson；旧消息无需回填。知识库 schema、活动版本和向量不用重建，聊天/任务仍不在业务 ZIP 中。
+
+升级前保留应用业务备份，并另外保存一致性主库 SQLite 备份以保护聊天历史。按既有顺序执行 `npm run db:migrate`、`npm run prisma:generate`、`npm run test:ai`、`npm run test:knowledge`、`npm run lint`、`npm run build`，再重启单 Node.js 进程。迁移日志须出现 Applied migration 20261009000000_robot_knowledge_sources 或主库已是最新。不要初始化覆盖已有库，不要清空图库；新代码在缺少快照字段时返回503/storage_upgrade_required，不自动迁移。
+
+验收普通模式：查询已有知识主题、当前资料限定、指定课程、正文续读；参考资料中检查版本/时间码或行号/部分字符范围；切换会话和刷新后仍可展开；在测试资料换版后检查旧快照仍显示原正文。缺 Embedding 时检查全文/关键词降级提示；普通寒暄不触发知识检索。
+
+验收任务模式：混合搜索能定位资料、执行前仍须确认；规划摘录不计为执行覆盖；暂停、继续、刷新恢复以及 T 引用仍正确；Embedding 次数与输入估算独立累计。原阅读伴侣快速/深度及旧窗口继续可用。维持单进程、本地SSD/volume和既有重任务租约。

@@ -18,6 +18,7 @@ let directory: string;
 const originalFetch = globalThis.fetch, previousUrl = process.env.DATABASE_URL;
 const robotMigration = "20261006100000_ai_robot";
 const modesMigration = "20261007000000_robot_modes_tasks";
+const knowledgeMigration = "20261009000000_robot_knowledge_sources";
 const config = toolTestConfig();
 const context = (id: string) => ({ params: Promise.resolve({ id }) });
 function request(content = "查询当前图片", extra: Record<string, unknown> = {}, signal?: AbortSignal) {
@@ -31,7 +32,7 @@ before(async () => {
   process.env.DATABASE_URL = `file:${path.join(directory, "main.db")}`;
   const db = new Database(path.join(directory, "main.db"));
   const root = path.join(process.cwd(), "prisma/migrations");
-  for (const entry of (await readdir(root)).sort()) { if (entry !== "migration_lock.toml" && entry !== robotMigration && entry !== modesMigration) db.exec(await readFile(path.join(root, entry, "migration.sql"), "utf8")); }
+  for (const entry of (await readdir(root)).sort()) { if (entry !== "migration_lock.toml" && entry !== robotMigration && entry !== modesMigration && entry !== knowledgeMigration) db.exec(await readFile(path.join(root, entry, "migration.sql"), "utf8")); }
   db.close();
   prisma = (await import("@/lib/db")).prisma;
   collection = await import("@/app/api/ai/robot/conversations/route");
@@ -73,7 +74,7 @@ test("an existing database without the robot migration reports an upgrade and re
     assert.equal(await prisma.indexNode.count(), 1);
   } finally {
     const db = new Database(path.join(directory, "main.db"));
-    try { for (const migration of [robotMigration, modesMigration]) db.exec(await readFile(path.join(process.cwd(), "prisma/migrations", migration, "migration.sql"), "utf8")); }
+    try { for (const migration of [robotMigration, modesMigration, knowledgeMigration]) db.exec(await readFile(path.join(process.cwd(), "prisma/migrations", migration, "migration.sql"), "utf8")); }
     finally { db.close(); }
   }
   const id = await create();
@@ -88,7 +89,7 @@ test("robot performs real tool reads, preserves protocol state, and saves only t
   globalThis.fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     assert.equal(body.model, "robot-model");
-    assert.deepEqual(body.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(), ["get_image_context", "list_index_nodes"]);
+    assert.deepEqual(body.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(), ["get_image_context", "list_index_nodes", "list_knowledge_documents", "read_knowledge", "search_knowledge"]);
     assert.ok(!JSON.stringify(body).includes("image_url"));
     if (++calls === 1) return turnResponse("先查询目录", [{ id: "indices", name: "list_index_nodes", arguments: '{"query":"图表"}' }], {});
     if (calls === 2) {

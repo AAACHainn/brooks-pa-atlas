@@ -12,7 +12,7 @@ export const taskPlanSchema = z.strictObject({
 });
 export type TaskPlan = z.infer<typeof taskPlanSchema>;
 export type TaskScope = z.infer<typeof taskScopeSchema>;
-export type TaskBudget = { modelCalls: number; toolCalls: number; inputTokens: number; elapsedMs: number };
+export type TaskBudget = { modelCalls: number; toolCalls: number; inputTokens: number; elapsedMs: number; embeddingRequests: number; estimatedEmbeddingInputTokens: number };
 export type TaskSource = { citation: string; kind: "index" | "image" | "knowledge"; id: string; title: string; version?: string; location?: string; text: string };
 export type TaskCheckpoint = { ordinal: number; kind: "read" | "reduce"; summary: string; sources: TaskSource[] };
 export type TaskSnapshot = {
@@ -33,7 +33,7 @@ export const taskActionSchema = z.strictObject({
 export function parseTaskPlan(text: string): TaskPlan {
   return taskPlanSchema.parse(JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")));
 }
-export const emptyTaskBudget = (): TaskBudget => ({ modelCalls: 0, toolCalls: 0, inputTokens: 0, elapsedMs: 0 });
+export const emptyTaskBudget = (): TaskBudget => ({ modelCalls: 0, toolCalls: 0, inputTokens: 0, elapsedMs: 0, embeddingRequests: 0, estimatedEmbeddingInputTokens: 0 });
 export function validateTaskCitations(text: string, allowed: ReadonlySet<string>) {
   return text.replace(/\[(T\d+)\]/g, (match, citation: string) => allowed.has(citation) ? match : "[未验证引用]");
 }

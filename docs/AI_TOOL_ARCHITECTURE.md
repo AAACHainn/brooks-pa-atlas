@@ -2,7 +2,7 @@
 
 本基础设施让设置中的 API 模型通过 Function Calling 请求系统操作，由服务端验证并执行。当前只支持 Chat Completions，不增加 MCP、Responses API、通用工具执行路由或 Server Action；执行器自身不依赖持久化表，机器人会话使用独立 migration。
 
-两个只读工具是正式内部能力，已经通过独立全局机器人接入；OCR、快速/深度伴读、字幕整理和知识库继续原流程。机器人拥有独立技能设置、会话与专用接口，原有业务能力和 HTTP 返回格式不变。
+图片、索引及知识库只读工具是正式内部能力，已经通过独立全局机器人接入；OCR、快速/深度伴读、字幕整理和知识库继续原流程。机器人拥有独立技能设置、会话与专用接口，原有业务能力和接口保留，机器人消息增加可选知识引用快照。
 
 ## 分层
 
@@ -83,7 +83,7 @@ const result = await runAiToolTask({
 
 ## 全局机器人接入
 
-机器人专用接口 `/api/ai/robot/conversations/**` 调用 `runAiToolTask`；它不是通用工具执行 HTTP API。请求只接收问题、语言及可选当前图片/索引 ID，服务端验证并固定选择、保存配置快照，使用 `globalRobot` 技能及全库只读范围。白名单目前仅含 `get_image_context` 与 `list_index_nodes`，普通问题可直接回答。
+机器人专用接口 `/api/ai/robot/conversations/**` 调用 `runAiToolTask`；它不是通用工具执行 HTTP API。请求只接收问题、语言及可选当前图片/索引 ID，服务端验证并固定选择、保存配置快照，使用 `globalRobot` 技能及全库只读范围。普通模式白名单包含 `get_image_context`、`list_index_nodes`、`list_knowledge_documents`、`search_knowledge`、`read_knowledge`，普通问题可直接回答，不自动检索。
 
 管理设置的机器人技能提供折叠的“高级运行限制”：模型/工具次数、单次/累计输入 Token、单次输出 Token、总时长。默认分别为 6/12、16000/100000、4096、300 秒，可快捷设置 12/24 次调用；该按钮不改变输入预算。字段范围为模型 1–50 次、工具 1–200 次、单次输入 1–1000000、累计输入 1–10000000、输出 1–131072、总时长 30–1800 秒，累计预算不得低于单次预算。限制只传给机器人，每次发送固定，不能由发送 body 或模型参数扩大。旧 v4 配置补默认值，旧保存请求省略新字段时保留当前值，无数据库迁移。
 
@@ -95,7 +95,7 @@ const result = await runAiToolTask({
 
 `ai-robot-service.ts` 编排最近四组完整问答与当前问题、独立选择快照和最终答案保存；`ai-robot-runs.ts` 提供每会话互斥及跨 Route Handler 的取消控制（单进程全局状态）。清空/删除持有互斥并取消旧运行；禁用设置取消所有活动机器人运行。服务端在保存前和事务内检查租约及取消信号，防止迟到草稿写入。运行中间正文和 tool 结果不作为持久化聊天消息回放。
 
-`AiRobotConversation` / `AiRobotMessage` 由 migration `20261006100000_ai_robot` 创建，与伴读分表。成功回复保存可见思考及 `runId`、调用统计、Token 估算和脱敏 trace；不保存密钥、原始上游响应、参数或资料正文。失败只保留用户问题。两类会话都不进入备份。
+`AiRobotConversation` / `AiRobotMessage` 由 migration `20261006100000_ai_robot` 创建，与伴读分表。成功回复保存可见思考及 `runId`、调用统计、Token 估算和脱敏 trace；不保存密钥、原始上游响应、参数或资料正文到执行日志；知识正文另存在 `knowledgeContextJson` 的版本化引用快照。失败只保留用户问题。两类会话都不进入备份。
 
 已有实例未迁移时，会话初始化不能成功，因此尚未进入模型调用。专用接口统一返回脱敏 JSON 错误；缺表/字段为 HTTP 503、`code: "storage_upgrade_required"`。前端显示当前语言的升级提示，并提供重新加载会话；不会在普通请求中自动执行数据库迁移。
 
@@ -108,7 +108,7 @@ const result = await runAiToolTask({
 
 ## 统一窗口与持久任务
 
-普通、伴读、任务分别维护会话，伴读嵌入复用原请求链，不经过工具执行器。普通白名单仍只有 `get_image_context` 与 `list_index_nodes`。
+普通、伴读、任务分别维护会话，伴读嵌入复用原请求链，不经过工具执行器。普通白名单显式加入资料目录、混合检索和知识正文读取。
 
 任务规划使用 `list_index_nodes`、`list_images`、`list_knowledge_documents`、`search_knowledge` 的只读工具；执行以确认后的不可变 manifest 为范围，按资源指纹和分页游标读取索引文字、图片文字资料和知识片段，范围同时显示资源数量与资料页覆盖。继续以及综合结果提交前重新校验已完成资源，资料变化时保留检查点并暂停。`read_task_source` 只接受 manifest 内的引用标识，不能读取任意文件。原始资料和工具结果始终属于不可信参考。
 
@@ -117,3 +117,26 @@ const result = await runAiToolTask({
 任务创建：`POST /api/ai/robot/conversations/[id]/tasks`；列表支持 `before`；轻量进度：`GET /api/ai/robot/tasks/[id]`，展开证据使用 `?evidence=true`。控制：`POST /api/ai/robot/tasks/[id]/actions`，body 为 action、revision、planVersion，重新规划另带 feedback。action 支持 start/pause/resume/cancel/replan；旧状态返回 409。
 
 执行不依赖浏览器连接。全局重任务租约确保单任务，暂停取消当前上游、使 runId 失效，恢复前等待旧 worker 退出。迟到结果不会写入。服务启动仅标记无 worker 的运行任务为暂停。设置关闭机器人、清空和删除会话均先停止后台任务。检查点与会话不导入导出备份。
+
+
+## 知识库工具与引用快照（2026-10-09）
+
+`knowledge-retrieval.ts` 共用 FTS/关键词/向量通道、相关性门槛、RRF 和正文投影；快速伴读仍最多 8 个来源，深度伴读保留原流程与预算。机器人使用 `createKnowledgeToolSession` 创建运行内状态，通过 `createSystemToolRegistry({knowledgeRegistry})` 显式接入；缺省系统注册表仍只提供原图片和索引工具。
+
+| 工具 | 参数与分页 | 结果 |
+| --- | --- | --- |
+| `list_knowledge_documents` | query、scope、documentIds、offset、limit（20，最多50） | 有效文档 ID、课号、标题、版本、索引位置、片段数、精确文档 total、nextOffset；无正文 |
+| `search_knowledge` | query、scope、documentIds、offset、limit（5，最多10） | 最多500 Unicode 字符摘录、版本与出处、totalCandidates（排序候选池，最多100）、nextOffset、semanticSearchUsed 和 warnings |
+| `read_knowledge` | target（kind=chunk + chunkId/versionId，或 kind=document + documentId/versionId/可选 headingPath）、scope、documentIds、cursor、limitChars（2000，最多4000） | 原顺序正文页、实际字符范围及 nextCursor；章节路径按前缀精确匹配 |
+
+scope 默认为 library，优先当前索引及可继承祖先；current 只限这些关联资料，无选择时返回空；documents 必须有 documentIds。指定 ID 必须在服务端授权集合内。所有通道在召回前限制到已启用、ACTIVE 版本、有效绑定且主库节点实际存在的文档，不能先取全库候选再过滤。只有图片选择时在提交时固定其索引。泛化图片问题不使用 OCR 生成全库检索主题。
+
+每个会话运行缓存相同查询/范围的排序结果，资料版本或范围变化会报告 source_changed 并要求重查；正文续读游标限定到原目标、版本及范围。返回页按完整 JSON 字节限制装载，nextOffset 根据实际返回条数继续。candidate total、摘录和部分页都不能表示全库或全文覆盖。
+
+Embedding 使用本次固定配置；缺少活动 profile、端点不匹配或请求失败时以全文/关键词降级。失败的请求也计入独立 Embedding 请求次数与保守输入估算（不是实际供应商用量），同一查询续页不重复请求。任务规划在发出请求前持久保存这两个值，对话模型计数与预算仍沿用原口径。取消、工具期限保持硬终止，不触发向量重建。
+
+执行器增加可选同步 `onToolSucceeded(toolName, output)` 服务端回调，仅在参数、资源、大小和取消检查后通知，传入独立副本；不作为 trace/NDJSON 原始资料事件。普通机器人用它收集真正成功返回的正文页，按版本/片段/字符范围/正文去重，分配本运行的 K 引用。过大或失败结果不进入引用快照，未知 K 引用标记为未验证。
+
+主库 migration `20261009000000_robot_knowledge_sources` 只增加 `AiRobotMessage.knowledgeContextJson` 可空字段。`RobotMessage.knowledge` 为版本1快照，保存 sources（正文、版本、locator、字符范围、partial）、warnings 和 retrieval 统计；成功答案与快照事务保存，历史资料更新/删除不影响旧快照。执行日志不保存资料正文；历史上下文仅附带引用身份和位置，重新引用时须读当前有效资料。旧消息为空，聊天仍不进入业务备份。
+
+任务规划使用同一资料目录和混合搜索，摘录不计为执行覆盖；确认后的 manifest、read_task_source、T 引用和检查点照旧。知识工具不会加入 OCR、伴读或字幕的工具白名单。

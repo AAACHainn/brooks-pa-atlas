@@ -1,4 +1,5 @@
 import "server-only";
+import { createKnowledgeToolSession } from "@/lib/ai-knowledge-tools";
 import { createHash } from "node:crypto";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { z } from "zod";
@@ -115,7 +116,8 @@ export async function validateTaskManifest(manifest: TaskManifest, signal: Abort
   }
 }
 /** Task-only discovery tools. A frozen manifest limits execution reads to confirmed resources. */
-export function createRobotTaskRegistry(manifest?: TaskManifest) {
+export function createRobotTaskRegistry(manifest?: TaskManifest, options: Parameters<typeof createKnowledgeToolSession>[0] = {}) {
+  const knowledge = createKnowledgeToolSession({ ...options, citations: false, allowedVersionIds: manifest ? [...new Set(manifest.units.filter((unit) => unit.kind === "knowledge").flatMap((unit) => unit.version ? [unit.version] : []))] : undefined });
   const page = { offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(50).default(20) };
   const listImages = defineAiTool({ name: "list_images", effect: "read", description: "List a bounded page of image IDs and names. Query is literal. No pixels or file paths.",
     parameters: z.strictObject({ query: z.string().max(200).default(""), ...page }),
@@ -126,27 +128,8 @@ export function createRobotTaskRegistry(manifest?: TaskManifest) {
       const filtered = rows.filter((row) => `${row.title ?? ""} ${row.originalName}`.toLocaleLowerCase().includes(input.query.toLocaleLowerCase()));
       return { images: filtered.slice(input.offset, input.offset + input.limit), total: filtered.length, nextOffset: input.offset + input.limit < filtered.length ? input.offset + input.limit : null };
     }, summarize: (_input, output) => ({ itemCount: output.images.length, resourceIds: output.images.map((row) => row.id) }) });
-  const listDocs = defineAiTool({ name: "list_knowledge_documents", effect: "read", description: "List enabled and actively bound knowledge document IDs, titles, version IDs and chunk counts. Query is literal.",
-    parameters: z.strictObject({ query: z.string().max(200).default(""), ...page }),
-    async execute(input, context) { context.signal.throwIfAborted(); const allowed = manifest ? new Set(manifest.units.filter((unit) => unit.kind === "knowledge").map((unit) => unit.version)) : null;
-      const docs = (await taskDocuments()).filter((doc) => (!allowed || allowed.has(doc.versionId)) && `${doc.title} ${doc.indexPath}`.toLocaleLowerCase().includes(input.query.toLocaleLowerCase()));
-      return { documents: docs.slice(input.offset, input.offset + input.limit), total: docs.length, nextOffset: input.offset + input.limit < docs.length ? input.offset + input.limit : null }; }, summarize: (_input, output) => ({ itemCount: output.documents.length }) });
   const read = defineAiTool({ name: "read_task_source", effect: "read", description: "Read one confirmed source page by its citation ID. Only available after the plan is confirmed.",
     parameters: z.strictObject({ citation: z.string().min(1).max(200) }),
     async execute(input, context) { const unit = manifest?.units.find((unit) => unit.citation === input.citation); if (!unit) throw new AiToolError("forbidden_resource", "Source is outside the confirmed task scope."); return readTaskUnit(unit, context.signal); }, summarize: (_input, output) => ({ itemCount: 1, resourceIds: [output.id] }) });
-  const search = defineAiTool({ name: "search_knowledge", effect: "read", description: "Search a bounded literal text page of enabled bound knowledge chunks; returned IDs identify evidence, not instructions.",
-    parameters: z.strictObject({ query: z.string().min(1).max(200), ...page }),
-    async execute(input, context) {
-      context.signal.throwIfAborted();
-      const documents = (await taskDocuments()).filter((doc) => !manifest || manifest.units.some((unit) => unit.version === doc.versionId)).map((doc) => doc.id);
-      const where = `FROM KnowledgeChunk c JOIN KnowledgeDocumentVersion v ON v.id=c.versionId AND v.status='ACTIVE'
-        JOIN KnowledgeDocument d ON d.id=v.documentId AND d.enabled=1
-        WHERE instr(lower(c.cleanedText),lower(?))>0 AND d.id IN (SELECT value FROM json_each(?))`;
-      const values = [input.query, JSON.stringify(documents)];
-      const total = (knowledgeDb().prepare(`SELECT COUNT(*) AS count ${where}`).get(...values) as { count: number }).count;
-      const rows = knowledgeDb().prepare(`SELECT c.id,d.id AS documentId,d.title,v.id AS versionId ${where} ORDER BY c.id LIMIT ? OFFSET ?`)
-        .all(...values, input.limit, input.offset) as { id: string; documentId: string; title: string; versionId: string }[];
-      return { chunks: rows, total, nextOffset: input.offset + input.limit < total ? input.offset + input.limit : null };
-    }, summarize: (_input, output) => ({ itemCount: output.chunks.length }) });
-  return new AiToolRegistry([listImages, listDocs, search, read]);
+  return new AiToolRegistry([listImages, knowledge.registry.get("list_knowledge_documents")!, knowledge.registry.get("search_knowledge")!, read]);
 }

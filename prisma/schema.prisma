@@ -401,6 +401,7 @@ model AiRobotMessage {
   reasoningContent    String?
   reasoningDurationMs Int?
   executionJson       String?
+  knowledgeContextJson String?
   createdAt           DateTime @default(now())
   conversation AiRobotConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   @@unique([conversationId, sequence])

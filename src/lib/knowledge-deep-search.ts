@@ -1,10 +1,10 @@
 import { setImmediate as yieldToLoop } from "node:timers/promises";
-import { knowledgeDb, vectorBuffer } from "@/lib/knowledge-db";
+import { knowledgeDb } from "@/lib/knowledge-db";
 import { activeEmbeddingProfile, embedTexts } from "@/lib/knowledge-embeddings";
-import { buildKnowledgeFtsQuery } from "@/lib/knowledge-search";
+import { ftsCandidates, keywordCandidates, vectorCandidates, validKnowledgeDocumentIds } from "@/lib/knowledge-retrieval";
 import { parseKnowledgeLocator } from "@/lib/knowledge-source";
 import type { KnowledgeSource } from "@/lib/knowledge-types";
-import { isRelevantKnowledgeVector, knowledgeSubjectQuery } from "@/lib/knowledge-relevance";
+import { knowledgeSubjectQuery } from "@/lib/knowledge-relevance";
 
 export type KnowledgeDocumentDescriptor = {
   id: string;
@@ -45,7 +45,7 @@ function toSource(row: Row, currentIds: Set<string>, score = 0): KnowledgeSource
   };
 }
 
-export function listDeepKnowledgeDocuments(db = knowledgeDb()): KnowledgeDocumentDescriptor[] {
+export function listDeepKnowledgeDocuments(db = knowledgeDb(), allowedIds?: string[]): KnowledgeDocumentDescriptor[] {
   const docs = db.prepare(`SELECT d.id, v.id AS versionId, d.title, d.lessonCode, d.sourceType,
     b.indexPathSnapshot AS indexPath, COUNT(c.id) AS chunkCount
     FROM KnowledgeDocument d
@@ -65,7 +65,7 @@ export function listDeepKnowledgeDocuments(db = knowledgeDb()): KnowledgeDocumen
       byDocument.set(heading.documentId, paths);
     }
   }
-  return docs.map((doc) => ({ ...doc, headings: byDocument.get(doc.id) ?? [] }));
+  return docs.filter((doc) => !allowedIds || allowedIds.includes(doc.id)).map((doc) => ({ ...doc, headings: byDocument.get(doc.id) ?? [] }));
 }
 
 export async function retrieveDeepKnowledgeCandidates(options: {
@@ -74,6 +74,7 @@ export async function retrieveDeepKnowledgeCandidates(options: {
   db?: ReturnType<typeof knowledgeDb>;
 }): Promise<{ candidates: DeepKnowledgeCandidate[]; semanticSearchUsed: boolean }> {
   const db = options.db ?? knowledgeDb();
+  const validIds = options.db ? undefined : await validKnowledgeDocumentIds(db);
   const currentIds = new Set(options.currentIds);
   const targetIds = [...new Set(options.targets.map((target) => target.documentId))];
   const otherCurrentIds = options.currentIds.filter((id) => !targetIds.includes(id));
@@ -101,27 +102,17 @@ export async function retrieveDeepKnowledgeCandidates(options: {
       // Divide each channel's 50 slots between named materials, the current scope,
       // and the whole library. This keeps coverage without multiplying the recall cap.
       const limit = Math.floor(50 / scopes.length) + (scopeIndex < 50 % scopes.length ? 1 : 0);
-      const scope = ids ? ` AND d.id IN (${ids.map(() => "?").join(",")})` : "";
+      const allowed = validIds ? (ids ? ids.filter((id) => validIds.includes(id)) : validIds) : ids;
       const add = (rows: Row[]) => rows.forEach((row, rank) => {
         const candidate = merged.get(row.id) ?? { ...toSource(row, currentIds), queryIndexes: [] };
         candidate.score += (currentIds.has(row.documentId) ? 1.15 : 1) / (61 + rank);
         if (!candidate.queryIndexes.includes(queryIndex)) candidate.queryIndexes.push(queryIndex);
         merged.set(row.id, candidate);
       });
-      const expression = buildKnowledgeFtsQuery(query);
-      if (expression) add(db.prepare(`${select} FROM KnowledgeChunkFts f
-        JOIN KnowledgeChunk c ON c.id = f.chunkId ${joins}
-        WHERE KnowledgeChunkFts MATCH ?${scope} ORDER BY bm25(KnowledgeChunkFts), c.id LIMIT ?`)
-        .all(expression, ...(ids ?? []), limit) as Row[]);
-      add(db.prepare(`${select} FROM KnowledgeChunkKeyword k JOIN KnowledgeChunk c ON c.id = k.chunkId ${joins}
-        WHERE instr(?, k.normalizedKeyword) > 0${scope}
-        GROUP BY c.id ORDER BY MAX(length(k.normalizedKeyword)) DESC, c.id LIMIT ?`)
-        .all(query.normalize("NFKC").toLowerCase(), ...(ids ?? []), limit) as Row[]);
-      if (vectors[queryIndex] && profile) add((db.prepare(`${select}, vec_distance_cosine(e.embedding, ?) AS distance FROM KnowledgeChunkEmbedding e
-        JOIN KnowledgeChunk c ON c.id = e.chunkId ${joins}
-        WHERE e.profileId = ?${scope} ORDER BY distance, c.id LIMIT ?`)
-        .all(vectorBuffer(vectors[queryIndex]), profile.id, ...(ids ?? []), limit) as Array<Row & { distance: number }>)
-        .filter((row) => isRelevantKnowledgeVector(row.distance)));
+      const adapt = (rows: ReturnType<typeof ftsCandidates>) => rows.map((row) => ({ ...row, indexPath: row.indexPathSnapshot })) as Row[];
+      add(adapt(ftsCandidates(query, allowed, "fts", limit, db)));
+      add(adapt(keywordCandidates(query, allowed, "keyword", limit, db)));
+      if (vectors[queryIndex] && profile) add(adapt(vectorCandidates(vectors[queryIndex], profile.id, allowed, "vector", limit, db)));
       await yieldToLoop();
       options.signal.throwIfAborted();
     }
@@ -150,13 +141,19 @@ export function countKnowledgeScope(targets: KnowledgeScopeTarget[], db = knowle
     .all(...scope.values) as Array<{ documentId: string; versionId: string; title: string; availableChunks: number }>;
 }
 
-export async function* readKnowledgeScope(targets: KnowledgeScopeTarget[], currentIds: string[], signal: AbortSignal, db = knowledgeDb()) {
-  const scope = scopeFilter(targets);
+export async function* readKnowledgeScope(targets: KnowledgeScopeTarget[], currentIds: string[], signal: AbortSignal, database?: ReturnType<typeof knowledgeDb>) {
+  const db = database ?? knowledgeDb();
+  const allowed = database ? null : new Set(await validKnowledgeDocumentIds(db));
+  const scope = scopeFilter(targets.filter((target) => !allowed || allowed.has(target.documentId)));
   const statement = db.prepare(`${select} FROM KnowledgeChunk c ${joins}
     WHERE ${scope.expression} ORDER BY c.ordinal, d.id, c.id LIMIT 100 OFFSET ?`);
   const current = new Set(currentIds);
   for (let offset = 0; ; offset += 100) {
     signal.throwIfAborted();
+    if (!database) {
+      const valid = new Set(await validKnowledgeDocumentIds(db));
+      if (targets.some((target) => allowed?.has(target.documentId) && !valid.has(target.documentId))) throw new Error("knowledge_scope_changed");
+    }
     const rows = statement.all(...scope.values, offset) as Row[];
     for (const row of rows) {
       signal.throwIfAborted();

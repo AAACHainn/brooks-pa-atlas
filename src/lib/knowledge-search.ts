@@ -1,100 +1,12 @@
 import { embedTexts, activeEmbeddingProfile } from "@/lib/knowledge-embeddings";
-import { knowledgeDb, vectorBuffer } from "@/lib/knowledge-db";
-import { knowledgeLocatorLabel, parseKnowledgeLocator } from "@/lib/knowledge-source";
+import { knowledgeDb } from "@/lib/knowledge-db";
+import { knowledgeLocatorLabel } from "@/lib/knowledge-source";
 import type { KnowledgeContextSnapshot, KnowledgeSource } from "@/lib/knowledge-types";
 import { prisma } from "@/lib/db";
-import { isRelevantKnowledgeVector, knowledgeSubjectQuery } from "@/lib/knowledge-relevance";
+import { knowledgeSubjectQuery } from "@/lib/knowledge-relevance";
 
-type CandidateRow = {
-  id: string;
-  documentId: string;
-  versionId: string;
-  versionNumber: number;
-  title: string;
-  lessonCode: string | null;
-  sourceType: KnowledgeSource["sourceType"];
-  sourceFormat: KnowledgeSource["sourceFormat"];
-  indexNodeId: string | null;
-  indexPathSnapshot: string;
-  startMs: number | null;
-  endMs: number | null;
-  cleanedText: string;
-  topic: string;
-  keywordsJson: string;
-  locatorJson: string;
-  sourceCueStart: number;
-  sourceCueEnd: number;
-};
-
-type Ranked = CandidateRow & { rank: number; channel: string; distance?: number };
-
-export function buildKnowledgeFtsQuery(value: string) {
-  const normalized = value.normalize("NFKC");
-  const terms: string[] = [];
-  for (const token of normalized.match(/[\p{Script=Han}]+|[A-Za-z0-9]{3,}/gu) ?? []) {
-    if (/^[\p{Script=Han}]+$/u.test(token)) {
-      if (token.length < 3) continue;
-      for (let index = 0; index <= token.length - 3; index += 1) terms.push(token.slice(index, index + 3));
-    } else {
-      terms.push(token);
-    }
-    if (terms.length >= 18) break;
-  }
-  return [...new Set(terms.slice(0, 18))].map((term) => `"${term.replace(/"/g, '""')}"`).join(" OR ");
-}
-
-function baseSelect() {
-  return `SELECT c.id, v.documentId, v.id AS versionId, v.versionNumber, d.title, d.lessonCode, d.sourceType,
-    v.sourceFormat, b.indexNodeId, b.indexPathSnapshot, c.startMs, c.endMs, c.cleanedText,
-    c.topic, c.keywordsJson, c.locatorJson, c.sourceCueStart, c.sourceCueEnd`;
-}
-
-function ftsCandidates(query: string, documentIds: string[] | null, channel: string, limit = 30): Ranked[] {
-  const expression = buildKnowledgeFtsQuery(query);
-  if (!expression) return [];
-  const db = knowledgeDb();
-  const scope = documentIds ? ` AND d.id IN (${documentIds.map(() => "?").join(",")})` : "";
-  const rows = db.prepare(`${baseSelect()}, bm25(KnowledgeChunkFts) AS relevance
-    FROM KnowledgeChunkFts
-    JOIN KnowledgeChunk c ON c.id = KnowledgeChunkFts.chunkId
-    JOIN KnowledgeDocumentVersion v ON v.id = c.versionId AND v.status = 'ACTIVE'
-    JOIN KnowledgeDocument d ON d.id = v.documentId AND d.enabled = 1
-    JOIN KnowledgeDocumentBinding b ON b.documentId = d.id AND b.status = 'ACTIVE' AND b.indexNodeId IS NOT NULL
-    WHERE KnowledgeChunkFts MATCH ?${scope}
-    ORDER BY relevance, c.id LIMIT ?`).all(expression, ...(documentIds ?? []), limit) as Array<CandidateRow & { relevance: number }>;
-  return rows.map((row, index) => ({ ...row, rank: index + 1, channel }));
-}
-
-function keywordCandidates(query: string, documentIds: string[] | null, channel: string, limit = 30): Ranked[] {
-  const normalizedQuery = query.normalize("NFKC").toLocaleLowerCase();
-  const db = knowledgeDb();
-  const scope = documentIds ? ` AND d.id IN (${documentIds.map(() => "?").join(",")})` : "";
-  const rows = db.prepare(`${baseSelect()}, k.normalizedKeyword
-    FROM KnowledgeChunkKeyword k
-    JOIN KnowledgeChunk c ON c.id = k.chunkId
-    JOIN KnowledgeDocumentVersion v ON v.id = c.versionId AND v.status = 'ACTIVE'
-    JOIN KnowledgeDocument d ON d.id = v.documentId AND d.enabled = 1
-    JOIN KnowledgeDocumentBinding b ON b.documentId = d.id AND b.status = 'ACTIVE' AND b.indexNodeId IS NOT NULL
-    WHERE instr(?, k.normalizedKeyword) > 0${scope}
-    GROUP BY c.id ORDER BY length(k.normalizedKeyword) DESC, c.id LIMIT ?`)
-    .all(normalizedQuery, ...(documentIds ?? []), limit) as CandidateRow[];
-  return rows.map((row, index) => ({ ...row, rank: index + 1, channel }));
-}
-
-function vectorCandidates(vector: number[], profileId: string, documentIds: string[] | null, channel: string, limit = 30): Ranked[] {
-  const db = knowledgeDb();
-  const scope = documentIds ? ` AND d.id IN (${documentIds.map(() => "?").join(",")})` : "";
-  const rows = db.prepare(`${baseSelect()}, vec_distance_cosine(e.embedding, ?) AS distance
-    FROM KnowledgeChunkEmbedding e
-    JOIN KnowledgeChunk c ON c.id = e.chunkId
-    JOIN KnowledgeDocumentVersion v ON v.id = c.versionId AND v.status = 'ACTIVE'
-    JOIN KnowledgeDocument d ON d.id = v.documentId AND d.enabled = 1
-    JOIN KnowledgeDocumentBinding b ON b.documentId = d.id AND b.status = 'ACTIVE' AND b.indexNodeId IS NOT NULL
-    WHERE e.profileId = ?${scope}
-    ORDER BY distance, c.id LIMIT ?`).all(vectorBuffer(vector), profileId, ...(documentIds ?? []), limit) as Array<CandidateRow & { distance: number }>;
-  return rows.filter((row) => isRelevantKnowledgeVector(row.distance))
-    .map((row, index) => ({ ...row, rank: index + 1, channel }));
-}
+import { ftsCandidates, keywordCandidates, vectorCandidates, sourceFromRow, validKnowledgeDocumentIds, rankKnowledgeCandidates, type Ranked } from "@/lib/knowledge-retrieval";
+export { buildKnowledgeFtsQuery } from "@/lib/knowledge-retrieval";
 
 export function resolveCurrentKnowledgeDocumentIds(
   indexNodeId: string | null,
@@ -142,18 +54,7 @@ function mentionedDocumentIds(query: string) {
 }
 
 function mergeRrf(channels: Ranked[], currentIds: Set<string>) {
-  const merged = new Map<string, { row: CandidateRow; score: number; scope: "current" | "related" }>();
-  for (const row of channels) {
-    const entry = merged.get(row.id) ?? {
-      row,
-      score: 0,
-      scope: currentIds.has(row.documentId) ? "current" as const : "related" as const,
-    };
-    const currentBoost = entry.scope === "current" ? 1.35 : 1;
-    entry.score += currentBoost / (60 + row.rank);
-    merged.set(row.id, entry);
-  }
-  const ranked = [...merged.values()].sort((left, right) => right.score - left.score);
+  const ranked = rankKnowledgeCandidates(channels, currentIds).map((entry) => ({ ...entry, scope: currentIds.has(entry.row.documentId) ? "current" : "related" }));
   const current = ranked.filter((entry) => entry.scope === "current").slice(0, 4);
   const selected = current.length >= 4
     ? [...current, ...ranked.filter((entry) => !current.includes(entry))].slice(0, 8)
@@ -167,8 +68,9 @@ export async function retrieveKnowledgeContext(options: {
   contextText?: string;
   signal?: AbortSignal;
 }): Promise<KnowledgeContextSnapshot> {
-  const current = await currentDocumentIds(options.indexNodeId);
-  const mentioned = mentionedDocumentIds(options.query);
+  const valid = await validKnowledgeDocumentIds();
+  const current = (await currentDocumentIds(options.indexNodeId)).filter((id) => valid.includes(id));
+  const mentioned = mentionedDocumentIds(options.query).filter((id) => valid.includes(id));
   const priority = [...new Set([...current, ...mentioned])];
   const subject = knowledgeSubjectQuery(options.query);
   // Only a node/document binding can justify using the image's text for a vague
@@ -177,8 +79,8 @@ export async function retrieveKnowledgeContext(options: {
   const channels: Ranked[] = [
     ...(priority.length && priorityText ? ftsCandidates(priorityText, priority, "priority-fts") : []),
     ...(priority.length && priorityText ? keywordCandidates(priorityText, priority, "priority-keyword") : []),
-    ...(subject ? ftsCandidates(subject, null, "global-fts") : []),
-    ...(subject ? keywordCandidates(subject, null, "global-keyword") : []),
+    ...(subject ? ftsCandidates(subject, valid, "global-fts") : []),
+    ...(subject ? keywordCandidates(subject, valid, "global-keyword") : []),
   ];
   let semanticSearchUsed = false;
   const profile = activeEmbeddingProfile();
@@ -189,7 +91,7 @@ export async function retrieveKnowledgeContext(options: {
         semanticSearchUsed = true;
         channels.push(
           ...(priority.length ? vectorCandidates(embedded.vectors[0], profile.id, priority, "priority-vector") : []),
-          ...(subject ? vectorCandidates(embedded.vectors[0], profile.id, null, "global-vector") : []),
+          ...(subject ? vectorCandidates(embedded.vectors[0], profile.id, valid, "global-vector") : []),
         );
       }
     } catch {
@@ -199,35 +101,9 @@ export async function retrieveKnowledgeContext(options: {
   }
   const currentSet = new Set(current);
   const selected = mergeRrf(channels, currentSet);
-  const sources: KnowledgeSource[] = selected.map((entry, index) => {
-    const locator = parseKnowledgeLocator(entry.row.locatorJson, {
-      cueStart: entry.row.sourceCueStart,
-      cueEnd: entry.row.sourceCueEnd,
-      startMs: entry.row.startMs,
-      endMs: entry.row.endMs,
-    });
-    return {
-      id: entry.row.id,
-      documentId: entry.row.documentId,
-      versionId: entry.row.versionId,
-      versionNumber: entry.row.versionNumber,
-      title: entry.row.title,
-      lessonCode: entry.row.lessonCode,
-      sourceType: entry.row.sourceType,
-      sourceFormat: entry.row.sourceFormat,
-      locator,
-      indexNodeId: entry.row.indexNodeId,
-      indexPath: entry.row.indexPathSnapshot,
-      startMs: entry.row.startMs,
-      endMs: entry.row.endMs,
-      text: entry.row.cleanedText,
-      topic: entry.row.topic,
-      keywords: JSON.parse(entry.row.keywordsJson) as string[],
-      scope: entry.scope,
-      citation: `K${index + 1}`,
-      score: entry.score,
-    };
-  });
+  const sources: KnowledgeSource[] = selected.map((entry, index) => ({
+    ...sourceFromRow(entry.row, currentSet, entry.score), citation: `K${index + 1}`,
+  }));
   return {
     sources,
     semanticSearchUsed,

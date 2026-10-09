@@ -6,6 +6,7 @@ import { robotRequestSchema, robotErrorMessage, type RobotStreamEvent } from "@/
 import { startRobotMessage, saveRobotAnswer, serializeRobotMessage, robotAllowedTools, RobotRequestError } from "@/lib/ai-robot-service";
 import { createSystemToolRegistry } from "@/lib/ai-system-tools";
 import { runAiToolTask } from "@/lib/ai-tool-runtime";
+import { createKnowledgeToolSession } from "@/lib/ai-knowledge-tools";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 type Context = { params: Promise<{ id: string }> };
@@ -32,8 +33,10 @@ export async function POST(request: Request, context: Context) {
       let reasoningDuration = 0;
       try {
         send({ type: "user_message", message: serializeRobotMessage(task.userMessage) });
+        const knowledge = createKnowledgeToolSession({ config: task.config });
         const result = await runAiToolTask({
-          messages: task.messages, registry: createSystemToolRegistry({ pagedImageContext: true }), allowedTools: robotAllowedTools,
+          messages: task.messages, registry: createSystemToolRegistry({ pagedImageContext: true, knowledgeRegistry: knowledge.registry }), allowedTools: robotAllowedTools,
+          onToolSucceeded: knowledge.accept,
           context: task.context, config: task.config, skill: task.skill, signal: task.signal,
           limits: task.limits, finishNearLimit: true,
           onEvent(event) {
@@ -53,7 +56,7 @@ export async function POST(request: Request, context: Context) {
         task.signal.throwIfAborted();
         if (result.status !== "completed") { const code = result.error?.code ?? "execution_failed"; send({ type: "error", code, error: robotErrorMessage(code, locale), budget: result.budget }); }
         else {
-          const saved = await saveRobotAnswer(task, result, reasoning, reasoningDuration);
+          const saved = await saveRobotAnswer(task, result, reasoning, reasoningDuration, knowledge.snapshot());
           send({ type: "done", message: serializeRobotMessage(saved) });
         }
       } catch (error) {

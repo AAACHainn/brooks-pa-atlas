@@ -12,6 +12,7 @@ RUN npm run prisma:generate
 RUN npm run test:navigator
 RUN npm run test:thumbnails
 RUN npm run test:ai
+RUN npm run test:ocr
 RUN npm run test:knowledge
 RUN npm run lint
 RUN npm run build
@@ -19,7 +20,7 @@ RUN npm run build
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 
-ARG APP_VERSION=v2.6
+ARG APP_VERSION=v2.7
 LABEL org.opencontainers.image.title="Brooks PA Atlas" \
       org.opencontainers.image.version="${APP_VERSION}"
 

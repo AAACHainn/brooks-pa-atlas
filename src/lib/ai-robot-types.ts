@@ -71,6 +71,7 @@ export function robotErrorMessage(code: string, locale: RobotLocale) {
     disabled: ["AI 机器人已在设置中关闭。", "The AI robot is disabled in settings."],
     configuration: ["请在管理模式的设置中配置启用端点和 AI 机器人模型。", "Configure an active endpoint and robot model in management settings."],
     "unsupported-tools": ["当前端点或模型不支持工具调用，请在设置中选择支持工具的模型。", "This endpoint or model does not support tools. Select a compatible model."],
+    "unsupported-image": ["当前端点或模型不支持图片输入，请在设置中选择同时支持图片和工具调用的模型。", "This endpoint or model does not support image input. Select a model supporting images and tools."],
     busy: ["此会话已有任务正在运行。", "This conversation already has a running task."],
     stale_task: ["任务状态已更新，请刷新后重试。", "The task changed. Refresh and try again."],
     cancelled: ["已停止，未完成的回答不会保存。", "Stopped. Unfinished answers are not saved."],

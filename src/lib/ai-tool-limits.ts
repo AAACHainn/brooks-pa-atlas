@@ -1,4 +1,6 @@
 /** Shared, client-safe defaults and sanitized budget reporting. */
+export const maxAiToolImageBytes = 1_048_576;
+export const maxAiToolImagesPerRun = 4;
 export const defaultAiToolLimits = Object.freeze({
   maxModelCalls: 6, maxToolCalls: 12, modelTimeoutMs: 120_000, toolTimeoutMs: 30_000,
   runTimeoutMs: 300_000, inputTokenBudget: 16_000, totalInputTokenBudget: 100_000,

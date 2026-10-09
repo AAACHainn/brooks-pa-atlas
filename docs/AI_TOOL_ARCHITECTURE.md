@@ -53,12 +53,12 @@ const result = await runAiToolTask({
 
 | 名称 | 参数 | 返回 |
 | --- | --- | --- |
-| `get_image_context` | `imageId`，非空且最多 200 字符 | `imageId/indexNodeId/snapshot`：标题、标签、OCR、备注、标注、索引属性和技术元数据；不包含路径或图片字节 |
+| `get_image_context` | `imageId`，非空且最多 200 字符；可选 `includeImage`，缺省 false；文字支持 fields/offset/limit | `imageId/indexNodeId/snapshot/pages`：保存的文字及元数据；includeImage=true 另返回压缩图片的 image 元信息，并向模型附带实际图像；不返回本地路径 |
 | `list_index_nodes` | 可选 `query/parentId/offset/limit` | `nodes`（id/name/path/parentId）与 nullable `nextOffset` |
 
 索引默认 offset=0、limit=20，上限 50。省略 parentId 搜索全部已授权节点，null 表示根节点，明确 ID 表示直属子节点；父节点也须在授权集合中。关键词按字面量匹配名称/路径，全部参数绑定，百分号、下划线和反斜杠不能扩大搜索范围。
 
-注册新工具使用 `defineAiTool`，提供 name/description/effect/parameters/execute/summarize。parameters 必须是 strict Zod 对象 schema；execute 仍须校验具体资源并响应 signal；summarize 只返回 resourceIds/itemCount，不返回正文。当前 write 工具不能加入白名单；未来写操作的授权、预览、幂等和撤销另行设计。
+注册新工具使用 `defineAiTool`，提供 name/description/effect/parameters/execute/summarize。parameters 必须是 strict Zod 对象 schema；execute 仍须校验具体资源并响应 signal；summarize 只返回 resourceIds/itemCount，不返回正文。可选同步 toModelResult(input, output) 将服务端结果投影为 data 和 images（resourceId/dataUrl），图片不放入 JSON 正文；该投影只由可信注册代码提供。当前 write 工具不能加入白名单；未来写操作的授权、预览、幂等和撤销另行设计。
 
 ## 执行规则
 
@@ -69,6 +69,7 @@ const result = await runAiToolTask({
 - 默认最多模型/工具调用 6/12 次，模型/工具/运行期限 120s/30s/300s，单次/累计输入预算 16000/100000 Token，输出上限 4096 Token。单次输入保留 10% 余量。可信调用方可以覆盖 limits，但不能提高供应商容量。
 - 按 UTF-8 字节/2 保守估算输入，包含工具描述、消息、参数和结果；图片每张预留 4096 Token。失败模型尝试也计入累计估算，不静默删除问题或参数来满足预算。
 - 单工具成功结果最多 32KiB；过大时完整替换为错误，不截断 JSON。处理函数应分页或提供较小读取能力。工具批次超过剩余调用数量时，整个批次不执行。
+- 图片附件另限每张解码后 1MiB、每运行最多 4 张不同图片，同资源及相同内容复用已附图；限制不替代 Token 预算。只接受 JPEG/PNG/WebP/GIF 的规范 Base64 data URL，不接受远程 URL 或文件路径。所有 tool_call_id 的文字结果返回后，再追加注明工具与图片 ID 的多模态 user 参考消息，以兼容现有 Chat Completions 协议。
 - 取消传递给上游和工具，并在执行前后检查。即使依赖不响应取消，执行器也会按期限终止编排；处理函数仍须配合 signal 停止自身工作。首版没有写工具，不承诺可中断未来任意文件/数据库写操作。
 
 ## 记录与能力探测
@@ -92,6 +93,8 @@ const result = await runAiToolTask({
 `budget_warning` 与完成 trace 携带 `AiToolBudgetSnapshot`，只含固定限制、调用次数、输入估算、耗时、成功工具名称/次数/数量以及未完成调用数。超限细分 `limitKind` 为 model_calls/tool_calls/input_tokens/total_input_tokens/run_time。窗口显示已完成的读取与尚未生成最终答案的事实，不推测未执行工作的内容。成功收束的历史保存 warnings/budget；失败不保存助手草稿。用户可手动按当前配置重试原问题/原参考对象，或继续提问更小范围；这里没有自动续跑或检查点恢复。
 
 机器人图片工具使用分页模式：fields 可指定 metadata/ocr/notes/annotations/index，offset 对文字按 Unicode 字符计数、列表按项目计数；limit 默认 2000、最大 4000，列表最多 20 项。pages 标记完整总数、当前返回量和 nextOffset，不把省略部分冒充完整资料。索引工具在同一事务返回过滤后精确 total，数量问题无需逐页读取；其原每页 20、最多 50 和资源授权规则保持一致。
+
+普通模式视觉问题使用同一工具的 includeImage=true，无需新增工具或修改发送问题格式。服务端先校验精确图片授权，再使用 readStoredImage 的图库路径校验和伴读 prepareAiReferenceImage；自动旋转、最长边1920、默认 JPEG quality85，超过1MiB时继续压缩，image 返回实际 mimeType/width/height/sizeBytes。缺省及 includeImage=false 不读取文件。图片只留在本次运行的模型上下文，取消、超限或文件失败不附图；未知端点是否支持图片不做付费探测，实际拒绝报告 unsupported-image。任务模式仍只读取确认范围内的文字资料。
 
 `ai-robot-service.ts` 编排最近四组完整问答与当前问题、独立选择快照和最终答案保存；`ai-robot-runs.ts` 提供每会话互斥及跨 Route Handler 的取消控制（单进程全局状态）。清空/删除持有互斥并取消旧运行；禁用设置取消所有活动机器人运行。服务端在保存前和事务内检查租约及取消信号，防止迟到草稿写入。运行中间正文和 tool 结果不作为持久化聊天消息回放。
 
@@ -135,7 +138,7 @@ scope 默认为 library，优先当前索引及可继承祖先；current 只限�
 
 Embedding 使用本次固定配置；缺少活动 profile、端点不匹配或请求失败时以全文/关键词降级。失败的请求也计入独立 Embedding 请求次数与保守输入估算（不是实际供应商用量），同一查询续页不重复请求。任务规划在发出请求前持久保存这两个值，对话模型计数与预算仍沿用原口径。取消、工具期限保持硬终止，不触发向量重建。
 
-执行器增加可选同步 `onToolSucceeded(toolName, output)` 服务端回调，仅在参数、资源、大小和取消检查后通知，传入独立副本；不作为 trace/NDJSON 原始资料事件。普通机器人用它收集真正成功返回的正文页，按版本/片段/字符范围/正文去重，分配本运行的 K 引用。过大或失败结果不进入引用快照，未知 K 引用标记为未验证。
+执行器增加可选同步 `onToolSucceeded(toolName, output)` 服务端回调，仅在参数、资源、JSON及附件大小和取消检查后通知，传入实际返回的 data 独立副本，不包含图片字节；不作为 trace/NDJSON 原始资料事件。普通机器人用它收集真正成功返回的正文页，按版本/片段/字符范围/正文去重，分配本运行的 K 引用。过大或失败结果不进入引用快照，未知 K 引用标记为未验证。图片 trace 只记录新附图的 imageCount/imageBytes，二进制及 data URL 不进入数据库、日志或浏览器事件。
 
 主库 migration `20261009000000_robot_knowledge_sources` 只增加 `AiRobotMessage.knowledgeContextJson` 可空字段。`RobotMessage.knowledge` 为版本1快照，保存 sources（正文、版本、locator、字符范围、partial）、warnings 和 retrieval 统计；成功答案与快照事务保存，历史资料更新/删除不影响旧快照。执行日志不保存资料正文；历史上下文仅附带引用身份和位置，重新引用时须读当前有效资料。旧消息为空，聊天仍不进入业务备份。
 

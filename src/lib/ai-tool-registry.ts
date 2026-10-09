@@ -13,17 +13,21 @@ export type AiToolExecutionContext = {
   currentIndexNodeId: string | null;
 };
 export type AiToolSummary = { resourceIds?: string[]; itemCount?: number };
+/** Trusted server output: image bytes travel as model attachments, never tool JSON. */
+export type AiToolModelImage = { resourceId: string; dataUrl: string };
+export type AiToolModelResult = { data: unknown; images?: readonly AiToolModelImage[] };
 export type AiToolDefinition = {
   name: string;
   effect: "read" | "write";
   modelDefinition: AiFunctionDefinition;
   validate: (input: unknown) => unknown;
   execute: (input: unknown, context: AiToolExecutionContext) => Promise<unknown>;
+  toModelResult?: (input: unknown, output: unknown) => AiToolModelResult;
   summarize: (input: unknown, output: unknown) => AiToolSummary;
 };
 
 export class AiToolError extends Error {
-  constructor(readonly code: "forbidden_resource" | "not_found" | "invalid_arguments" | "source_changed", message: string) {
+  constructor(readonly code: "forbidden_resource" | "not_found" | "invalid_arguments" | "source_changed" | "result_too_large", message: string) {
     super(message);
     this.name = "AiToolError";
   }
@@ -36,6 +40,7 @@ export function defineAiTool<T, R>(options: {
   effect: "read" | "write";
   parameters: z.ZodType<T>;
   execute: (input: T, context: AiToolExecutionContext) => Promise<R>;
+  toModelResult?: (input: T, output: R) => AiToolModelResult;
   summarize: (input: T, output: R) => AiToolSummary;
 }): AiToolDefinition {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(options.name) || !options.description.trim()) throw new Error("Invalid tool definition.");
@@ -54,6 +59,7 @@ export function defineAiTool<T, R>(options: {
       return parsed.data;
     },
     execute: (input: unknown, context: AiToolExecutionContext) => options.execute(input as T, context),
+    ...(options.toModelResult ? { toModelResult: (input: unknown, output: unknown) => options.toModelResult!(input as T, output as R) } : {}),
     summarize: (input: unknown, output: unknown) => options.summarize(input as T, output as R),
   });
 }

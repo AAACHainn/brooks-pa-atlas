@@ -64,7 +64,7 @@ const Composer = memo(function Composer({ sending, configured, ready, locale, on
     <div className="flex items-end gap-2"><textarea aria-label={zh ? "机器人消息" : "Robot message"} value={value} onChange={(event) => setValue(event.target.value)}
       onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
       onKeyDown={(event) => { if (shouldSendReadingInput({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.nativeEvent.keyCode }, composing.current)) { event.preventDefault(); void submit(); } }}
-      disabled={sending} maxLength={20_000} rows={2} placeholder={zh ? "可以查询索引、图片文字资料或知识库…" : "Ask about indexes, saved image text or knowledge materials…"}
+      disabled={sending} maxLength={20_000} rows={2} placeholder={zh ? "可以查看图片、查询索引或知识库…" : "Ask about images, indexes or knowledge materials…"}
       className="min-h-16 min-w-0 flex-1 resize-none rounded-md border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100 disabled:bg-zinc-50" />
       <button type="button" onClick={() => sending ? onStop() : void submit()} disabled={!sending && (!configured || !ready || !value.trim())}
         aria-label={zh ? (sending ? "停止" : "发送") : (sending ? "Stop" : "Send")} className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-cyan-800 text-white hover:bg-cyan-900 disabled:bg-zinc-200 disabled:text-zinc-400">{sending ? <X className="h-4 w-4" /> : <Send className="h-4 w-4" />}</button>
@@ -213,7 +213,7 @@ function NormalRobotPane({ enabled, configured, locale, selection, onOpenSetting
       <div ref={(node) => { pane.current = node; if (node && scroll.current.top && !scroll.current.stick) node.scrollTop = scroll.current.top; }} onScroll={rememberScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-zinc-50/70 p-3">
         {nextBefore !== null ? <button type="button" disabled={loading} onClick={() => void action("older")} className="mx-auto block rounded-full border border-zinc-200 bg-white px-3 py-1 text-xs text-zinc-500">{zh ? "加载更早消息" : "Load older messages"}</button> : null}
         {loading && !messages.length ? <Loader2 className="mx-auto mt-8 h-5 w-5 animate-spin text-zinc-400" /> : null}
-        {!loading && !messages.length && !sending ? <div className="grid h-full place-items-center px-5 text-center text-sm leading-6 text-zinc-500">{zh ? "你好，我可以查询索引、读取图片文字资料，或检索知识库并引用课程与章节证据。" : "I can query indexes, read saved image text, and search knowledge with references to courses and chapters."}</div> : null}
+        {!loading && !messages.length && !sending ? <div className="grid h-full place-items-center px-5 text-center text-sm leading-6 text-zinc-500">{zh ? "你好，我可以查看图片、查询索引，或检索知识库并引用课程与章节证据。" : "I can inspect images, query indexes, and search knowledge with references to courses and chapters."}</div> : null}
         <MessageList messages={messages} locale={locale} />
         {sending ? <div className="max-w-[90%] rounded-xl border border-cyan-200 bg-white px-3 py-2 text-sm leading-6 text-zinc-800"><p className="mb-1 text-xs text-cyan-700"><Loader2 className="mr-1 inline h-3 w-3 animate-spin" />{zh ? "正在处理" : "Working"}{draft?.round ? ` · ${draft.round}` : ""}</p>
           <Thought content={draft?.reasoning ?? ""} locale={locale} />{draft?.text ? <Text content={draft.text} /> : null}

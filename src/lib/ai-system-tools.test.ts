@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, readdir, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { before, after, test } from "node:test";
 import Database from "better-sqlite3";
+import sharp from "sharp";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { AI_CONFIG_SETTING_KEY } from "@/lib/ai-config";
 import { runAiToolTask } from "@/lib/ai-tool-runtime";
@@ -16,6 +18,7 @@ let prisma: PrismaClient;
 let registry: AiToolRegistry;
 let directory: string;
 const previousDatabaseUrl = process.env.DATABASE_URL;
+const previousLibraryRoot = process.env.BROOKS_LIBRARY_ROOT;
 const config = toolTestConfig();
 const context: AiToolExecutionContext = { runId: "test", signal: new AbortController().signal,
   scope: { kind: "library" }, currentImageId: "current", currentIndexNodeId: "node" };
@@ -23,6 +26,8 @@ const context: AiToolExecutionContext = { runId: "test", signal: new AbortContro
 before(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), "atlas-ai-system-tools-"));
   process.env.DATABASE_URL = `file:${path.join(directory, "main.db")}`;
+  process.env.BROOKS_LIBRARY_ROOT = directory;
+  await sharp({ create: { width: 2400, height: 1200, channels: 3, background: "cyan" } }).png().toFile(path.join(directory, "current.png"));
   const main = new Database(path.join(directory, "main.db"));
   const migrationRoot = path.join(process.cwd(), "prisma/migrations");
   for (const entry of (await readdir(migrationRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
@@ -40,7 +45,7 @@ before(async () => {
     ...Array.from({ length: 24 }, (_, index) => ({ id: `page-${index}`, name: `Page ${index}`, parentId: "root", depth: 1, path: `Pages / ${String(index).padStart(2, "0")}` })),
   ] });
   await prisma.chartImage.createMany({ data: [
-    { id: "current", originalName: "current.png", libraryPath: "images/current.png", hash: "a".repeat(64), mimeType: "image/png", sizeBytes: 10,
+    { id: "current", originalName: "current.png", libraryPath: path.relative(process.cwd(), path.join(directory, "current.png")), hash: "a".repeat(64), mimeType: "image/png", sizeBytes: 10,
       indexNodeId: "node", title: "Charts: Price vs. Time", notes: "saved notes", ocrText: "INITIAL_TEXT" },
     { id: "previous", originalName: "previous.png", libraryPath: "images/previous.png", hash: "b".repeat(64), mimeType: "image/png", sizeBytes: 10,
       indexNodeId: "previous-node", title: "Protective Stops", ocrText: "OLD_TEXT" },
@@ -51,8 +56,10 @@ after(async () => {
   await prisma?.$disconnect();
   if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
   else process.env.DATABASE_URL = previousDatabaseUrl;
+  if (previousLibraryRoot === undefined) delete process.env.BROOKS_LIBRARY_ROOT; else process.env.BROOKS_LIBRARY_ROOT = previousLibraryRoot;
   // Explicitly remove only this fixture's database file, never a directory.
   await unlink(path.join(directory, "main.db"));
+  await unlink(path.join(directory, "current.png"));
 });
 
 test("configured model invokes real index and latest image reads without changing saved data", async () => {
@@ -150,4 +157,76 @@ test("robot image reads select fields and page Unicode text without losing sourc
   assert.equal((await prisma.chartImage.findUniqueOrThrow({ where: { id: "long-image" } })).ocrText, text);
   assert.doesNotMatch(JSON.stringify(first), /libraryPath|base64|notes should be omitted/);
   assert.throws(() => paged.validate({ imageId: "long-image", fields: ["secret"] }), AiToolError);
+});
+
+test("includeImage supplies compressed pixels after the whole tool batch and reuses the attachment", async () => {
+  let requests = 0;
+  const accepted: unknown[] = [];
+  const result = await runAiToolTask({ registry, allowedTools: ["get_image_context", "list_index_nodes"], config,
+    context: { scope: { kind: "selection", imageIds: ["current"], indexNodeIds: ["node"] }, currentImageId: "current", currentIndexNodeId: "node" },
+    messages: [{ role: "user", content: "Inspect the actual chart." }], onToolSucceeded: (_name, data) => { accepted.push(data); },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (++requests === 1) {
+        assert.ok(!body.messages.some((row: { content: unknown }) => Array.isArray(row.content)));
+        return turnResponse(null, [{ id: "pixels", name: "get_image_context", arguments: '{"imageId":"current","fields":["metadata"],"includeImage":true}' },
+          { id: "index", name: "list_index_nodes", arguments: '{"query":"Charts"}' }]);
+      }
+      const references = body.messages.filter((row: { role: string; content: unknown }) => row.role === "user" && Array.isArray(row.content));
+      assert.equal(references.length, 1);
+      assert.match(references[0].content[0].text, /"callId":"pixels".*"imageId":"current"/);
+      assert.match(references[0].content[1].image_url.url, /^data:image\/jpeg;base64,/);
+      const metadata = await sharp(Buffer.from(references[0].content[1].image_url.url.split(",")[1], "base64")).metadata();
+      assert.equal(metadata.width, 1920); assert.equal(metadata.height, 960);
+      const tools = body.messages.filter((row: { role: string }) => row.role === "tool");
+      assert.doesNotMatch(JSON.stringify(tools), /base64|dataUrl|libraryPath/);
+      assert.equal(JSON.parse(tools[0].content).data.image.width, 1920);
+      if (requests === 2) {
+        assert.deepEqual(body.messages.slice(-3).map((row: { role: string }) => row.role), ["tool", "tool", "user"]);
+        return turnResponse(null, [{ id: "again", name: "get_image_context", arguments: '{"imageId":"current","fields":["ocr"],"includeImage":true}' }]);
+      }
+      return turnResponse("The actual image was supplied.");
+    },
+  });
+  assert.equal(result.status, "completed"); assert.equal(result.successfulToolCalls, 3);
+  assert.equal(result.records.reduce((total, row) => total + (row.imageCount ?? 0), 0), 1);
+  assert.doesNotMatch(JSON.stringify([accepted, result]), /base64|dataUrl|libraryPath/);
+  const tool = registry.get("get_image_context")!;
+  assert.throws(() => tool.validate({ imageId: "current", includeImage: "true" }), AiToolError);
+  await assert.rejects(tool.execute(tool.validate({ imageId: "previous", includeImage: true }), { ...context,
+    scope: { kind: "selection", imageIds: ["current"], indexNodeIds: ["node"] } }), /authorized scope/);
+});
+
+test("bounded reference preparation compresses complex images and responds to cancellation", async () => {
+  const { prepareAiReferenceImage } = await import("@/lib/ai-ocr-refinement");
+  const original = await sharp(randomBytes(2000 * 1400 * 3), { raw: { width: 2000, height: 1400, channels: 3 } }).png().toBuffer();
+  const prepared = await prepareAiReferenceImage(original, { maxBytes: 100_000 });
+  assert.ok(prepared.length <= 100_000);
+  const metadata = await sharp(prepared).metadata();
+  assert.equal(metadata.format, "jpeg"); assert.ok(metadata.width! < 1920);
+  assert.ok(Math.abs(metadata.width! / metadata.height! - 2000 / 1400) < 0.01);
+  const aborted = new AbortController(); aborted.abort();
+  await assert.rejects(prepareAiReferenceImage(original, { maxBytes: 100_000, signal: aborted.signal }), /abort/i);
+});
+
+test("missing image files and paths outside the library return safe read failures without attachments", async () => {
+  await prisma.chartImage.create({ data: { id: "missing-file", originalName: "missing.png",
+    libraryPath: path.relative(process.cwd(), path.join(directory, "missing.png")), hash: "d".repeat(64), sizeBytes: 10, mimeType: "image/png" } });
+  let requests = 0, accepted = 0;
+  const result = await runAiToolTask({ registry, allowedTools: ["get_image_context"], config,
+    context: { scope: { kind: "library" }, currentImageId: "current", currentIndexNodeId: "node" },
+    messages: [{ role: "user", content: "read" }], onToolSucceeded() { accepted++; }, fetchImpl: async (_url, init) => {
+      if (++requests === 1) return turnResponse(null, [
+        { id: "missing", name: "get_image_context", arguments: '{"imageId":"missing-file","includeImage":true}' },
+        { id: "path", name: "get_image_context", arguments: '{"imageId":"previous","includeImage":true}' },
+      ]);
+      const messages = JSON.parse(String(init?.body)).messages;
+      assert.ok(!messages.some((row: { content: unknown }) => Array.isArray(row.content)));
+      const results = messages.filter((row: { role: string }) => row.role === "tool").map((row: { content: string }) => JSON.parse(row.content));
+      assert.deepEqual(results.map((row: { error: { code: string } }) => row.error.code), ["execution_failed", "execution_failed"]);
+      assert.ok(!JSON.stringify(results).includes(directory));
+      return turnResponse("Unavailable.");
+    } });
+  assert.equal(result.status, "completed"); assert.equal(accepted, 0);
+  assert.doesNotMatch(JSON.stringify(result.records), /base64|libraryPath|missing\.png/);
 });

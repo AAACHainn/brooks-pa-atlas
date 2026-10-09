@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
 import { AiToolError, AiToolRegistry, defineAiTool, type AiToolExecutionContext } from "@/lib/ai-tool-registry";
-import { runAiToolTask, type AiToolTaskOptions, type AiToolTraceRecord } from "@/lib/ai-tool-runtime";
+import { estimateAiToolRequestTokens, runAiToolTask, type AiToolTaskOptions, type AiToolTraceRecord } from "@/lib/ai-tool-runtime";
+import { maxAiToolImageBytes } from "@/lib/ai-tool-limits";
 import { probeAiToolSupport } from "@/lib/ai-tool-probe";
 import { sseResponse, toolTestConfig, turnResponse } from "@/lib/ai-tool-test-helpers";
 
@@ -140,6 +141,60 @@ test("tool result limits and business failures never expose raw results or excep
     assert.equal(result.successfulToolCalls, 0);
     assert.doesNotMatch(JSON.stringify(result.records), /SECRET_DOCUMENT|private-test-key|private\/path/);
   }
+});
+
+test("image projection is validated before success observers and rejected attachments never reach the model", async () => {
+  const dataUrl = "data:image/jpeg;base64," + Buffer.from("IMAGE_BYTES").toString("base64");
+  for (const kind of ["metadata", "large", "url", "encoding", "count", "cancel"] as const) {
+    const abort = new AbortController(); let accepted = 0, requests = 0;
+    const image = defineAiTool({ name: "read_value", description: "Read a test image", effect: "read", parameters: z.strictObject({ id: z.string() }),
+      async execute(input) { if (kind === "cancel") abort.abort(); return { id: input.id, dataUrl }; },
+      toModelResult(_input, output) {
+        const url = kind === "large" ? "data:image/jpeg;base64," + Buffer.alloc(maxAiToolImageBytes + 1).toString("base64")
+          : kind === "url" ? "https://private.example/image.jpg" : kind === "encoding" ? "data:image/jpeg;base64,abc" : output.dataUrl;
+        return { data: { id: output.id, value: kind === "metadata" ? "SECRET".repeat(100) : "ready" },
+          images: Array.from({ length: kind === "count" ? 5 : 1 }, () => ({ resourceId: output.id, dataUrl: url })) };
+      }, summarize: (input) => ({ resourceIds: [input.id], itemCount: 1 }),
+    });
+    const { options } = fixture();
+    const result = await runAiToolTask({ ...options, registry: new AiToolRegistry([image]), signal: abort.signal,
+      limits: { maxToolResultBytes: 200 }, onToolSucceeded() { accepted++; }, fetchImpl: async (_url, init) => {
+        if (++requests === 1) return turnResponse(null, [call("1")]);
+        const messages = JSON.parse(String(init?.body)).messages;
+        assert.ok(!messages.some((row: { content: unknown }) => Array.isArray(row.content)));
+        assert.equal(JSON.parse(messages.at(-1).content).error.code, ["url", "encoding"].includes(kind) ? "execution_failed" : "result_too_large");
+        return turnResponse("Read rejected.");
+      } });
+    assert.equal(accepted, 0); assert.equal(result.successfulToolCalls, 0);
+    assert.equal(result.status, kind === "cancel" ? "cancelled" : "completed");
+    assert.doesNotMatch(JSON.stringify(result), /IMAGE_BYTES|base64|SECRET|private\.example/);
+  }
+  const estimate = (url: string) => estimateAiToolRequestTokens([{ role: "user", content: [{ type: "image_url", image_url: { url } }] }], []);
+  assert.equal(estimate(dataUrl), estimate("data:image/jpeg;base64," + "A".repeat(20_000)));
+});
+
+test("image count and input budgets stop additional pixel reads or requests", async () => {
+  const image = defineAiTool({ name: "read_value", description: "Read a test image", effect: "read", parameters: z.strictObject({ id: z.string() }),
+    async execute(input) { return { id: input.id }; },
+    toModelResult(_input, output) { return { data: output, images: [{ resourceId: output.id, dataUrl: "data:image/jpeg;base64," + Buffer.from(output.id).toString("base64") }] }; },
+    summarize: (input) => ({ resourceIds: [input.id] }),
+  });
+  const { options } = fixture();
+  let requests = 0;
+  const result = await runAiToolTask({ ...options, registry: new AiToolRegistry([image]), limits: { inputTokenBudget: 64_000 },
+    fetchImpl: async (_url, init) => {
+      if (++requests === 1) return turnResponse(null, Array.from({ length: 5 }, (_, i) => call(String(i), `image-${i}`)));
+      const messages = JSON.parse(String(init?.body)).messages;
+      assert.equal(messages.filter((row: { content: unknown }) => Array.isArray(row.content)).length, 4);
+      assert.equal(JSON.parse(messages.filter((row: { role: string }) => row.role === "tool").at(-1).content).error.code, "result_too_large");
+      return turnResponse("Four images read.");
+    } });
+  assert.equal(result.successfulToolCalls, 4);
+  let limitedRequests = 0;
+  const limited = await runAiToolTask({ ...options, registry: new AiToolRegistry([image]), limits: { inputTokenBudget: 4_000 },
+    fetchImpl: async () => { limitedRequests++; return turnResponse(null, [call("pixels")]); } });
+  assert.equal(limitedRequests, 1); assert.equal(limited.error?.limitKind, "input_tokens");
+  assert.equal(limited.answer, null);
 });
 
 test("plain text describing a function is never interpreted or executed as a call", async () => {

@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
+import sharp from "sharp";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { AI_CONFIG_SETTING_KEY, aiConfigInputSchema } from "@/lib/ai-config";
 import { toolTestConfig, turnResponse, sseResponse } from "@/lib/ai-tool-test-helpers";
@@ -16,6 +17,7 @@ let messages: typeof import("@/app/api/ai/robot/conversations/[id]/messages/rout
 let saveConfig: typeof import("@/lib/ai-settings").saveAiConfig;
 let directory: string;
 const originalFetch = globalThis.fetch, previousUrl = process.env.DATABASE_URL;
+const previousLibraryRoot = process.env.BROOKS_LIBRARY_ROOT;
 const robotMigration = "20261006100000_ai_robot";
 const modesMigration = "20261007000000_robot_modes_tasks";
 const knowledgeMigration = "20261009000000_robot_knowledge_sources";
@@ -30,6 +32,8 @@ async function resetConfig() { config.skills.globalRobot.enabled = true; config.
 before(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), "atlas-ai-robot-"));
   process.env.DATABASE_URL = `file:${path.join(directory, "main.db")}`;
+  process.env.BROOKS_LIBRARY_ROOT = directory;
+  await sharp({ create: { width: 160, height: 100, channels: 3, background: "cyan" } }).png().toFile(path.join(directory, "chart.png"));
   const db = new Database(path.join(directory, "main.db"));
   const root = path.join(process.cwd(), "prisma/migrations");
   for (const entry of (await readdir(root)).sort()) { if (entry !== "migration_lock.toml" && entry !== robotMigration && entry !== modesMigration && entry !== knowledgeMigration) db.exec(await readFile(path.join(root, entry, "migration.sql"), "utf8")); }
@@ -40,13 +44,15 @@ before(async () => {
   messages = await import("@/app/api/ai/robot/conversations/[id]/messages/route");
   saveConfig = (await import("@/lib/ai-settings")).saveAiConfig;
   await prisma.indexNode.create({ data: { id: "node", name: "图表", path: "图表" } });
-  await prisma.chartImage.create({ data: { id: "image", title: "当前图表", originalName: "chart.png", libraryPath: "images/chart.png", hash: "a".repeat(64), sizeBytes: 10, mimeType: "image/png", indexNodeId: "node", notes: "测试备注", ocrText: "最新OCR" } });
+  await prisma.chartImage.create({ data: { id: "image", title: "当前图表", originalName: "chart.png", libraryPath: path.relative(process.cwd(), path.join(directory, "chart.png")), hash: "a".repeat(64), sizeBytes: 10, mimeType: "image/png", indexNodeId: "node", notes: "测试备注", ocrText: "最新OCR" } });
   await resetConfig();
 });
 after(async () => {
   globalThis.fetch = originalFetch; await prisma?.$disconnect();
   if (previousUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = previousUrl;
+  if (previousLibraryRoot === undefined) delete process.env.BROOKS_LIBRARY_ROOT; else process.env.BROOKS_LIBRARY_ROOT = previousLibraryRoot;
   await unlink(path.join(directory, "main.db"));
+  await unlink(path.join(directory, "chart.png"));
 });
 
 test("an existing database without the robot migration reports an upgrade and recovers after migration", async () => {
@@ -112,6 +118,25 @@ test("robot performs real tool reads, preserves protocol state, and saves only t
   assert.ok(!rows[1].content.includes("先查询目录"));
   assert.ok(!rows[1].executionJson?.includes("最新OCR")); assert.ok(!rows[1].executionJson?.includes("private-test-key"));
   assert.ok(output.some((event) => event.type === "trace" && event.record.type === "tool_completed"));
+});
+
+test("ordinary robot delivers tool-requested pixels without storing bytes, and vision rejection saves no draft", async () => {
+  for (const supported of [true, false]) {
+    const id = await create(); let calls = 0;
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (++calls === 1) return turnResponse(null, [{ id: "view", name: "get_image_context", arguments: '{"imageId":"image","fields":["metadata"],"includeImage":true}' }]);
+      assert.match(body.messages.at(-1).content[1].image_url.url, /^data:image\/jpeg;base64,/);
+      assert.doesNotMatch(body.messages.at(-2).content, /base64|libraryPath/);
+      return supported ? turnResponse("图中有青色背景") : Response.json({ error: { message: "This text-only model does not support image input." } }, { status: 400 });
+    };
+    const output = await events(await messages.POST(request("请查看图表"), context(id)));
+    const rows = await prisma.aiRobotMessage.findMany({ where: { conversationId: id } });
+    assert.equal(rows.length, supported ? 2 : 1);
+    assert.doesNotMatch(JSON.stringify([rows, output]), /base64|dataUrl|libraryPath/);
+    if (supported) assert.ok(output.some((event) => event.type === "done" && event.message.execution?.records.some((record) => record.imageCount === 1)));
+    else assert.ok(output.some((event) => event.type === "error" && event.code === "unsupported-image" && event.error.includes("图片输入")));
+  }
 });
 
 test("plain chat needs no tool call and only the latest four complete pairs enter history", async () => {

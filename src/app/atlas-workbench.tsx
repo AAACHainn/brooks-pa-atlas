@@ -49,6 +49,8 @@ import {
 import AnnotationColorPicker from "@/app/annotation-color-picker";
 import AiReadingCompanion from "@/app/ai-reading-companion";
 import AiRobot from "@/app/ai-robot";
+import { useAiOcrBatch } from "@/app/ai-ocr-batch";
+import { mergeAiOcrDraft } from "@/lib/ai-ocr-batch-types";
 import AppSettingsDialog from "@/app/app-settings-dialog";
 import ExamMode from "@/app/exam-mode";
 import { useAppDialog } from "@/app/app-dialog";
@@ -2344,6 +2346,7 @@ export default function AtlasWorkbench() {
   const manageGridScrollTopRef = useRef(0);
   const detailsSavingRef = useRef(false);
   const detailDraftRef = useRef<ImageDetailDraft>(detailDraft);
+  const detailBaselineRef = useRef<ImageDetailDraft>(detailDraft);
   const detailTagInputRef = useRef(detailTagInput);
   const imageSelectionPromiseRef = useRef<Promise<boolean> | null>(null);
   const pendingPageImageNavigationRef = useRef<{ direction: -1 | 1; page: number } | null>(null);
@@ -2479,6 +2482,11 @@ export default function AtlasWorkbench() {
     await refreshAtlas();
     setNavigatorRefreshKey((current) => current + 1);
   }, [refreshAtlas]);
+
+  const aiOcrBatch = useAiOcrBatch(locale, () => {
+    void refreshImages();
+    if (selectedImageIdRef.current) void loadImageDetails(selectedImageIdRef.current, true);
+  });
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -3050,6 +3058,16 @@ export default function AtlasWorkbench() {
                     : batchOcrJob?.status === "running"
                       ? t.batchOcrActive
                       : t.batchOcr,
+              },
+              {
+                id: "batch-ai-ocr",
+                label: locale === "zh" ? "批量 AI 精校" : "Batch AI refinement",
+                icon: <Sparkles className="h-4 w-4" />,
+                onClick: () => {
+                  setIndexContextMenu(null);
+                  void aiOcrBatch.open(indexContextMenu.node.id);
+                },
+                disabled: indexContextImageCount === 0,
               },
               {
                 id: "clear",
@@ -3772,6 +3790,7 @@ export default function AtlasWorkbench() {
 
       if (selectedImageIdRef.current === image.id) {
         const savedDraft = detailDraftFromImage(result.image);
+        detailBaselineRef.current = savedDraft;
         detailDraftRef.current = savedDraft;
         detailTagInputRef.current = "";
         setDetailDraft(savedDraft);
@@ -4467,7 +4486,7 @@ export default function AtlasWorkbench() {
     }
   }
 
-  async function loadImageDetails(imageId: string) {
+  async function loadImageDetails(imageId: string, preserveDraft = false) {
     try {
       const response = await fetch(`/api/images/${imageId}`, { cache: "no-store" });
       const result = (await response.json().catch(() => null)) as { image?: ChartImage } | null;
@@ -4487,8 +4506,10 @@ export default function AtlasWorkbench() {
         hydrateAnnotationDrafts(result.image);
       }
       const loadedDraft = detailDraftFromImage(result.image);
-      detailDraftRef.current = loadedDraft;
-      setDetailDraft(loadedDraft);
+      const nextDraft = preserveDraft ? mergeAiOcrDraft(detailDraftRef.current, detailBaselineRef.current, loadedDraft) : loadedDraft;
+      detailBaselineRef.current = loadedDraft;
+      detailDraftRef.current = nextDraft;
+      setDetailDraft(nextDraft);
       setSavedOcrText(loadedDraft.ocrText);
     } catch {
       // Keep the atlas summary visible if the full detail request fails.
@@ -4497,6 +4518,7 @@ export default function AtlasWorkbench() {
 
   function commitSelectedImage(image: ChartImage) {
     const nextDraft = detailDraftFromImage(image);
+    detailBaselineRef.current = nextDraft;
     selectedImageIdRef.current = image.id;
     detailDraftRef.current = nextDraft;
     detailTagInputRef.current = "";
@@ -6387,11 +6409,11 @@ export default function AtlasWorkbench() {
           </aside>
         ) : null}
       </div>
+      <div className="fixed bottom-4 right-4 z-50 flex max-h-[calc(100vh-2rem)] w-[min(calc(100vw-2rem),24rem)] flex-col gap-3 overflow-y-auto">
+      {aiOcrBatch.card}
       {batchOcrJob ? (
         <div
-          className={`fixed right-4 z-50 w-[min(calc(100vw-2rem),24rem)] rounded-md border bg-white p-4 text-sm shadow-2xl ${
-            backupTask ? "bottom-44" : "bottom-4"
-          }`}
+          className="rounded-lg border border-zinc-200 bg-white p-4 text-sm shadow-2xl"
           role="status"
           aria-live="polite"
         >
@@ -6480,7 +6502,7 @@ export default function AtlasWorkbench() {
       ) : null}
       {backupTask ? (
         <div
-          className="fixed bottom-4 right-4 z-50 w-[min(calc(100vw-2rem),24rem)] rounded-md border border-zinc-200 bg-white p-4 text-sm shadow-2xl"
+          className="rounded-lg border border-zinc-200 bg-white p-4 text-sm shadow-2xl"
           role="status"
           aria-live="polite"
         >
@@ -6561,6 +6583,8 @@ export default function AtlasWorkbench() {
           </div>
         </div>
       ) : null}
+      </div>
+      {aiOcrBatch.dialog}
       {isBackupManagerOpen ? (
         <div
           className="fixed inset-0 z-40 grid place-items-center bg-zinc-950/50 p-4 sm:p-6"

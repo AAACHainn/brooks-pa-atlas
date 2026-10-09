@@ -12,8 +12,8 @@ import {
   sanitizeAiConfig,
 } from "@/lib/ai-config";
 
-export async function readStoredAiConfig() {
-  const settings = await prisma.appSetting.findMany({
+export async function readStoredAiConfig(client: Pick<typeof prisma, "appSetting"> = prisma) {
+  const settings = await client.appSetting.findMany({
     where: { key: { in: [AI_CONFIG_SETTING_KEY, LEGACY_AI_CONFIG_V4_SETTING_KEY, LEGACY_AI_CONFIG_V3_SETTING_KEY, LEGACY_AI_CONFIG_V2_SETTING_KEY, LEGACY_AI_CONFIG_SETTING_KEY] } },
     select: { key: true, value: true },
   });

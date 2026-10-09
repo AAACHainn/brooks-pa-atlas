@@ -123,6 +123,7 @@ model ChartImage {
   tags          ChartImageTag[]
   annotations   ImageAnnotation[]
   ocrBatchJobItems OcrBatchJobItem[]
+  aiOcrBatchItems AiOcrBatchItem[]
   aiReadingMessages AiReadingMessage[]
 
   @@index([indexNodeId])
@@ -202,6 +203,69 @@ model OcrBatchJobItem {
   @@unique([jobId, sourceImageId])
   @@index([jobId, status])
   @@index([chartImageId])
+}
+
+model AiOcrBatchJob {
+  id String @id
+  activeKey String? @unique
+  indexNodeId String
+  indexPath String
+  scopeJson String
+  mode String
+  status String
+  revision Int @default(0)
+  runId String?
+  configFingerprint String
+  endpointName String
+  model String
+  totalImages Int
+  completedImages Int @default(0)
+  failedImages Int @default(0)
+  skippedImages Int @default(0)
+  requests Int @default(0)
+  estimatedInputTokens Int @default(0)
+  reportedInputTokens Int @default(0)
+  reportedOutputTokens Int @default(0)
+  inputReportedRequests Int @default(0)
+  outputReportedRequests Int @default(0)
+  error String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  finishedAt DateTime?
+  items AiOcrBatchItem[]
+}
+
+model AiOcrBatchItem {
+  id String @id
+  jobId String
+  chartImageId String?
+  sourceImageId String
+  originalName String
+  ordinal Int
+  sourceFingerprint String
+  status String @default("PENDING")
+  attempts Int @default(0)
+  estimatedInputTokens Int @default(0)
+  reportedInputTokens Int?
+  reportedOutputTokens Int?
+  finishReason String?
+  error String?
+  job AiOcrBatchJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  chartImage ChartImage? @relation(fields: [chartImageId], references: [id], onDelete: SetNull)
+  @@unique([jobId, sourceImageId])
+  @@index([jobId, status, ordinal])
+  @@index([chartImageId])
+}
+
+model AiOcrBatchPreview {
+  token String @id
+  indexNodeId String
+  jobId String?
+  action String
+  revision Int?
+  fingerprint String
+  expiresAt DateTime
+  consumedJobId String?
 }
 
 model IndexNavigatorCategory {

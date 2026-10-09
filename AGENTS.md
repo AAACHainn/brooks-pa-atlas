@@ -84,6 +84,7 @@ npm run test:thumbnails
 npm run test:ocr
 npm run test:ai
 npm run test:ai-robot
+npm run test:ai-ocr-batch
 npm run prisma:generate
 npm run db:migrate
 npm run db:init
@@ -106,6 +107,7 @@ docker compose down
 - `npm run test:ocr` 运行索引子树批量 OCR 的文本判断、终态和进度计算测试。
 - `npm run test:ai` 运行 AI 配置、密钥脱敏、端点 URL、模型发现、流式响应、多模态 Chat Completions，以及伴读快速/深度模式、预算装载、接口保存和取消测试；也覆盖窗口按帧合并、流式草稿合并/清理和输入法回车保护；接口测试使用隔离数据库、图库和模拟端点。此命令还包含 `test:ai-tools` 和 `test:ai-robot`。
 - `npm run test:ai-robot` 运行独立机器人会话、真实只读工具、历史分页、配置兼容、取消/禁用/清空/删除保护和流式窗口 helper 测试；使用隔离数据库、模拟模型及 `react-server` 条件。
+- `npm run test:ai-ocr-batch` 运行批量 AI 精校的隔离数据库、生成图片与模拟端点测试，已纳入 `test:ai`。
 - `npm run test:ai-tools` 单独运行结构化模型响应、工具流式参数组装、只读注册/授权、多轮执行、取消/预算/超时、能力探测及真实系统工具的隔离测试；使用 `react-server` 条件加载 `server-only` 模块，仅机器人专用入口显式开放白名单工具。
 - `npm run test:knowledge` 运行字幕格式/时间码解析、AI cue 覆盖、顺序、长度比例、窗口、片段时间范围、深度候选召回与章节分页读取测试。
 - `npm run prisma:generate` 生成 Prisma Client 到 `src/generated/prisma`。
@@ -201,6 +203,7 @@ docker compose down
 - `src/lib/ai-system-tools.ts` / `src/lib/ai-tool-probe.ts`：正式内部图片资料/索引只读工具及仅显式调用的无副作用能力探测，已通过独立 AI 机器人显式接入；伴读、OCR 和资料流程不启用工具。
 - `docs/AI_TOOL_ARCHITECTURE.md`：工具基础设施接口、注册、资源授权、运行限制、记录扩展及兼容约束。
 - `src/lib/ai-ocr-refinement.ts`：精校图片压缩、多模态消息构造和 OCR 精校调用。
+- `src/lib/ai-ocr-batch-jobs.ts` / `ai-ocr-batch-types.ts` / `src/app/ai-ocr-batch.tsx`：批量 AI 精校预览、固定清单、后台逐张提交、控制及确认/进度界面。
 - `src/lib/ai-reading-companion.ts` / `src/lib/ai-reading-context.ts`：阅读伴侣上下文窗口、图片资料快照、多模态消息和服务端图片上下文查询。
 - `src/lib/ai-deep-reading.ts`：伴读深度流程编排、保守 Token 估算、调用预算、范围定位、覆盖约束、排序、分批阅读笔记和引用校验。
 - `src/lib/knowledge-deep-search.ts`：启用且绑定有效的资料目录、深度多通道候选召回和有序章节分页读取；知识库检索测试入口仍使用 `knowledge-search.ts` 的快速检索。
@@ -780,6 +783,7 @@ AI 设置与调用 API：
 - `brooks-pa-atlas.aiRobot.launcher` / `.window` / `.conversation` / `.scroll.<会话ID>`：独立机器人入口和窗口位置/尺寸、最近会话及阅读位置；不保存密钥或聊天正文。
 
 - `brooks-pa-atlas.locale`：语言，`zh` 或 `en`。
+- `brooks-pa-atlas.aiOcrBatch.job`：最近查看的批量 AI 精校任务ID，刷新后可继续查看完成/失败并重试，关闭完成卡片后清除；不保存正文或密钥。
 - `brooks-pa-atlas.sidebar`：侧栏折叠状态。
 - `brooks-pa-atlas.overview`：概览折叠状态。
 - `brooks-pa-atlas.viewMode`：`browse`、`manage` 或 `exam`。
@@ -869,3 +873,15 @@ https://github.com/AAACHainn/brooks-pa-atlas.git
 - 图片只在运行内送给模型，不写数据库、执行日志或 NDJSON；trace 仅增加 imageCount/imageBytes，onToolSucceeded 只收到投影后的 data。过大、取消、文件错误不附图。不支持图片的模型返回中英文 unsupported-image 提示且不保存助手草稿。
 - 默认机器人提示词升级仅匹配两个已知旧默认值，自定义提示词保持；服务端视觉规则始终按工具实际能力说明。该版本不增加数据库字段或迁移，既有知识引用升级前置条件保持。
 - 工具及机器人隔离测试生成专用图片，验证真实附件、压缩、授权、去重、协议顺序、预算和无字节持久化，不读取用户图库或发起付费测试。
+
+## 22. 索引节点批量 AI 精校（2026-10-09）
+
+- 管理节点右键“批量 AI 精校”处理节点及实际 parentId 后代。默认只选 null/空串/空白 OCR，全部模式携带已有草稿；仅识别、精校原文，不翻译。确认弹窗展示数量、端点/模型及两模式输入估算，每张成功后自动保存。
+- 主库 migration `20261009010000_ai_ocr_batch` 新增 `AiOcrBatchJob`、`AiOcrBatchItem`、`AiOcrBatchPreview`；任务与预览不进入业务 ZIP，成功保存的 OCR 仍按原业务规则备份。旧库返回503升级提示，不在请求中建表。
+- 专用 GET/POST `/api/ai/ocr-refine/index-nodes/[id]/batch` 提供10分钟预览凭证与幂等确认；GET `/jobs/active`、`/jobs/[id]` 查看；POST `/jobs/[id]/actions` 使用 revision 控制 pause/resume/cancel/retry，preview_resume/preview_retry 重新确认剩余范围及估算。前缀均为 `/api/ai/ocr-refine`，不增加机器人权限。
+- 预览绑定实际范围、图片/OCR 指纹及有效配置；确认时事务重新验证，变化不得静默扩大范围。任务保存固定图片清单和节点ID；请求前及提交前检查原图 hash/路径/名称、所属节点、OCR 状态/正文/更新时间。已删除、移出范围、被修改或本地 OCR 待执行/运行的图片跳过；AI 运行状态只在任务表，不能改为图片 PENDING。
+- 每次串行调用一张，复用单张压缩、提示词、模型选择及120秒期限；每张成功在一个事务提交 OCR、COMPLETED、更新时间及任务进度。空、length、content_filter 不覆盖；普通错误继续，配置/401/403/404/429/不支持图片暂停，持久错误使用固定脱敏信息，不保存远端原文、密钥或图像字节。
+- 暂停等待当前张保存再停；取消立即失效 runId 并中断，保存前校验阻止迟到结果。刷新、关闭页面、切换模式不取消后台任务。启动仅把中断任务恢复为 PAUSED，不自动付费续跑。只有一个 activeKey=global 未结束任务；暂停释放 ai-ocr-batch 重任务租约，开始其他批前须继续或取消。
+- 继续固定一个执行段的配置；端点/模型/提示词变化须预览确认。完成后失败重试再次确认估算，仅 FAILED 回到待执行，成功项不重做；来源指纹变化仍跳过。输入估算按每文本UTF-8字节/2向上取整、每图4096并计入消息开销，不读取整批图像或调用远端。请求前累计 attempts/requests/估算，供应商用量缺失为null，报告次数明确区分不完整用量。
+- 右下角 AI、OCR、备份进度共用纵向容器。新 OCR 刷新列表/详情时按字段合并，保留未保存本地编辑；中英文弹窗提供焦点循环/Esc与明确自动保存说明。
+- 升级须先保存一致性 SQLite 备份，再 db:migrate、prisma:generate、构建并重启单 Node.js 进程。远端返回到事务提交之间崩溃仍可能重做该一张，不能承诺跨远端与 SQLite 完全无损。

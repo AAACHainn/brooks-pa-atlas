@@ -1,6 +1,7 @@
 import sharp from "sharp";
 
-import { createAiChatCompletion, type AiFetch } from "@/lib/ai-client";
+import { AiServiceError, createAiChatCompletion, type AiFetch } from "@/lib/ai-client";
+import type { AiChatUsage } from "@/lib/ai-model-types";
 import type { StoredAiEndpoint } from "@/lib/ai-config";
 
 export async function prepareAiReferenceImage(buffer: Buffer, options: { maxBytes?: number; signal?: AbortSignal } = {}) {
@@ -63,8 +64,11 @@ export async function refineOcrTextWithAi(options: {
   imageBuffer: Buffer;
   fetchImpl?: AiFetch;
   timeoutMs?: number;
+  signal?: AbortSignal;
+  onUsage?: (usage: AiChatUsage) => void | Promise<void>;
+  onFinishReason?: (reason: string | null) => void | Promise<void>;
 }) {
-  const preparedImage = await prepareAiReferenceImage(options.imageBuffer);
+  const preparedImage = await prepareAiReferenceImage(options.imageBuffer, { signal: options.signal });
   return createAiChatCompletion(
     options.endpoint,
     options.model,
@@ -74,6 +78,12 @@ export async function refineOcrTextWithAi(options: {
       ocrText: options.ocrText,
       imageDataUrl: `data:image/jpeg;base64,${preparedImage.toString("base64")}`,
     }),
-    { fetchImpl: options.fetchImpl, timeoutMs: options.timeoutMs },
+    { fetchImpl: options.fetchImpl, timeoutMs: options.timeoutMs ?? 120_000, signal: options.signal,
+      onUsage: options.onUsage, onFinishReason: async (reason) => {
+        await options.onFinishReason?.(reason);
+        if (reason === "length" || reason === "content_filter") {
+          throw new AiServiceError("invalid-response", "OCR result was truncated or filtered; the original text was retained.");
+        }
+      } },
   );
 }

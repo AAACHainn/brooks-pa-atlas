@@ -131,6 +131,35 @@ test("OCR refinement uses the active MiMo model when an old DeepSeek override re
   } finally { globalThis.fetch = previousFetch; await saveConfig(); }
 });
 
+test("OCR refinement reads the image with an empty, whitespace or omitted draft and never auto-saves", async () => {
+  const before = await prisma.chartImage.findUniqueOrThrow({ where: { id: "image" } });
+  let calls = 0;
+  try {
+    globalThis.fetch = async (_url, init) => {
+      calls++;
+      const body = JSON.parse(String(init?.body));
+      assert.match(body.messages[0].content, /直接逐行识别图片中可见的文字/);
+      assert.match(body.messages[0].content, /保留原文语言/);
+      assert.match(body.messages[1].content[0].text, /未提供 OCR 草稿/);
+      assert.match(body.messages[1].content[1].image_url.url, /^data:image\/jpeg;base64,/);
+      return reply("Image text extracted by AI");
+    };
+    for (const ocrText of [undefined, "", " \n\t "]) {
+      const response = await ocrRefinePost(new Request("http://atlas.test/ocr-refine", { method: "POST",
+        body: JSON.stringify({ imageId: "image", ...(ocrText === undefined ? {} : { ocrText }) }) }));
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { refinedText: "Image text extracted by AI" });
+      assert.deepEqual(await prisma.chartImage.findUniqueOrThrow({ where: { id: "image" } }), before);
+    }
+    assert.equal(calls, 3);
+    for (const body of [{ imageId: "image", ocrText: "a".repeat(100_001) }, { imageId: "image", ocrText: null }, {}]) {
+      assert.equal((await ocrRefinePost(new Request("http://atlas.test/ocr-refine", { method: "POST", body: JSON.stringify(body) }))).status, 400);
+    }
+    assert.equal((await ocrRefinePost(new Request("http://atlas.test/ocr-refine", { method: "POST", body: JSON.stringify({ imageId: "missing" }) }))).status, 404);
+    assert.equal(calls, 3);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("legacy POST uses quick retrieval, eight sources, current priority and one answer call", async () => {
   const item = await conversation();
   let calls = 0;

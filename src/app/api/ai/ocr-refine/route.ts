@@ -13,14 +13,14 @@ export const dynamic = "force-dynamic";
 
 const requestSchema = z.object({
   imageId: z.string().trim().min(1).max(200),
-  ocrText: z.string().trim().min(1).max(100_000),
+  ocrText: z.string().trim().max(100_000).default(""),
 });
 
 export async function POST(request: Request) {
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "A non-empty OCR draft of at most 100,000 characters is required." },
+      { error: "A valid image ID is required. The optional OCR draft must be a string of at most 100,000 characters." },
       { status: 400 },
     );
   }

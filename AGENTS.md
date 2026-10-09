@@ -548,7 +548,7 @@ README 已补充 Windows、Linux/macOS 下的 OCR 命令和安装示例。
 - 深度对最多 60 个候选摘要调用伴读模型二次排序，只接受候选中已有且不重复的 ID，失败使用 RRF 和覆盖规则并提示。整章总结通过标题路径分页读取有序原文，不能由排序直接排除章节正文。超过单次输入预算时先分批读成带原始编号的笔记，再流式综合；笔记不得引用批次外编号。
 - 深度资料目录、片段与笔记始终是不可信参考数据，所有调用均保留相应规则。只使用知识库中已启用、活动版本且绑定有效的资料；未读或读取失败的片段不得列作回答依据。没有知识证据、目标资料未召回或预算/批次不足时保存并显示实际覆盖及降级说明，最终回答不得声称完整阅读。书籍通过现有 TXT/Markdown 进入知识库，不新增 PDF/EPUB 全文解析。
 - 深度使用 `ai-deep-reading` 重任务租约；停止、断开和失败必须取消上游并在 `finally` 释放。流式上游未返回完成标记或 `finish_reason` 的中断回答不得保存成功消息。
-- 精校把原图在内存中转换为最长边不超过 1920px、quality 85 的 JPEG，并与当前 OCR 草稿一并发送；不写入衍生图片文件。
+- 精校把原图在内存中转换为最长边不超过 1920px、quality 85 的 JPEG，并与可选的 OCR 草稿一并发送；不写入衍生图片文件。有草稿时精校，空白或省略草稿时直接识别图片文字，服务端追加明确的识别及不猜测规则，保留用户技能提示词。前端按钮不要求已有 OCR，仍受处理中状态限制。
 - 外部请求超时为 120 秒。精校 API 不更新 `ChartImage`；只有用户点击现有“保存 OCR 文本”后才写数据库。
 - 所选精校模型必须支持 Chat Completions 图片输入；连接测试只验证最小文本请求，不代表图片能力可用。
 - 当前项目没有登录，AI 配置和付费调用接口只适用于可信本机或可信局域网部署。
@@ -596,7 +596,7 @@ AI 设置与调用 API：
 - `POST /api/settings/ai/models`：使用端点草稿或已保存密钥请求 Models URL，返回去重排序后的模型 id。
 - `POST /api/settings/ai/test`：使用指定模型执行最小非流式文本请求，只验证 Chat Completions 连接。
 - `POST /api/settings/ai/test-embedding`：请求一个测试向量并返回维度，只验证 Embeddings 连接。
-- `POST /api/ai/ocr-refine`：接收 `imageId` 和最多 100,000 字符的非空 `ocrText`，把压缩原图和当前草稿发送给 `ocrRefinement` 技能，成功只返回 `{ refinedText }`，不更新图片记录。
+- `POST /api/ai/ocr-refine`：接收 `imageId` 和可选、可空白但最多 100,000 字符的 `ocrText`，省略时按空串处理；把压缩原图和可选草稿发送给 `ocrRefinement` 技能，成功只返回 `{ refinedText }`，不更新图片记录。
 - `POST /api/ai/reading-companion/conversations/[id]/messages`：接收 `imageId`、最多 20,000 字符的 `content` 和可选 `answerMode: "quick" | "deep"`（缺省快速）。NDJSON 保留 `start/thinking_start/reasoning_delta/thinking_done/delta/done/error`，增加 `{ type: "progress", phase, completed?, total? }` 与心跳 `ping`；phase 为 `planning/retrieving/ranking/reading/synthesizing`。深度租约冲突返回 409；错误或取消只保留已发送的用户问题，不保存未完成助手草稿。
 - AI 上游超时返回 `504`，配置不完整返回 `409`，上游或响应错误返回 `502`；错误响应只保留清理后的状态信息，不透传上游正文。
 - `/api/knowledge/**` 提供映射预览、导入任务、逐文档审核、文档/版本管理、非当前历史版本删除、FTS/向量维护和检索测试；知识导入任务全局同时只运行一个并持久化窗口结果。

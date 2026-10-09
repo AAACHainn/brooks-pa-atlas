@@ -527,7 +527,7 @@ const copy = {
     aiRefineFailed: "AI 精校失败，请稍后重试。",
     aiReadingCompanion: "AI 伴读",
     aiRefineNeedsConfig: "请先完成 AI 端点和模型配置。",
-    aiRefineEmpty: "请先执行 OCR 或输入需要精校的文本。",
+    aiRefineFromImage: "没有 OCR 草稿时，直接从图片识别文字。",
     ocrOverwriteConfirm: "当前已有 OCR 文本。重新 OCR 会在完成后覆盖现有内容，是否继续？",
     ocrOverwriteTitle: "覆盖现有 OCR 文本？",
     ocrUpdateFailed: "OCR 操作失败，请稍后重试。",
@@ -775,7 +775,7 @@ const copy = {
     aiRefineFailed: "AI OCR refinement failed. Please try again.",
     aiReadingCompanion: "AI companion",
     aiRefineNeedsConfig: "Configure an active AI endpoint and model first.",
-    aiRefineEmpty: "Run OCR or enter text to refine first.",
+    aiRefineFromImage: "Read text directly from the image when no OCR draft is available.",
     ocrOverwriteConfirm: "This image already has OCR text. Running OCR again will overwrite it when completed. Continue?",
     ocrOverwriteTitle: "Overwrite existing OCR text?",
     ocrUpdateFailed: "OCR update failed. Please try again.",
@@ -3930,14 +3930,6 @@ export default function AtlasWorkbench() {
   async function refineOcrWithAi() {
     if (!selectedImage || aiRefiningImageId) return;
     const ocrText = detailDraft.ocrText.trim();
-    if (!ocrText) {
-      await appDialog.showAlert({
-        title: t.noticeTitle,
-        message: t.aiRefineEmpty,
-        tone: "info",
-      });
-      return;
-    }
     if (!aiConfigReady) {
       setSettingsInitialTab("skills");
       setIsSettingsOpen(true);
@@ -6303,12 +6295,11 @@ export default function AtlasWorkbench() {
                   type="button"
                   onClick={() => void refineOcrWithAi()}
                   disabled={
-                    !detailDraft.ocrText.trim() ||
                     isSelectedImageOcrBusy ||
                     aiRefiningImageId === selectedImage.id
                   }
                   className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-cyan-200 bg-cyan-50 px-4 text-sm font-medium text-cyan-800 transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:border-zinc-200 disabled:bg-zinc-100 disabled:text-zinc-400"
-                  title={!detailDraft.ocrText.trim() ? t.aiRefineEmpty : !aiConfigReady ? t.aiRefineNeedsConfig : t.aiRefineOcr}
+                  title={!aiConfigReady ? t.aiRefineNeedsConfig : !detailDraft.ocrText.trim() ? t.aiRefineFromImage : t.aiRefineOcr}
                 >
                   {aiRefiningImageId === selectedImage.id ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
